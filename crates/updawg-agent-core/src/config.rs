@@ -9,8 +9,9 @@
 //! Scope note: DAWG-19 defines and tests the config model. DAWG-38 wires it
 //! into job admission end to end.
 
+use crate::duration::HumanDuration;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Duration};
 use updawg_protocol::JobKind;
 
 /// How much the agent is allowed to do.
@@ -58,17 +59,19 @@ impl Permissions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schedule {
+    /// How often to collect and upload a full inventory.
     #[serde(default = "default_inventory_interval")]
-    pub inventory_interval: String,
+    pub inventory_interval: HumanDuration,
+    /// How often to refresh package manager metadata.
     #[serde(default = "default_refresh_metadata")]
-    pub refresh_metadata: String,
+    pub refresh_metadata: HumanDuration,
 }
 
-fn default_inventory_interval() -> String {
-    "6h".into()
+fn default_inventory_interval() -> HumanDuration {
+    HumanDuration(Duration::from_secs(6 * 3600))
 }
-fn default_refresh_metadata() -> String {
-    "1h".into()
+fn default_refresh_metadata() -> HumanDuration {
+    HumanDuration(Duration::from_secs(3600))
 }
 
 impl Default for Schedule {
@@ -76,6 +79,93 @@ impl Default for Schedule {
         Self {
             inventory_interval: default_inventory_interval(),
             refresh_metadata: default_refresh_metadata(),
+        }
+    }
+}
+
+/// Which snapshot mechanism to use before a mutating job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SnapshotProvider {
+    /// Detect whatever is available at startup.
+    #[default]
+    Auto,
+    Snapper,
+    Zfs,
+    Lvm,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshots {
+    #[serde(default)]
+    pub provider: SnapshotProvider,
+    /// How many snapshots to retain. Unbounded snapshots fill disks, which is
+    /// its own outage.
+    #[serde(default = "default_keep")]
+    pub keep: u32,
+}
+
+const fn default_keep() -> u32 {
+    3
+}
+
+impl Default for Snapshots {
+    fn default() -> Self {
+        Self {
+            provider: SnapshotProvider::default(),
+            keep: default_keep(),
+        }
+    }
+}
+
+/// One `[[health_check]]` entry.
+///
+/// Checks run after every mutating job, and a failure is what halts a rollout.
+/// A check that cannot run reports a failure rather than quietly passing —
+/// "I could not tell" and "it is fine" are very different answers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum HealthCheck {
+    Systemd {
+        name: String,
+        unit: String,
+        #[serde(default = "default_check_timeout")]
+        timeout: HumanDuration,
+    },
+    Http {
+        name: String,
+        url: String,
+        #[serde(default = "default_expect_status")]
+        expect_status: u16,
+        #[serde(default = "default_check_timeout")]
+        timeout: HumanDuration,
+    },
+    Command {
+        name: String,
+        /// Argument vector, never a shell string. There is no shell here on
+        /// purpose: a health check is the operator's own configuration, but it
+        /// still should not grow a quoting-and-injection surface.
+        argv: Vec<String>,
+        #[serde(default = "default_check_timeout")]
+        timeout: HumanDuration,
+    },
+}
+
+fn default_check_timeout() -> HumanDuration {
+    HumanDuration(Duration::from_secs(5))
+}
+const fn default_expect_status() -> u16 {
+    200
+}
+
+impl HealthCheck {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Systemd { name, .. } | Self::Http { name, .. } | Self::Command { name, .. } => {
+                name
+            }
         }
     }
 }
@@ -89,6 +179,11 @@ pub struct AgentConfig {
     pub permissions: Permissions,
     #[serde(default)]
     pub schedule: Schedule,
+    #[serde(default)]
+    pub snapshots: Snapshots,
+    /// `[[health_check]]` entries, in the order they were written.
+    #[serde(default, rename = "health_check")]
+    pub health_checks: Vec<HealthCheck>,
 }
 
 impl AgentConfig {
@@ -102,6 +197,24 @@ impl AgentConfig {
         toml::from_str(s)
     }
 
+    /// Read and parse the on-disk configuration.
+    ///
+    /// # Errors
+    /// Fails if the file cannot be read or is not valid configuration. The
+    /// agent refuses to start on a malformed config rather than falling back to
+    /// a default that might permit more than the operator intended.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let raw = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        Self::from_toml(&raw).map_err(|source| ConfigError::Parse {
+            path: path.display().to_string(),
+            source,
+        })
+    }
+
     /// Final answer on whether a job may run on this host.
     #[must_use]
     pub fn admits(&self, kind: JobKind, server: Option<&Permissions>) -> bool {
@@ -113,6 +226,22 @@ impl AgentConfig {
             None => self.permissions.permits(kind),
         }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("could not read {path}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{path} is not valid configuration")]
+    Parse {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
 }
 
 #[cfg(test)]
@@ -132,6 +261,8 @@ mod tests {
             mode: Mode::Managed,
             permissions: perms(allow, deny),
             schedule: Schedule::default(),
+            snapshots: Snapshots::default(),
+            health_checks: Vec::new(),
         }
     }
 
@@ -204,11 +335,14 @@ mod tests {
         assert!(!merged.allow.contains("c"));
     }
 
+    /// The complete example from section 3.6 of the design document, verbatim.
+    /// If this stops parsing, either the document or the code has drifted.
     #[test]
-    fn the_documented_example_config_parses() {
+    fn the_documented_example_config_parses_in_full() {
         let cfg = AgentConfig::from_toml(
             r#"
 server = "https://agents.updawg.net"
+
 mode = "managed"
 
 [permissions]
@@ -218,12 +352,85 @@ deny  = ["dist_upgrade"]
 [schedule]
 inventory_interval = "6h"
 refresh_metadata   = "1h"
+
+[snapshots]
+provider = "auto"
+keep     = 3
+
+[[health_check]]
+name = "nginx running"
+type = "systemd"
+unit = "nginx.service"
+
+[[health_check]]
+name = "app responds"
+type = "http"
+url  = "http://127.0.0.1:8080/healthz"
+expect_status = 200
+timeout = "5s"
 "#,
         )
         .expect("example config from the design document should parse");
+
         assert_eq!(cfg.mode, Mode::Managed);
         assert!(cfg.permissions.deny.contains("dist_upgrade"));
         assert!(!cfg.admits(JobKind::DistUpgrade, None));
+
+        assert_eq!(
+            cfg.schedule.inventory_interval.as_duration(),
+            Duration::from_secs(21_600)
+        );
+        assert_eq!(
+            cfg.schedule.refresh_metadata.as_duration(),
+            Duration::from_secs(3600)
+        );
+
+        assert_eq!(cfg.snapshots.provider, SnapshotProvider::Auto);
+        assert_eq!(cfg.snapshots.keep, 3);
+
+        assert_eq!(cfg.health_checks.len(), 2);
+        assert_eq!(cfg.health_checks[0].name(), "nginx running");
+        assert!(matches!(cfg.health_checks[0], HealthCheck::Systemd { .. }));
+        match &cfg.health_checks[1] {
+            HealthCheck::Http {
+                url,
+                expect_status,
+                timeout,
+                ..
+            } => {
+                assert_eq!(url, "http://127.0.0.1:8080/healthz");
+                assert_eq!(*expect_status, 200);
+                assert_eq!(timeout.as_duration(), Duration::from_secs(5));
+            }
+            other => panic!("expected an http check, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_apply_when_sections_are_omitted() {
+        let cfg = AgentConfig::from_toml(r#"server = "https://agents.updawg.net""#).unwrap();
+        assert_eq!(cfg.snapshots.provider, SnapshotProvider::Auto);
+        assert_eq!(cfg.snapshots.keep, 3);
+        assert!(cfg.health_checks.is_empty());
+        assert_eq!(
+            cfg.schedule.inventory_interval.as_duration(),
+            Duration::from_secs(21_600)
+        );
+    }
+
+    #[test]
+    fn a_malformed_duration_fails_the_whole_config() {
+        let err = AgentConfig::from_toml(
+            r#"
+server = "https://agents.updawg.net"
+[schedule]
+inventory_interval = "6 hours"
+"#,
+        );
+        assert!(
+            err.is_err(),
+            "an unparseable duration must not silently fall back to a default"
+        );
     }
 
     #[test]

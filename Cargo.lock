@@ -707,10 +707,12 @@ dependencies = [
  "async-trait",
  "chrono",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "updawg-backends",
  "updawg-collectors",
  "updawg-crypto",
@@ -795,10 +797,10 @@ name = "updawgd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "updawg-agent-core",
  "updawg-protocol",
 ]

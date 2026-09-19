@@ -5,13 +5,22 @@
 //! outbound connections and executes only the closed set of signed job kinds
 //! defined in `updawg-protocol`.
 //!
-//! Scope note: DAWG-19 produces a daemon that starts, reads its configuration,
-//! reports what it is permitted to do and shuts down cleanly. The check-in loop
-//! arrives in DAWG-32.
+//! Scope note: DAWG-29 brings the scheduler, configuration and local state. The
+//! transport and collectors are placeholders until DAWG-31 and DAWG-33, so the
+//! daemon starts, schedules, and says clearly that it is not talking to
+//! anything yet.
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use clap::Parser;
-use updawg_agent_core::{CONFIG_PATH, STATE_DIR, VERSION, config::AgentConfig};
+use std::{sync::Arc, time::Duration};
+use updawg_agent_core::{
+    CONFIG_PATH, STATE_DIR, VERSION,
+    config::AgentConfig,
+    logging,
+    scheduler::{CheckIn, CheckinOutcome, Inventory, Scheduler},
+    state::LocalState,
+};
 use updawg_protocol::JobKind;
 
 #[derive(Debug, Parser)]
@@ -40,26 +49,23 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    logging::init();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("UPDAWG_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    tracing::info!(
+        version = VERSION,
+        journald = logging::under_journald(),
+        "updawgd starting"
+    );
 
-    tracing::info!(version = VERSION, "updawgd starting");
-
-    let raw =
-        std::fs::read_to_string(&cli.config).with_context(|| format!("reading {}", cli.config))?;
-    // A malformed config fails startup rather than falling back to a default
-    // that might permit more than the operator intended.
-    let config = AgentConfig::from_toml(&raw).with_context(|| format!("parsing {}", cli.config))?;
+    let config = AgentConfig::load(&cli.config).context("loading configuration")?;
 
     tracing::info!(
         server = %config.server,
         mode = ?config.mode,
-        state_dir = %cli.state_dir,
+        inventory_interval = %config.schedule.inventory_interval,
+        refresh_metadata = %config.schedule.refresh_metadata,
+        snapshot_provider = ?config.snapshots.provider,
+        health_checks = config.health_checks.len(),
         "configuration loaded"
     );
 
@@ -82,11 +88,103 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    tracing::warn!("check-in loop is not implemented yet (DAWG-32); idling until shutdown");
+    let state = LocalState::new(&cli.state_dir);
+    state.ensure().context("preparing the state directory")?;
 
-    tokio::signal::ctrl_c()
-        .await
-        .context("waiting for shutdown signal")?;
-    tracing::info!("shutting down");
+    // A job that rebooted the machine could not report its own result. Finish
+    // that report before doing anything else, or the server is left believing
+    // the job is still running.
+    if let Some(pending) = state
+        .take_pending_reboot()
+        .context("reading pending reboot state")?
+    {
+        tracing::info!(
+            job_id = %pending.job_id,
+            "host rebooted while running a job; reporting completion (DAWG-71)"
+        );
+    }
+
+    if state.is_enrolled() {
+        if let Some(identity) = state.identity().context("reading identity")? {
+            tracing::info!(host_id = %identity.host_id, "enrolled");
+        } else {
+            tracing::warn!("identity file present but unreadable");
+        }
+    } else {
+        tracing::warn!("not enrolled — run `updawgctl enroll --token ...` (DAWG-30)");
+    }
+
+    let placeholder = Arc::new(NotWiredUp);
+    let scheduler = Scheduler::new(config, placeholder.clone(), placeholder.clone());
+
+    tracing::warn!("transport is not implemented yet (DAWG-31/32); scheduling but not connecting");
+
+    scheduler.run(shutdown_signal()).await;
+
+    tracing::info!("stopped");
     Ok(())
+}
+
+/// Stands in for the transport and collectors until they exist.
+///
+/// It reports honestly rather than pretending to succeed: a scheduler that
+/// looks like it is working when nothing is connected is exactly the kind of
+/// thing that gets shipped by accident.
+#[derive(Debug)]
+struct NotWiredUp;
+
+#[async_trait]
+impl CheckIn for NotWiredUp {
+    async fn check_in(&self) -> Result<CheckinOutcome> {
+        tracing::debug!("check-in skipped: transport not implemented (DAWG-32)");
+        Ok(CheckinOutcome {
+            next_checkin: Duration::from_secs(60),
+            inventory_requested: false,
+        })
+    }
+}
+
+#[async_trait]
+impl Inventory for NotWiredUp {
+    async fn collect_and_upload(&self) -> Result<()> {
+        tracing::debug!("inventory skipped: collectors not implemented (DAWG-33)");
+        Ok(())
+    }
+    async fn refresh_metadata(&self) -> Result<()> {
+        tracing::debug!("metadata refresh skipped: backends not implemented (DAWG-34/35)");
+        Ok(())
+    }
+}
+
+/// Resolves on SIGTERM or SIGINT.
+///
+/// systemd sends SIGTERM and then waits. Ignoring it means being `SIGKILL`ed,
+/// which for an agent mid-apply is how a package database gets left half-written.
+async fn shutdown_signal() {
+    let interrupt = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "cannot listen for SIGTERM — shutdown will not be graceful");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = interrupt => tracing::info!("received SIGINT"),
+        () = terminate => tracing::info!("received SIGTERM"),
+    }
 }

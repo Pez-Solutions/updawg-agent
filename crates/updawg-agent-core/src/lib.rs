@@ -4,6 +4,9 @@
 //! and local state, DAWG-31 the mTLS transport, DAWG-32 the check-in loop.
 
 pub mod config;
+pub mod duration;
+pub mod logging;
+pub mod scheduler;
 pub mod state;
 pub mod transport;
 
