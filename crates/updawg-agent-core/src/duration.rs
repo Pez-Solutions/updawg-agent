@@ -70,11 +70,11 @@ impl HumanDuration {
 impl fmt::Display for HumanDuration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = self.0.as_secs();
-        if s % 86_400 == 0 && s > 0 {
+        if s.is_multiple_of(86_400) && s > 0 {
             write!(f, "{}d", s / 86_400)
-        } else if s % 3600 == 0 && s > 0 {
+        } else if s.is_multiple_of(3600) && s > 0 {
             write!(f, "{}h", s / 3600)
-        } else if s % 60 == 0 && s > 0 {
+        } else if s.is_multiple_of(60) && s > 0 {
             write!(f, "{}m", s / 60)
         } else {
             write!(f, "{s}s")

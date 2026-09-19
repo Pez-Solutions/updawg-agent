@@ -56,7 +56,6 @@ impl JobKind {
 /// the change was approved, the agent refuses the job rather than installing
 /// something nobody reviewed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct PackagePin {
     pub name: String,
     pub arch: String,
@@ -88,7 +87,6 @@ pub enum RebootPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ApplyUpdates {
     pub packages: Vec<PackagePin>,
     #[serde(default)]
@@ -106,7 +104,6 @@ const fn default_timeout() -> u64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct DistUpgrade {
     /// Target release, e.g. `24.04` or `13`.
     pub target_release: String,
@@ -123,7 +120,6 @@ const fn default_dist_timeout() -> u64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Reboot {
     #[serde(default)]
     pub policy: RebootPolicy,
@@ -135,7 +131,6 @@ pub struct Reboot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Preflight {
     /// Checking a dist-upgrade rather than a package change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,21 +140,18 @@ pub struct Preflight {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Rollback {
     /// Provider-qualified snapshot identifier, e.g. `snapper:412`.
     pub snapshot_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct SelfUpdate {
     pub version: String,
     pub channel: crate::releases::ReleaseChannel,
@@ -199,7 +191,6 @@ impl JobSpec {
 
 /// A signed instruction for exactly one host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Job {
     pub id: JobId,
     pub host_id: HostId,
@@ -239,7 +230,6 @@ impl Job {
 
 /// `POST /agent/v1/jobs/{job_id}/ack`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct JobAck {
     pub accepted: bool,
     /// Why the host refused. Required when `accepted` is false.
@@ -259,7 +249,6 @@ pub enum JobStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct PackageChange {
     pub name: String,
     pub arch: String,
@@ -268,7 +257,6 @@ pub struct PackageChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct HealthCheckReport {
     pub name: String,
     pub passed: bool,
@@ -279,7 +267,6 @@ pub struct HealthCheckReport {
 
 /// `POST /agent/v1/jobs/{job_id}/complete`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct JobComplete {
     pub status: JobStatus,
     pub started_at: DateTime<Utc>,

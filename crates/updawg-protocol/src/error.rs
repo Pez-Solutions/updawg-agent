@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 /// The agent branches on `code`, never on `message`, so wording can change
 /// without breaking behaviour on hosts running older builds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ApiError {
     /// Stable machine-readable code, e.g. `inventory_base_mismatch`.
     pub code: String,

@@ -18,7 +18,6 @@ pub enum LogStream {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct LogLine {
     pub at: DateTime<Utc>,
     pub stream: LogStream,

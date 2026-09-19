@@ -18,6 +18,15 @@
 //! change. Anything that would let the server describe *how* to do something,
 //! rather than *what* to do, belongs somewhere else.
 //!
+//! # Adding fields
+//!
+//! These structs are deliberately **not** `#[non_exhaustive]`. Both ends of
+//! this wire format are outside this crate — the agent builds requests, the
+//! server builds responses — and a struct neither of them can construct with a
+//! literal is a struct neither of them can use. Adding a field is therefore a
+//! minor version bump, and new optional fields carry `#[serde(default)]` so an
+//! older peer keeps parsing.
+//!
 //! # Transport
 //!
 //! Mutual TLS. The agent generates a key pair locally at enrollment, sends a
@@ -32,7 +41,7 @@
 //! places; the three-letter form is what the implementation uses throughout the
 //! agent, the server and the portal, and it is what this crate defines.
 
-#![doc(html_root_url = "https://docs.rs/updawg-protocol/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/updawg-protocol/0.1.1")]
 #![forbid(unsafe_code)]
 
 pub mod cert;
@@ -49,7 +58,9 @@ pub mod releases;
 pub use cert::{CertRenewRequest, CertRenewResponse};
 pub use checkin::{CheckinRequest, CheckinResponse, HostMetrics, HostStateReport};
 pub use config::ServerConfig;
-pub use enroll::{CloudFacts, EnrollRequest, EnrollResponse, HostFacts, OrgSigningKey};
+pub use enroll::{
+    CloudFacts, EnrollRequest, EnrollResponse, HostFacts, OrgSigningKey, SigningKeyStatus,
+};
 pub use error::ApiError;
 pub use ids::{HostId, JobId, OrgId, SigningKeyId};
 pub use inventory::{

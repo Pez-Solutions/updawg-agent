@@ -5,6 +5,10 @@
 //! there must not be gathered.
 //!
 //! Scope note: DAWG-19 defines the surface, DAWG-33 implements the collectors.
+//! DAWG-30 adds [`enrollment`], the smaller set of facts needed before the host
+//! has an identity at all.
+
+pub mod enrollment;
 
 use async_trait::async_trait;
 use updawg_protocol::SystemFacts;

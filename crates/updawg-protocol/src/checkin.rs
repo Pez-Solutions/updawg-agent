@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 /// Cheap state, small enough to send every time.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct HostStateReport {
     pub reboot_required: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -27,7 +26,6 @@ pub struct HostStateReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct HostMetrics {
     pub load1: f32,
     pub mem_used_pct: f32,
@@ -35,7 +33,6 @@ pub struct HostMetrics {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct CheckinRequest {
     /// Changes on reboot, which is how the server detects one it did not ask
     /// for.
@@ -53,7 +50,6 @@ pub struct CheckinRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct CheckinResponse {
     /// Seconds to wait before checking in again. Zero means immediately, which
     /// is the normal long-poll case.

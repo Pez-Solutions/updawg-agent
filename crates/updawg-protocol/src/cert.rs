@@ -8,7 +8,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct CertRenewRequest {
     /// PEM-encoded CSR, generated from the same key pair or a fresh one.
     pub csr: String,
@@ -16,7 +15,6 @@ pub struct CertRenewRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct CertRenewResponse {
     pub certificate: String,
     pub ca_chain: Vec<String>,

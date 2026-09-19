@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 /// withheld. That intersection lives in the agent, not here, but it is the
 /// reason this type carries no permission-granting fields at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ServerConfig {
     /// How long the gateway will hold a check-in open.
     pub checkin_timeout_s: u64,

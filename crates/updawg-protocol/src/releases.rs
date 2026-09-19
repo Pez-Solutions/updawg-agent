@@ -16,7 +16,6 @@ pub enum ReleaseChannel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ReleaseArtifact {
     /// e.g. `x86_64-unknown-linux-musl`.
     pub target: String,
@@ -27,7 +26,6 @@ pub struct ReleaseArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ReleaseManifest {
     pub channel: ReleaseChannel,
     pub version: String,

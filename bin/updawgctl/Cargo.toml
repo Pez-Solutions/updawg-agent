@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 updawg-agent-core.workspace = true
+updawg-crypto.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

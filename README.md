@@ -6,11 +6,12 @@ Linux hosts, plus the shared `updawg-protocol` wire-types crate.
 See [PLAN.md](./PLAN.md) for what this repo is and how it fits with the rest of
 Updawg.
 
-> **Status: early.** Configuration, durable local state and the scheduler are
-> real (DAWG-19, DAWG-29). The collectors, backends, executors and transport are
-> stubs that return "not implemented yet" and name the ticket that fills them
-> in, so `updawgd` starts, schedules, and says plainly that it is not connected
-> to anything yet.
+> **Status: early.** Configuration, durable local state, the scheduler and
+> enrollment are real (DAWG-19, DAWG-29, DAWG-30). A host can generate its key,
+> exchange a CSR for a certificate and pin its organization's signing keys. The
+> collectors, backends, executors and the authenticated transport are stubs that
+> return "not implemented yet" and name the ticket that fills them in, so
+> `updawgd` starts, schedules, and says plainly that it is not checking in yet.
 
 ```bash
 cargo build --workspace
@@ -68,6 +69,7 @@ survive a restart, each for a different reason:
 
 | File | Why it must persist |
 |---|---|
+| `agent.key` | The host's Ed25519 private key, mode `0600`. Generated locally and never sent anywhere. A loose mode is tightened on load and logged. |
 | `identity.json` | Host id, client certificate, and the organization signing keys **pinned at enrollment**. Every job is verified against these, not against whatever the server currently claims. |
 | `seen-jobs.json` | Replay protection. A job must not run twice, and "twice" includes "once before a reboot and once after". Bounded ring, so it cannot grow without limit. |
 | `pending-reboot.json` | A job that reboots the machine cannot report its own result. The agent writes down what it was doing, reboots, and finishes the report on the way back up. |
@@ -75,6 +77,27 @@ survive a restart, each for a different reason:
 Every write is atomic — temp file, fsync, rename. A half-written identity file
 on a host that lost power mid-write is worse than no file at all: the agent
 would refuse to start rather than simply re-enrolling.
+
+## Enrollment
+
+`updawgctl enroll --token ...` generates a key pair, sends a CSR to
+`POST /agent/v1/enroll`, and writes down what came back. The order is the point:
+nothing is written until the response has been validated, so
+
+- a failed enrollment leaves a working host working, and
+- a response that could never verify a job — a malformed organization key, no
+  active key, an empty CA chain — is refused rather than pinned and discovered
+  at the first job.
+
+Re-enrolling is deliberately not automatic. An enrolled host reports that and
+does nothing; `--force` replaces the identity. If the organization signing key
+on offer is not the one this host pinned, `--force` is *still* refused and names
+both fingerprints — following a key change because the server asked is exactly
+what pinning exists to prevent. `--accept-new-org-key` is how an operator says
+they know about the rotation.
+
+What got pinned is printed by `enroll` and by `updawgctl status`, so it can be
+compared against the portal. Pinning nobody can check is pinning nobody trusts.
 
 ## Scheduling
 

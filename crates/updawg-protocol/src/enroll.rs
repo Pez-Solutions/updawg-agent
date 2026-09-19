@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 
 /// Facts gathered before the host has an identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct HostFacts {
     pub distro: String,
     pub version: String,
@@ -30,7 +29,6 @@ pub struct HostFacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct CloudFacts {
     pub provider: String,
     pub instance_id: String,
@@ -38,7 +36,6 @@ pub struct CloudFacts {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct EnrollRequest {
     /// Enrollment token, shown once in the portal.
     pub token: String,
@@ -56,7 +53,6 @@ pub struct EnrollRequest {
 /// Rotation works by the outgoing key endorsing its replacement, so an agent
 /// can follow a rotation without simply believing whatever the server sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct OrgSigningKey {
     pub key_id: SigningKeyId,
     /// `ed25519:` followed by the base64 SPKI encoding.
@@ -80,7 +76,6 @@ pub enum SigningKeyStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct EnrollResponse {
     pub host_id: HostId,
     /// PEM-encoded client certificate.

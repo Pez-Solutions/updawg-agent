@@ -5,10 +5,10 @@
 //! outbound connections and executes only the closed set of signed job kinds
 //! defined in `updawg-protocol`.
 //!
-//! Scope note: DAWG-29 brings the scheduler, configuration and local state. The
-//! transport and collectors are placeholders until DAWG-31 and DAWG-33, so the
-//! daemon starts, schedules, and says clearly that it is not talking to
-//! anything yet.
+//! Scope note: DAWG-29 brings the scheduler, configuration and local state and
+//! DAWG-30 enrollment. The transport and collectors are placeholders until
+//! DAWG-31 and DAWG-33, so the daemon starts, schedules, and says clearly that
+//! it is not talking to anything yet.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -21,6 +21,7 @@ use updawg_agent_core::{
     scheduler::{CheckIn, CheckinOutcome, Inventory, Scheduler},
     state::LocalState,
 };
+use updawg_crypto::PinnedKeys;
 use updawg_protocol::JobKind;
 
 #[derive(Debug, Parser)]
@@ -104,15 +105,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    if state.is_enrolled() {
-        if let Some(identity) = state.identity().context("reading identity")? {
-            tracing::info!(host_id = %identity.host_id, "enrolled");
-        } else {
-            tracing::warn!("identity file present but unreadable");
-        }
-    } else {
-        tracing::warn!("not enrolled — run `updawgctl enroll --token ...` (DAWG-30)");
-    }
+    report_identity(&state).context("reading identity")?;
 
     let placeholder = Arc::new(NotWiredUp);
     let scheduler = Scheduler::new(config, placeholder.clone(), placeholder.clone());
@@ -122,6 +115,36 @@ async fn main() -> Result<()> {
     scheduler.run(shutdown_signal()).await;
 
     tracing::info!("stopped");
+    Ok(())
+}
+
+/// Say who this host is and what it will verify jobs against.
+///
+/// The pinned keys go in the log on purpose. An operator should be able to
+/// compare this line against what the portal shows without running anything:
+/// pinning nobody can check is pinning nobody trusts.
+fn report_identity(state: &LocalState) -> Result<()> {
+    let Some(identity) = state.identity()? else {
+        tracing::warn!("not enrolled — run `updawgctl enroll --token ...`");
+        return Ok(());
+    };
+
+    match PinnedKeys::from_wire(&identity.org_signing_keys) {
+        Ok(pinned) => tracing::info!(
+            host_id = %identity.host_id,
+            enrolled_at = %identity.enrolled_at,
+            org_signing_keys = ?pinned.describe(),
+            "enrolled"
+        ),
+        // Not a warning: a host whose pinned keys no longer parse will reject
+        // every job it is sent, and would otherwise look perfectly healthy
+        // until one arrived.
+        Err(error) => tracing::error!(
+            host_id = %identity.host_id,
+            %error,
+            "enrolled, but the pinned organization keys cannot be used; no job will verify"
+        ),
+    }
     Ok(())
 }
 

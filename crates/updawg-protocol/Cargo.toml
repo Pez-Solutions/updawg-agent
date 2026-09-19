@@ -1,7 +1,10 @@
 [package]
 name = "updawg-protocol"
 description = "Wire types for the Updawg agent API: the contract between the Updawg agent and its gateway."
-version.workspace = true
+# Versioned independently of the agent: this crate is published to crates.io
+# and consumed by updawg-server, so it moves at the wire format's pace, not the
+# agent's.
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

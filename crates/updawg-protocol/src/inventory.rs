@@ -23,7 +23,6 @@ pub enum Ecosystem {
 
 /// Platform facts, refreshed when they change rather than on a schedule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct SystemFacts {
     pub hostname: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,7 +40,6 @@ pub struct SystemFacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct InstalledPackage {
     pub name: String,
     pub version: String,
@@ -52,7 +50,6 @@ pub struct InstalledPackage {
 
 /// Enough to identify a package being removed, without repeating everything.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct RemovedPackage {
     pub name: String,
     pub version: String,
@@ -66,7 +63,6 @@ pub struct RemovedPackage {
 /// inconsistent between distros, so it reports what it sees and does not
 /// editorialise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct AvailableUpdate {
     pub name: String,
     pub arch: String,
@@ -77,7 +73,6 @@ pub struct AvailableUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Repository {
     pub id: String,
     pub kind: String,
@@ -93,7 +88,6 @@ const fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct PackageDelta {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub added: Vec<InstalledPackage>,
@@ -109,7 +103,6 @@ pub enum InventoryKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct InventoryUpload {
     #[serde(rename = "type")]
     pub kind: InventoryKind,

@@ -15,7 +15,10 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Raised from 1.85 for rcgen 0.14.10. The agent ships as a binary built in CI,
+# so the MSRV is not a distro constraint; keeping it low only makes cargo pick
+# older dependency versions silently.
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/Pez-Solutions/updawg-agent"
 authors = ["Updawg"]
@@ -23,7 +26,7 @@ authors = ["Updawg"]
 [workspace.dependencies]
 # Internal crates. updawg-protocol is the one we publish; everything else is
 # internal to the agent.
-updawg-protocol = { path = "crates/updawg-protocol", version = "0.1.0" }
+updawg-protocol = { path = "crates/updawg-protocol", version = "0.1.1" }
 updawg-crypto = { path = "crates/updawg-crypto" }
 updawg-collectors = { path = "crates/updawg-collectors" }
 updawg-backends = { path = "crates/updawg-backends" }
@@ -33,8 +36,19 @@ updawg-agent-core = { path = "crates/updawg-agent-core" }
 
 anyhow = "1"
 async-trait = "0.1"
+# One crypto backend for the whole agent: rcgen generates the key pair and CSR,
+# reqwest's rustls terminates TLS, and aws-lc-rs verifies organization
+# signatures. Two backends in one binary would be two sets of primitives to
+# trust and audit.
+aws-lc-rs = "1"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
+# Default features are rustls + the platform certificate verifier, which is what
+# an agent behind a corporate TLS-inspecting proxy needs: the operator's trust
+# store, not a bundled one.
+reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
