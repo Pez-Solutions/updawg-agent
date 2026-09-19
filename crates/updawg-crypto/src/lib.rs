@@ -10,13 +10,16 @@
 //! whole reason rotation is not simply "the server says use this key now".
 //!
 //! Scope note: DAWG-19 defines the surface. DAWG-30 implements key generation,
-//! CSRs and pinning; DAWG-68 implements rotation following.
+//! CSRs and pinning, DAWG-31 the certificate lifecycle; DAWG-68 implements
+//! rotation following.
 
+pub mod cert;
 pub mod key;
 
 use std::fmt;
 use updawg_protocol::{OrgSigningKey, SigningKeyStatus};
 
+pub use cert::ClientCertificate;
 pub use key::AgentKey;
 
 /// DER header of an Ed25519 `SubjectPublicKeyInfo`, ahead of the 32 key bytes.
@@ -60,6 +63,8 @@ pub enum CryptoError {
     },
     #[error("the private key file is not a valid Ed25519 key: {0}")]
     MalformedKeyFile(String),
+    #[error("the client certificate could not be parsed: {0}")]
+    MalformedCertificate(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

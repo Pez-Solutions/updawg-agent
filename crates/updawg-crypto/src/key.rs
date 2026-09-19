@@ -128,6 +128,16 @@ impl AgentKey {
         })
     }
 
+    /// The private key as PKCS#8 PEM.
+    ///
+    /// Only for handing to the TLS stack, which needs the key and certificate
+    /// as one document. It goes into a buffer in memory and nowhere else —
+    /// there is deliberately no `Display` and no `Debug` that reaches it.
+    #[must_use]
+    pub fn private_key_pem(&self) -> String {
+        self.inner.serialize_pem()
+    }
+
     /// The `SubjectPublicKeyInfo` DER encoding of the public half.
     #[must_use]
     pub fn public_key_spki(&self) -> Vec<u8> {

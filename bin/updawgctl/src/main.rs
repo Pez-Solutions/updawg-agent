@@ -9,13 +9,14 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::time::SystemTime;
 use updawg_agent_core::{
     CONFIG_PATH, STATE_DIR, VERSION,
     config::AgentConfig,
     enroll::{EnrollOptions, Enrolled, Enroller, HttpsEnrollExchange, KEY_FILE},
     state::LocalState,
 };
-use updawg_crypto::PinnedKeys;
+use updawg_crypto::{ClientCertificate, PinnedKeys};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -171,6 +172,18 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
             println!("host id:   {}", identity.host_id);
             println!("since:     {}", identity.enrolled_at);
             println!("key file:  {}", state.root().join(KEY_FILE).display());
+            match ClientCertificate::from_pem(&identity.certificate) {
+                Ok(cert) => {
+                    println!("cert:      {} (serial {})", cert.subject(), cert.serial());
+                    match cert.remaining(SystemTime::now()) {
+                        Some(left) => println!("expires:   in {} days", left.as_secs() / 86_400),
+                        // Not a footnote: an expired certificate means every
+                        // request is already being refused.
+                        None => println!("expires:   EXPIRED — re-enroll with --force"),
+                    }
+                }
+                Err(e) => println!("cert:      UNREADABLE — {e}"),
+            }
             match PinnedKeys::from_wire(&identity.org_signing_keys) {
                 Ok(pinned) => print_pinned(&pinned.describe()),
                 // Worth surfacing rather than hiding: an identity whose pinned

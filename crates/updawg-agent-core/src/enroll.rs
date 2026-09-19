@@ -407,7 +407,7 @@ impl EnrollExchange for HttpsEnrollExchange {
 /// else — the reason, a failed TLS handshake or a refused connection, is two or
 /// three levels down the source chain. An operator reading a failed enrollment
 /// needs the reason, not the URL they already typed.
-fn causes(error: &dyn std::error::Error) -> String {
+pub(crate) fn causes(error: &dyn std::error::Error) -> String {
     let mut parts = vec![error.to_string()];
     let mut source = error.source();
     while let Some(e) = source {
@@ -422,7 +422,7 @@ fn causes(error: &dyn std::error::Error) -> String {
 }
 
 /// Pull the human-readable part out of an RFC 9457 problem document.
-fn problem_detail(body: &str) -> String {
+pub(crate) fn problem_detail(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| {

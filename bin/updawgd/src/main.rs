@@ -5,21 +5,26 @@
 //! outbound connections and executes only the closed set of signed job kinds
 //! defined in `updawg-protocol`.
 //!
-//! Scope note: DAWG-29 brings the scheduler, configuration and local state and
-//! DAWG-30 enrollment. The transport and collectors are placeholders until
-//! DAWG-31 and DAWG-33, so the daemon starts, schedules, and says clearly that
-//! it is not talking to anything yet.
+//! Scope note: DAWG-29 brings the scheduler, configuration and local state,
+//! DAWG-30 enrollment and DAWG-31 the authenticated transport and certificate
+//! renewal. The collectors are still placeholders until DAWG-33, so the daemon
+//! starts, renews its certificate, schedules, and says clearly that it is not
+//! checking in yet.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use clap::Parser;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 use updawg_agent_core::{
     CONFIG_PATH, STATE_DIR, VERSION,
     config::AgentConfig,
     logging,
     scheduler::{CheckIn, CheckinOutcome, Inventory, Scheduler},
     state::LocalState,
+    transport::{MtlsTransport, Renewal},
 };
 use updawg_crypto::PinnedKeys;
 use updawg_protocol::JobKind;
@@ -107,10 +112,21 @@ async fn main() -> Result<()> {
 
     report_identity(&state).context("reading identity")?;
 
+    // Renewal on the way up catches the host that was powered off through its
+    // whole renewal window, which is the common way a certificate is allowed to
+    // expire. Renewing on a cadence while the daemon is up attaches to the
+    // check-in loop in DAWG-32; it belongs there because that loop is what
+    // already knows whether the gateway is reachable.
+    if state.is_enrolled() {
+        renew_certificate(&config, &state).await;
+    }
+
     let placeholder = Arc::new(NotWiredUp);
     let scheduler = Scheduler::new(config, placeholder.clone(), placeholder.clone());
 
-    tracing::warn!("transport is not implemented yet (DAWG-31/32); scheduling but not connecting");
+    tracing::warn!(
+        "the check-in loop is not implemented yet (DAWG-32); scheduling but not checking in"
+    );
 
     scheduler.run(shutdown_signal()).await;
 
@@ -146,6 +162,43 @@ fn report_identity(state: &LocalState) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+/// Renew the client certificate if it is inside its renewal window.
+///
+/// Never fatal. A daemon that refuses to start because it could not reach the
+/// gateway is a daemon that cannot report anything at all, including the fact
+/// that it could not reach the gateway.
+async fn renew_certificate(config: &AgentConfig, state: &LocalState) {
+    let transport = match MtlsTransport::new(&config.server, state.clone()) {
+        Ok(t) => t,
+        Err(error) => {
+            tracing::error!(%error, "cannot use the stored identity");
+            return;
+        }
+    };
+
+    let certificate = transport.certificate();
+    tracing::info!(
+        subject = certificate.subject(),
+        serial = certificate.serial(),
+        "client certificate"
+    );
+
+    match transport.renew_if_due(SystemTime::now()).await {
+        Ok(Renewal::NotDue { remaining }) => tracing::info!(
+            expires_in_days = remaining.as_secs() / 86_400,
+            "certificate renewal not due yet"
+        ),
+        Ok(Renewal::Renewed { expires_in }) => tracing::info!(
+            expires_in_days = expires_in.as_secs() / 86_400,
+            "certificate renewed at startup"
+        ),
+        Err(error) => tracing::error!(
+            %error,
+            "certificate renewal failed; the host will go stale if this keeps failing"
+        ),
+    }
 }
 
 /// Stands in for the transport and collectors until they exist.

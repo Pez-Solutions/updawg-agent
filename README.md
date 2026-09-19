@@ -6,12 +6,14 @@ Linux hosts, plus the shared `updawg-protocol` wire-types crate.
 See [PLAN.md](./PLAN.md) for what this repo is and how it fits with the rest of
 Updawg.
 
-> **Status: early.** Configuration, durable local state, the scheduler and
-> enrollment are real (DAWG-19, DAWG-29, DAWG-30). A host can generate its key,
-> exchange a CSR for a certificate and pin its organization's signing keys. The
-> collectors, backends, executors and the authenticated transport are stubs that
-> return "not implemented yet" and name the ticket that fills them in, so
-> `updawgd` starts, schedules, and says plainly that it is not checking in yet.
+> **Status: early.** Configuration, durable local state, the scheduler,
+> enrollment and the authenticated transport are real (DAWG-19, DAWG-29,
+> DAWG-30, DAWG-31). A host can generate its key, exchange a CSR for a
+> certificate, pin its organization's signing keys, and talk to the gateway over
+> mTLS with its certificate renewing itself. The collectors, backends and
+> executors are stubs that return "not implemented yet" and name the ticket that
+> fills them in, so `updawgd` starts, renews, schedules, and says plainly that
+> it is not checking in yet.
 
 ```bash
 cargo build --workspace
@@ -98,6 +100,37 @@ they know about the rotation.
 
 What got pinned is printed by `enroll` and by `updawgctl status`, so it can be
 compared against the portal. Pinning nobody can check is pinning nobody trusts.
+
+## Transport and certificate renewal
+
+Every request after enrollment presents the client certificate. They last thirty
+days, so a host that is decommissioned or revoked leaves the fleet on its own
+rather than having to be chased.
+
+That only works if renewal does. Renewal begins when a third of the
+certificate's life remains — ten days for a thirty-day certificate — which
+leaves room for a host to be powered off for a week, a gateway outage, and a
+retry schedule, all at once. The window is a *fraction* of the lifetime rather
+than a fixed number of days, so changing certificate duration on the server
+cannot silently leave every agent renewing too late.
+
+Each host takes a stable offset into that window, derived from its certificate
+serial. A fleet enrolled in one afternoon would otherwise all renew in the same
+hour a month later, and deriving the offset from a clock would give a host that
+keeps restarting a new renewal time on every boot.
+
+The private key is **not** rotated at renewal. Replacing it means two files that
+must both land or neither, and a crash between them leaves a host that can
+neither authenticate nor renew. The certificate is the short-lived credential;
+keeping the key makes replacing it one atomic write.
+
+Three failures worth telling apart, because they need different actions:
+
+| What happened | What the agent says |
+|---|---|
+| The gateway returned 401 or 403 | The certificate was rejected, with its subject and serial, and the `--force` re-enrollment that fixes it |
+| The local certificate has expired | Says so directly — that failure shows up as a TLS handshake error, not a status code, so guessing from alert strings is not the answer |
+| Anything else | The whole error source chain, because `reqwest`'s own message is only the URL you already typed |
 
 ## Scheduling
 
