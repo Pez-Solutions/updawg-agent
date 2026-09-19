@@ -41,7 +41,7 @@
 //! places; the three-letter form is what the implementation uses throughout the
 //! agent, the server and the portal, and it is what this crate defines.
 
-#![doc(html_root_url = "https://docs.rs/updawg-protocol/0.1.1")]
+#![doc(html_root_url = "https://docs.rs/updawg-protocol/0.1.2")]
 #![forbid(unsafe_code)]
 
 pub mod cert;

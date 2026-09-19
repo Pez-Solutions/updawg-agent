@@ -4,9 +4,15 @@ description = "Wire types for the Updawg agent API: the contract between the Upd
 # Versioned independently of the agent: this crate is published to crates.io
 # and consumed by updawg-server, so it moves at the wire format's pace, not the
 # agent's.
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
-rust-version.workspace = true
+# Its own floor, not the agent's. The agent needs 1.88 for a build-time
+# dependency this crate does not have; inheriting that silently stopped
+# updawg-server — which is on 1.85 — from resolving 0.1.1 at all. A wire-types
+# crate that consumers audit should ask for as little as it can, and edition
+# 2024 is the real floor here.
+rust-version = "1.85"
+
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
