@@ -9,7 +9,7 @@
 pub mod health;
 
 use async_trait::async_trait;
-use updawg_protocol::{Job, JobKind, JobOutcome};
+use updawg_protocol::{Job, JobComplete, JobKind};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
@@ -34,5 +34,5 @@ pub type Result<T> = std::result::Result<T, ExecutorError>;
 #[async_trait]
 pub trait Executor: Send + Sync {
     fn handles(&self) -> JobKind;
-    async fn execute(&self, job: &Job) -> Result<JobOutcome>;
+    async fn execute(&self, job: &Job) -> Result<JobComplete>;
 }

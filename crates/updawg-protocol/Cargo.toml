@@ -1,12 +1,21 @@
 [package]
 name = "updawg-protocol"
-description = "Wire types for the Updawg agent API, shared by the agent and the server."
+description = "Wire types for the Updawg agent API: the contract between the Updawg agent and its gateway."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+homepage = "https://updawg.net"
+documentation = "https://docs.rs/updawg-protocol"
+readme = "README.md"
+keywords = ["updawg", "patching", "linux", "agent", "protocol"]
+categories = ["api-bindings", "network-programming", "os::linux-apis"]
+
+# Only the crate itself. No build scratch, no fixtures.
+include = ["src/**/*.rs", "README.md", "LICENSE"]
 
 [dependencies]
 chrono.workspace = true

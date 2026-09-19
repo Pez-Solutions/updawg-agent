@@ -1,27 +1,80 @@
 //! Wire types for the Updawg agent API.
 //!
-//! This crate is the single source of truth for the contract between the agent
-//! and the gateway. It lives in the agent repository on purpose: the agent is
-//! the thing customers audit, and the format it speaks should be defined where
-//! they can read it. `updawg-server` consumes this crate from crates.io rather
-//! than redefining these types, so the two sides cannot drift.
+//! This crate is the single source of truth for the contract between the Updawg
+//! agent and the gateway. It lives in the agent repository on purpose: the agent
+//! is the thing customers audit, and the format it speaks should be defined
+//! where they can read it. `updawg-server` depends on this crate rather than
+//! redefining these types, so the two sides cannot drift apart.
 //!
-//! Scope note: this is the v0 skeleton created by DAWG-19. DAWG-21 fills in the
-//! full request and response bodies and publishes 0.1.0 to crates.io.
+//! # The property this crate exists to preserve
+//!
+//! [`JobKind`] and [`JobSpec`] are **closed enums**. There is no variant that
+//! carries a script, a command line, or an arbitrary string for the agent to
+//! execute. Every job is one of a fixed set of typed operations with explicit
+//! parameters, which is why full control of the Updawg control plane still
+//! cannot run arbitrary commands on a customer's host.
+//!
+//! Adding a variant to either enum is a security decision, not a routine
+//! change. Anything that would let the server describe *how* to do something,
+//! rather than *what* to do, belongs somewhere else.
+//!
+//! # Transport
+//!
+//! Mutual TLS. The agent generates a key pair locally at enrollment, sends a
+//! CSR, and receives a short-lived client certificate; the private key never
+//! leaves the host. Every request carries a `Updawg-Protocol` header, and the
+//! gateway accepts the current and previous version.
+//!
+//! # Identifiers
+//!
+//! Identifiers are `UUIDv7` rendered with a three-letter type prefix — `hst_`,
+//! `job_`, `org_`. The design document's illustrative examples used `host_` in
+//! places; the three-letter form is what the implementation uses throughout the
+//! agent, the server and the portal, and it is what this crate defines.
 
 #![doc(html_root_url = "https://docs.rs/updawg-protocol/0.1.0")]
+#![forbid(unsafe_code)]
 
+pub mod cert;
+pub mod checkin;
+pub mod config;
+pub mod enroll;
+pub mod error;
 pub mod ids;
 pub mod inventory;
 pub mod job;
+pub mod logs;
+pub mod releases;
 
-pub use ids::{HostId, JobId, OrgId};
-pub use inventory::{AvailableUpdate, Ecosystem, InstalledPackage, Repository, SystemFacts};
-pub use job::{Job, JobKind, JobOutcome, JobStatus};
+pub use cert::{CertRenewRequest, CertRenewResponse};
+pub use checkin::{CheckinRequest, CheckinResponse, HostMetrics, HostStateReport};
+pub use config::ServerConfig;
+pub use enroll::{CloudFacts, EnrollRequest, EnrollResponse, HostFacts, OrgSigningKey};
+pub use error::ApiError;
+pub use ids::{HostId, JobId, OrgId, SigningKeyId};
+pub use inventory::{
+    AvailableUpdate, Ecosystem, InstalledPackage, InventoryKind, InventoryUpload, PackageDelta,
+    RemovedPackage, Repository, SystemFacts,
+};
+pub use job::{
+    ApplyUpdates, DistUpgrade, HealthCheckReport, Job, JobAck, JobComplete, JobKind, JobSpec,
+    JobStatus, PackageChange, PackagePin, Preflight, Reboot, RebootPolicy, Rollback, SelfUpdate,
+    Snapshot, SnapshotPolicy,
+};
+pub use logs::{LogLine, LogStream};
+pub use releases::{ReleaseChannel, ReleaseManifest};
 
-/// The agent API version this crate speaks. Sent as a header on every request
-/// so the gateway can reject an agent that is too old to trust.
-pub const API_VERSION: &str = "v1";
+/// The agent API path prefix.
+pub const API_PATH: &str = "/agent/v1";
 
-/// Maximum wall time the gateway holds a check-in open before replying empty.
+/// Value of the `Updawg-Protocol` header this crate speaks.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Name of the protocol header.
+pub const PROTOCOL_HEADER: &str = "Updawg-Protocol";
+
+/// Longest a check-in is held open before the gateway replies with no jobs.
 pub const CHECKIN_LONG_POLL_SECONDS: u64 = 55;
+
+/// Lifetime of an issued client certificate.
+pub const CLIENT_CERT_DAYS: u32 = 30;

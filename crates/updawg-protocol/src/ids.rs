@@ -46,6 +46,11 @@ macro_rules! prefixed_id {
 prefixed_id!(OrgId, "org_", "Identifies an organization (the tenant).");
 prefixed_id!(HostId, "hst_", "Identifies one enrolled host.");
 prefixed_id!(JobId, "job_", "Identifies one job delivered to one agent.");
+prefixed_id!(
+    SigningKeyId,
+    "sk_",
+    "Identifies one organization signing key."
+);
 
 #[cfg(test)]
 mod tests {
