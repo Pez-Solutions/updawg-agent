@@ -197,6 +197,25 @@ impl LocalState {
         self.write_atomic("identity.json", &bytes)
     }
 
+    /* -------------------------------------------------- inventory hash */
+
+    /// Hash of the inventory this host last uploaded.
+    ///
+    /// Sent on every check-in so the server can notice the two have diverged
+    /// and ask for a fresh one. Kept next to the identity rather than held in
+    /// memory because a restart must not silently look like a change.
+    pub fn inventory_hash(&self) -> Result<Option<String>> {
+        self.read_json::<String>("inventory-hash.json")
+    }
+
+    pub fn set_inventory_hash(&self, hash: &str) -> Result<()> {
+        let bytes = serde_json::to_vec(hash).map_err(|source| StateError::Corrupt {
+            path: "inventory-hash.json".into(),
+            source,
+        })?;
+        self.write_atomic("inventory-hash.json", &bytes)
+    }
+
     /* --------------------------------------------------------- seen jobs */
 
     /// Whether this job has already been handled.
@@ -377,6 +396,21 @@ mod tests {
         assert_eq!(taken.job_id.as_str(), "job_reboot");
         // Taken, not read: a second call finds nothing.
         assert!(reopened.take_pending_reboot().unwrap().is_none());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_inventory_hash_survives_a_restart() {
+        let (state, dir) = temp_state();
+        assert!(state.inventory_hash().unwrap().is_none());
+        state.set_inventory_hash("sha256:9f86d0").unwrap();
+
+        let reopened = LocalState::new(&dir);
+        assert_eq!(
+            reopened.inventory_hash().unwrap().as_deref(),
+            Some("sha256:9f86d0"),
+            "a restart must not look like the inventory changed"
+        );
         fs::remove_dir_all(dir).ok();
     }
 

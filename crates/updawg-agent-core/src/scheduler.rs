@@ -46,6 +46,12 @@ pub trait Inventory: Send + Sync {
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 const MIN_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Window the first check-in of a process is spread across.
+///
+/// Short, because it delays nothing else and a host that has just booted has
+/// little to say. It exists for the case where ten thousand hosts boot at once.
+const STARTUP_SPREAD: Duration = Duration::from_secs(10);
+
 /// A cheap spread, seeded from the clock.
 ///
 /// Not cryptographic and does not need to be: the job is to stop a fleet
@@ -63,10 +69,22 @@ fn jittered(interval: Duration) -> Duration {
     interval.mul_f64(jitter_fraction())
 }
 
+/// Somewhere in the upper half of `base`.
+///
+/// Full jitter — a uniform draw from zero — would keep the average retry delay
+/// half of what the backoff says, which quietly makes a long outage four times
+/// noisier than intended. Half to full keeps the backoff meaningful while still
+/// breaking up the herd.
+fn with_jitter(base: Duration) -> Duration {
+    base.mul_f64(0.5 + jitter_fraction() / 2.0)
+}
+
 pub struct Scheduler {
     config: AgentConfig,
     checkin: Arc<dyn CheckIn>,
     inventory: Arc<dyn Inventory>,
+    /// Window the first check-in is spread across. See [`STARTUP_SPREAD`].
+    startup_spread: Duration,
 }
 
 impl std::fmt::Debug for Scheduler {
@@ -88,7 +106,19 @@ impl Scheduler {
             config,
             checkin,
             inventory,
+            startup_spread: STARTUP_SPREAD,
         }
+    }
+
+    /// Change how long the first check-in is delayed.
+    ///
+    /// Exists because the spread is measured in seconds and a test that has to
+    /// wait through it is a test nobody runs. An operator with a single host
+    /// has a fair use for it too: spreading a fleet of one achieves nothing.
+    #[must_use]
+    pub fn with_startup_spread(mut self, spread: Duration) -> Self {
+        self.startup_spread = spread;
+        self
     }
 
     /// Run until `shutdown` resolves.
@@ -100,6 +130,7 @@ impl Scheduler {
         let checkin_task = tokio::spawn(checkin_loop(
             self.checkin.clone(),
             self.inventory.clone(),
+            self.startup_spread,
             cancel.clone(),
         ));
         let inventory_task = tokio::spawn(periodic(
@@ -184,8 +215,25 @@ fn tokio_util_token() -> Cancel {
     Cancel::new()
 }
 
-async fn checkin_loop(checkin: Arc<dyn CheckIn>, inventory: Arc<dyn Inventory>, cancel: Cancel) {
+async fn checkin_loop(
+    checkin: Arc<dyn CheckIn>,
+    inventory: Arc<dyn Inventory>,
+    startup_spread: Duration,
+    cancel: Cancel,
+) {
     let mut backoff = MIN_BACKOFF;
+
+    // A fleet that loses power and comes back does so together, and every
+    // agent would otherwise open its first check-in in the same second. The
+    // first one waits a moment; after that the long poll spreads them out on
+    // its own, because they finish at different times.
+    if !startup_spread.is_zero() {
+        let settle = jittered(startup_spread);
+        tracing::debug!(delay_ms = settle.as_millis(), "first check-in scheduled");
+        if !cancel.sleep(settle).await {
+            return;
+        }
+    }
 
     while !cancel.is_cancelled() {
         match checkin.check_in().await {
@@ -202,8 +250,18 @@ async fn checkin_loop(checkin: Arc<dyn CheckIn>, inventory: Arc<dyn Inventory>, 
                 }
             }
             Err(error) => {
-                tracing::warn!(%error, backoff_s = backoff.as_secs(), "check-in failed");
-                if !cancel.sleep(backoff).await {
+                // Sleep somewhere in [half, full] of the current backoff. A
+                // gateway coming back from an outage is met by a fleet that
+                // has been failing in lockstep, and retrying in lockstep is
+                // how it goes down again immediately.
+                let wait = with_jitter(backoff);
+                tracing::warn!(
+                    %error,
+                    backoff_s = backoff.as_secs(),
+                    waiting_s = wait.as_secs(),
+                    "check-in failed"
+                );
+                if !cancel.sleep(wait).await {
                     break;
                 }
                 backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -304,7 +362,8 @@ refresh_metadata = "{refresh}"
     async fn the_checkin_loop_runs_repeatedly_until_shutdown() {
         let counters = Arc::new(Counters::default());
         let fake = Arc::new(Fake(counters.clone()));
-        let sched = Scheduler::new(config("1h", "1h"), fake.clone(), fake.clone());
+        let sched = Scheduler::new(config("1h", "1h"), fake.clone(), fake.clone())
+            .with_startup_spread(Duration::ZERO);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(sched.run(async move {
@@ -327,7 +386,8 @@ refresh_metadata = "{refresh}"
         let fake = Arc::new(Fake(counters.clone()));
         // 1s intervals: jitter puts the first run somewhere inside the first
         // second, so a 1.2s window reliably catches at least one.
-        let sched = Scheduler::new(config("1s", "1s"), fake.clone(), fake.clone());
+        let sched = Scheduler::new(config("1s", "1s"), fake.clone(), fake.clone())
+            .with_startup_spread(Duration::ZERO);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(sched.run(async move {
@@ -353,7 +413,8 @@ refresh_metadata = "{refresh}"
         let counters = Arc::new(Counters::default());
         counters.fail_checkin.store(true, Ordering::SeqCst);
         let fake = Arc::new(Fake(counters.clone()));
-        let sched = Scheduler::new(config("1h", "1h"), fake.clone(), fake.clone());
+        let sched = Scheduler::new(config("1h", "1h"), fake.clone(), fake.clone())
+            .with_startup_spread(Duration::ZERO);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(sched.run(async move {
@@ -374,11 +435,48 @@ refresh_metadata = "{refresh}"
         );
     }
 
+    /// Half to full, never zero. Full jitter would halve the effective
+    /// backoff, quietly making a long outage noisier than the constants say.
+    #[test]
+    fn backoff_jitter_stays_in_the_upper_half() {
+        for base in [MIN_BACKOFF, Duration::from_secs(30), MAX_BACKOFF] {
+            for _ in 0..200 {
+                let wait = with_jitter(base);
+                assert!(
+                    wait >= base / 2 && wait <= base,
+                    "{wait:?} outside [{:?}, {base:?}]",
+                    base / 2
+                );
+            }
+        }
+    }
+
+    /// Mass restart: ten thousand hosts booting together must not open their
+    /// first check-in in the same instant. The spread is what stops the
+    /// gateway meeting the whole fleet at once.
+    #[test]
+    fn a_mass_restart_is_spread_across_the_startup_window() {
+        let delays: Vec<Duration> = (0..500).map(|_| jittered(STARTUP_SPREAD)).collect();
+
+        for d in &delays {
+            assert!(*d <= STARTUP_SPREAD, "{d:?} exceeds the window");
+        }
+        // Jitter is seeded from the clock, so a tight loop can draw the same
+        // value repeatedly; what matters is that it is not one fixed value.
+        let distinct: std::collections::BTreeSet<u128> =
+            delays.iter().map(std::time::Duration::as_millis).collect();
+        assert!(
+            distinct.len() > 1,
+            "every host would start at the same moment"
+        );
+    }
+
     #[tokio::test]
     async fn shutdown_stops_everything_promptly() {
         let counters = Arc::new(Counters::default());
         let fake = Arc::new(Fake(counters.clone()));
-        let sched = Scheduler::new(config("1h", "1h"), fake.clone(), fake.clone());
+        let sched = Scheduler::new(config("1h", "1h"), fake.clone(), fake.clone())
+            .with_startup_spread(Duration::ZERO);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(sched.run(async move {

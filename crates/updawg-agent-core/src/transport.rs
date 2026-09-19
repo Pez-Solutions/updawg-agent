@@ -183,15 +183,23 @@ impl MtlsTransport {
         format!("{}{API_PATH}{path}", self.base)
     }
 
-    /// Check in, holding the long poll open for as long as the gateway will.
+    /// Check in, holding the long poll open for up to `hold`.
+    ///
+    /// The caller picks the hold rather than this taking the protocol constant,
+    /// because on a network that trims idle connections the agent converges on
+    /// something shorter than the gateway would allow (see
+    /// [`crate::checkin`]). A margin is added so a poll that is working
+    /// normally is never cut off by the client's own clock first.
     ///
     /// # Errors
     /// See [`TransportError`].
-    pub async fn check_in(&self, request: &CheckinRequest) -> Result<CheckinResponse> {
-        // A little longer than the gateway's own hold, so a check-in that is
-        // working normally is never cut off by the client's own clock.
-        let timeout = Duration::from_secs(updawg_protocol::CHECKIN_LONG_POLL_SECONDS + 10);
-        self.post("/checkin", request, timeout).await
+    pub async fn check_in(
+        &self,
+        request: &CheckinRequest,
+        hold: Duration,
+    ) -> Result<CheckinResponse> {
+        self.post("/checkin", request, hold + Duration::from_secs(10))
+            .await
     }
 
     /// Renew the client certificate if it is time, and start using the new one.

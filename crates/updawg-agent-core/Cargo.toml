@@ -27,6 +27,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 aws-lc-rs.workspace = true
+updawg-collectors = { workspace = true, features = ["testing"] }
 base64.workspace = true
 # The transport tests run a real TLS server that demands a client certificate.
 # Both come in through reqwest already; naming them here keeps the versions in

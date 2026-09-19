@@ -7,9 +7,9 @@
 //!
 //! Scope note: DAWG-29 brings the scheduler, configuration and local state,
 //! DAWG-30 enrollment, DAWG-31 the authenticated transport and certificate
-//! renewal, and DAWG-33 the fact collectors. The check-in loop is still
-//! missing until DAWG-32, so the daemon starts, reads the host, renews its
-//! certificate, schedules, and says clearly that it is not checking in yet.
+//! renewal, DAWG-32 the check-in loop and DAWG-33 the fact collectors. Jobs
+//! that arrive are reported and not run, because verifying and executing one
+//! is DAWG-38; the daemon says so rather than dropping them quietly.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -20,6 +20,7 @@ use std::{
 };
 use updawg_agent_core::{
     CONFIG_PATH, STATE_DIR, VERSION,
+    checkin::{GatewayCheckIn, UnhandledJobs},
     config::AgentConfig,
     logging,
     scheduler::{CheckIn, CheckinOutcome, Inventory, Scheduler},
@@ -124,11 +125,16 @@ async fn main() -> Result<()> {
     }
 
     let placeholder = Arc::new(NotWiredUp);
-    let scheduler = Scheduler::new(config, placeholder.clone(), placeholder.clone());
+    // Not fatal when there is no identity. An agent that schedules and says
+    // what it needs is more useful than one that exits: the operator may be
+    // about to run `updawgctl enroll`, and a dead unit is harder to notice
+    // than a running one complaining.
+    let checkin: Arc<dyn CheckIn> = build_checkin(&config, &state).unwrap_or_else(|| {
+        tracing::warn!("not checking in: this host has no usable identity");
+        placeholder.clone()
+    });
 
-    tracing::warn!(
-        "the check-in loop is not implemented yet (DAWG-32); scheduling but not checking in"
-    );
+    let scheduler = Scheduler::new(config, checkin, placeholder.clone());
 
     scheduler.run(shutdown_signal()).await;
 
@@ -164,6 +170,37 @@ fn report_identity(state: &LocalState) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+/// Build the real check-in loop, if this host can talk to the gateway at all.
+fn build_checkin(config: &AgentConfig, state: &LocalState) -> Option<Arc<dyn CheckIn>> {
+    if !state.is_enrolled() {
+        return None;
+    }
+    let transport = match MtlsTransport::new(&config.server, state.clone()) {
+        Ok(t) => Arc::new(t),
+        Err(error) => {
+            tracing::error!(%error, "cannot build the gateway transport");
+            return None;
+        }
+    };
+    let collector = match SystemState::new(Root::default()) {
+        Ok(c) => c,
+        Err(error) => {
+            tracing::error!(%error, "cannot prepare the state collector");
+            return None;
+        }
+    };
+
+    Some(Arc::new(GatewayCheckIn::new(
+        transport,
+        state.clone(),
+        collector,
+        // Jobs are delivered but not run: verifying and executing one is a
+        // different problem with its own security story (DAWG-38). Until then
+        // the agent says so loudly rather than dropping them silently.
+        Arc::new(UnhandledJobs),
+    )))
 }
 
 /// Say what this host is and what is true about it right now.
@@ -258,7 +295,7 @@ struct NotWiredUp;
 #[async_trait]
 impl CheckIn for NotWiredUp {
     async fn check_in(&self) -> Result<CheckinOutcome> {
-        tracing::debug!("check-in skipped: transport not implemented (DAWG-32)");
+        tracing::debug!("check-in skipped: this host is not enrolled");
         Ok(CheckinOutcome {
             next_checkin: Duration::from_secs(60),
             inventory_requested: false,

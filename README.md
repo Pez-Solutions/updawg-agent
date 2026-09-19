@@ -6,15 +6,17 @@ Linux hosts, plus the shared `updawg-protocol` wire-types crate.
 See [PLAN.md](./PLAN.md) for what this repo is and how it fits with the rest of
 Updawg.
 
-> **Status: early.** Configuration, durable local state, the scheduler,
-> enrollment, the authenticated transport and the fact collectors are real
-> (DAWG-19, DAWG-29, DAWG-30, DAWG-31, DAWG-33). A host can generate its key,
-> exchange a CSR for a certificate, pin its organization's signing keys, talk to
-> the gateway over mTLS with its certificate renewing itself, and read what it
-> is and what is true about it. The package backends and executors are stubs
-> that return "not implemented yet" and name the ticket that fills them in, so
-> `updawgd` starts, reads the host, renews, schedules, and says plainly that it
-> is not checking in yet.
+> **Status: the client side is complete.** A host generates its key, exchanges a
+> CSR for a certificate, pins its organization's signing keys, reads what it is
+> and what is true about it, and checks in over mTLS on a long poll with its
+> certificate renewing itself (DAWG-19, DAWG-29, DAWG-30, DAWG-31, DAWG-32,
+> DAWG-33).
+>
+> **There is nothing to talk to yet.** The gateway does not exist, so every one
+> of those paths has been exercised against a test gateway and never a real one.
+> Jobs that arrive are reported and not run — verifying and executing one is
+> DAWG-38 — and the package backends are still stubs that name the ticket that
+> fills them in.
 
 ```bash
 cargo build --workspace
@@ -176,6 +178,46 @@ The parsers are additionally tested against output captured from live hosts, not
 only hand-written fixtures: real `needrestart`, `df` and `/proc/meminfo` output
 carries fields and column widths that invented examples make suspiciously
 uniform.
+
+## Checking in
+
+One request held open against the gateway for up to fifty-five seconds. The
+gateway answers the moment a job appears, so delivery is near-instant without
+anyone holding a socket per host or the agent polling every few seconds. At
+fleet scale that is roughly nine hundred requests a second, which is why the
+body is small and nothing expensive happens per check-in.
+
+### Networks that kill idle connections
+
+A long poll spends almost all of its life looking like an idle connection, and a
+great deal of corporate networking equipment exists to kill those. The agent
+sees a connection error indistinguishable, at a glance, from the gateway being
+down — and treating it as an outage means backing off, which is exactly wrong.
+
+So a connection failure on a poll that had already been waiting a while is read
+as a trimmed idle connection: the agent polls straight back instead of backing
+off. A gateway that is genuinely down fails fast — refused, DNS, a handshake
+that never completes — and that still counts as a failure.
+
+What the agent deliberately does **not** do is shorten its own timeout to fit.
+That was the first thing tried here and it is wrong: the gateway decides how
+long it holds, and an agent that gives up earlier just abandons polls the
+gateway was about to answer. Making the hold negotiable needs a field in
+`CheckinRequest` and a gateway that honours it. Until then the agent records
+what it observed and says so once, which is the part an operator can act on.
+
+### Fleet-scale behaviour
+
+- **Mass restart.** Ten thousand hosts that boot together would otherwise open
+  their first check-in in the same instant, so the first one is spread across a
+  short window. After that the long poll spreads them on its own, because they
+  finish at different times.
+- **Backoff jitter.** A gateway coming back from an outage is met by a fleet
+  that has been failing in lockstep, and retrying in lockstep is how it goes
+  down again immediately. Retries wait somewhere in the upper half of the
+  current backoff — half to full rather than full jitter, which would quietly
+  halve the effective backoff and make a long outage noisier than the constants
+  say.
 
 ## Scheduling
 
