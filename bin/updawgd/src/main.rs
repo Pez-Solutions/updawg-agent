@@ -6,10 +6,10 @@
 //! defined in `updawg-protocol`.
 //!
 //! Scope note: DAWG-29 brings the scheduler, configuration and local state,
-//! DAWG-30 enrollment and DAWG-31 the authenticated transport and certificate
-//! renewal. The collectors are still placeholders until DAWG-33, so the daemon
-//! starts, renews its certificate, schedules, and says clearly that it is not
-//! checking in yet.
+//! DAWG-30 enrollment, DAWG-31 the authenticated transport and certificate
+//! renewal, and DAWG-33 the fact collectors. The check-in loop is still
+//! missing until DAWG-32, so the daemon starts, reads the host, renews its
+//! certificate, schedules, and says clearly that it is not checking in yet.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -26,6 +26,7 @@ use updawg_agent_core::{
     state::LocalState,
     transport::{MtlsTransport, Renewal},
 };
+use updawg_collectors::{PlatformFacts, Root, SystemState};
 use updawg_crypto::PinnedKeys;
 use updawg_protocol::JobKind;
 
@@ -111,6 +112,7 @@ async fn main() -> Result<()> {
     }
 
     report_identity(&state).context("reading identity")?;
+    report_host(&Root::default());
 
     // Renewal on the way up catches the host that was powered off through its
     // whole renewal window, which is the common way a certificate is allowed to
@@ -162,6 +164,50 @@ fn report_identity(state: &LocalState) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+/// Say what this host is and what is true about it right now.
+///
+/// Collected at startup and logged rather than held, because until the
+/// check-in loop exists (DAWG-32) there is nowhere to send it — and an operator
+/// installing the agent should be able to see that it reads their machine
+/// correctly before it is trusted to act on it.
+fn report_host(root: &Root) {
+    match PlatformFacts::new(root.clone()).gather() {
+        Ok(facts) => tracing::info!(
+            distro = %facts.distro,
+            version = %facts.version_id,
+            kernel = %facts.kernel,
+            arch = %facts.arch,
+            virtualization = facts.virtualization.as_deref().unwrap_or("unknown"),
+            ecosystem = ?facts.ecosystem,
+            "platform"
+        ),
+        Err(error) => tracing::error!(%error, "could not read this host's platform facts"),
+    }
+
+    let collector = match SystemState::new(root.clone()) {
+        Ok(c) => c,
+        Err(error) => {
+            tracing::error!(%error, "could not prepare the state collector");
+            return;
+        }
+    };
+
+    match collector.gather() {
+        Ok(state) => tracing::info!(
+            uptime_days = state.uptime_s / 86_400,
+            // Logged as a word, not a bool: "unknown" and "no" are different
+            // answers and flattening them here is exactly the mistake the
+            // tri-state exists to prevent.
+            reboot_required = ?state.reboot_required,
+            services_needing_restart = state.services_needing_restart.len(),
+            load1 = state.metrics.load1,
+            mem_used_pct = state.metrics.mem_used_pct,
+            "state"
+        ),
+        Err(error) => tracing::error!(%error, "could not read this host's state"),
+    }
 }
 
 /// Renew the client certificate if it is inside its renewal window.
