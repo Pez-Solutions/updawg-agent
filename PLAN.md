@@ -1,9 +1,9 @@
-# updog-agent
+# updawg-agent
 
-> *What's Updog? Not much. Your servers are up to date.*
+> *What's Updawg? Not much. Your servers are up to date.*
 
-The Updog agent: the `updogd` daemon and `updogctl` CLI that run on customer
-Linux hosts, plus the shared `updog-protocol` wire-types crate.
+The Updawg agent: the `updawgd` daemon and `updawgctl` CLI that run on customer
+Linux hosts, plus the shared `updawg-protocol` wire-types crate.
 
 **Language:** Rust · **Intended licence:** Apache-2.0 · **Currently:** private
 
@@ -17,8 +17,8 @@ Linux hosts, plus the shared `updog-protocol` wire-types crate.
 
 ## 1. Why this repo exists
 
-Updog is "Renovate for your servers": an agent on each Linux host reports its
-packages, pending updates and release status; the Updog service turns that into
+Updawg is "Renovate for your servers": an agent on each Linux host reports its
+packages, pending updates and release status; the Updawg service turns that into
 reviewable update proposals, applies them under policy with staged rollouts, and
 warns teams long before a distro release reaches EOL.
 
@@ -30,58 +30,58 @@ non-negotiable design rules:
    inbound ports, no SSH, no callback listener. It must work behind NAT and
    strict egress firewalls.
 2. **Closed set of actions.** There is no "run this script" job. Every job is one
-   of a fixed enum of typed operations. Full compromise of the Updog control
+   of a fixed enum of typed operations. Full compromise of the Updawg control
    plane must not translate into arbitrary command execution on customer hosts.
 3. **Local config always wins.** The server may *narrow* what the agent is
-   allowed to do; it can never *widen* it beyond `/etc/updog/agent.toml`.
+   allowed to do; it can never *widen* it beyond `/etc/updawg/agent.toml`.
 
 ## 2. How it fits with the other repos
 
 ```
-                      updog-protocol crate (lives HERE, published to crates.io)
+                      updawg-protocol crate (lives HERE, published to crates.io)
                                 │
                  ┌──────────────┴──────────────┐
                  ▼                             ▼
-          updog-agent  ── mTLS long-poll ─►  updog-server (services/gateway)
-        (customer host)                       (Updog cloud)
+          updawg-agent  ── mTLS long-poll ─►  updawg-server (services/gateway)
+        (customer host)                       (Updawg cloud)
 
-  updog-infra   → builds/hosts pkg.updog.io + get.updog.io that ship this agent
-  updog-docs    → install guides + agent config reference documenting this repo
-  updog-portal  → renders the install one-liner and the state this agent reports
+  updawg-infra   → builds/hosts pkg.updawg.net + get.updawg.net that ship this agent
+  updawg-docs    → install guides + agent config reference documenting this repo
+  updawg-portal  → renders the install one-liner and the state this agent reports
 ```
 
 | Repo | Relationship |
 |---|---|
-| `updog-server` | **The contract partner.** The gateway (`services/gateway`) is the only thing this agent talks to. Both sides depend on the `updog-protocol` crate defined here — this repo owns the Agent API wire format. |
-| `updog-infra` | Owns `pkg.updog.io` (signed apt/yum repos) and `get.updog.io`. This repo *produces* the `.deb`/`.rpm` and `install.sh`; infra *publishes* them. |
-| `updog-docs` | Per-distro install guides, the `agent.toml` reference and the security whitepaper describe this repo's behaviour. Changing a config key or a job kind is a docs PR too. |
-| `updog-portal` | Shows the install command and every fact this agent collects. New collected fields need a portal story before they are worth collecting. |
+| `updawg-server` | **The contract partner.** The gateway (`services/gateway`) is the only thing this agent talks to. Both sides depend on the `updawg-protocol` crate defined here — this repo owns the Agent API wire format. |
+| `updawg-infra` | Owns `pkg.updawg.net` (signed apt/yum repos) and `get.updawg.net`. This repo *produces* the `.deb`/`.rpm` and `install.sh`; infra *publishes* them. |
+| `updawg-docs` | Per-distro install guides, the `agent.toml` reference and the security whitepaper describe this repo's behaviour. Changing a config key or a job kind is a docs PR too. |
+| `updawg-portal` | Shows the install command and every fact this agent collects. New collected fields need a portal story before they are worth collecting. |
 
-**Contract rule:** `updog-protocol` is the single source of truth for the Agent
+**Contract rule:** `updawg-protocol` is the single source of truth for the Agent
 API. Server-side changes to agent-facing types happen *here first*, are released
-to crates.io, and `updog-server` bumps the dependency. Never redefine an agent
-wire type inside `updog-server`.
+to crates.io, and `updawg-server` bumps the dependency. Never redefine an agent
+wire type inside `updawg-server`.
 
 ## 3. Repository layout
 
 ```
-updog-agent/
+updawg-agent/
 ├── Cargo.toml                 # workspace
 ├── crates/
-│   ├── updog-protocol/        # wire types, published to crates.io (shared with server)
-│   ├── updog-crypto/          # signature verification, key pinning, CSR generation
-│   ├── updog-collectors/      # os-release, kernel, reboot, services, repos
-│   ├── updog-backends/        # apt, dnf (later zypper, apk, pacman)
-│   ├── updog-snapshots/       # snapper, zfs, lvm
-│   ├── updog-executor/        # job handlers, health checks
-│   └── updog-agent-core/      # scheduler, transport, local state
+│   ├── updawg-protocol/        # wire types, published to crates.io (shared with server)
+│   ├── updawg-crypto/          # signature verification, key pinning, CSR generation
+│   ├── updawg-collectors/      # os-release, kernel, reboot, services, repos
+│   ├── updawg-backends/        # apt, dnf (later zypper, apk, pacman)
+│   ├── updawg-snapshots/       # snapper, zfs, lvm
+│   ├── updawg-executor/        # job handlers, health checks
+│   └── updawg-agent-core/      # scheduler, transport, local state
 ├── bin/
-│   ├── updogd/                # daemon
-│   └── updogctl/              # CLI
+│   ├── updawgd/                # daemon
+│   └── updawgctl/              # CLI
 ├── packaging/
-│   ├── systemd/updogd.service
+│   ├── systemd/updawgd.service
 │   ├── nfpm.yaml              # builds .deb and .rpm
-│   └── install.sh             # served at get.updog.io
+│   └── install.sh             # served at get.updawg.net
 └── tests/
     └── distros/               # container and VM integration tests per distro
 ```
@@ -96,9 +96,9 @@ Scheduler (tokio)
  ├─► Check-in loop ──► Job runner ──► signature + permission check ──► Executors ──► Health checks
  ├─► Inventory collector ──► Collectors ──► PackageBackend (apt, dnf)
  │                                      └─► System facts (os-release, kernel, reboot, services, repos)
- └─► Transport (reqwest + rustls mTLS) ──► Updog Gateway
+ └─► Transport (reqwest + rustls mTLS) ──► Updawg Gateway
        Executors ──► Snapshot providers (snapper, zfs, lvm)
-       Job runner ──► local state (/var/lib/updog)
+       Job runner ──► local state (/var/lib/updawg)
 ```
 
 Distro support is a trait, not a fork:
@@ -144,13 +144,13 @@ advisory data — the agent reports what it sees, the server decides what it mea
 | Health | uptime, load, memory, root disk free space | Every check-in |
 
 **Never collected:** file contents, environment variables, process arguments,
-user data, credentials. `updogctl --print-inventory` must show byte-for-byte what
+user data, credentials. `updawgctl --print-inventory` must show byte-for-byte what
 would be sent — treat that flag as a contract with the customer, and test it.
 
-## 6. Configuration (`/etc/updog/agent.toml`)
+## 6. Configuration (`/etc/updawg/agent.toml`)
 
 ```toml
-server = "https://agents.updog.io"
+server = "https://agents.updawg.net"
 
 # "observe": report only, never change anything.
 # "managed": execute signed jobs permitted below.
@@ -216,9 +216,9 @@ Execution flow:
 **Only one mutating job at a time.** Respect package manager locks and wait (with
 a timeout) for `unattended-upgrades` and friends to finish.
 
-## 8. Agent API surface (served by `updog-server`'s gateway)
+## 8. Agent API surface (served by `updawg-server`'s gateway)
 
-`https://agents.updog.io/agent/v1`
+`https://agents.updawg.net/agent/v1`
 
 | Method and path | Purpose |
 |---|---|
@@ -235,15 +235,15 @@ a timeout) for `unattended-upgrades` and friends to finish.
 ## 9. Installation
 
 ```bash
-curl -fsSL https://get.updog.io | sudo UPDOG_TOKEN=enr_7Kq... sh
+curl -fsSL https://get.updawg.net | sudo UPDAWG_TOKEN=enr_7Kq... sh
 ```
 
-`install.sh` detects the distro, adds the signed `pkg.updog.io` repository,
-installs the `updog-agent` package, writes the token to `/etc/updog/enroll.token`
+`install.sh` detects the distro, adds the signed `pkg.updawg.net` repository,
+installs the `updawg-agent` package, writes the token to `/etc/updawg/enroll.token`
 and starts the systemd unit. It must stay **short and readable** — people will
 audit it before piping it to a root shell. Alternative paths that must keep
 working: manual repo add, Ansible/Puppet/Chef, cloud-init, golden image +
-`updogctl enroll --token ...` later.
+`updawgctl enroll --token ...` later.
 
 The systemd unit runs as root (package installation requires it) with hardening
 that does not break package management: `ProtectHome=read-only`,
@@ -272,14 +272,14 @@ Amazon Linux 2023. SUSE, Alpine and Arch follow behind the same collector trait.
   this is the expensive matrix that justifies the trait design.
 - Tagged releases cross-compile static musl binaries for `x86_64` and `aarch64`,
   build `.deb` and `.rpm` via `nfpm`, sign them, and hand artifacts to
-  `updog-infra` for publication to `pkg.updog.io`.
-- A `updog-protocol` publish job to crates.io on version bump.
+  `updawg-infra` for publication to `pkg.updawg.net`.
+- A `updawg-protocol` publish job to crates.io on version bump.
 
 ## 13. Build order
 
 | Phase | Work |
 |---|---|
-| **0 — Visibility** (wk 1-6) | `updog-protocol`, crypto/enrollment, check-in loop, apt + dnf collectors, inventory upload, **observe mode only**. Packaging + install script. No executors. |
+| **0 — Visibility** (wk 1-6) | `updawg-protocol`, crypto/enrollment, check-in loop, apt + dnf collectors, inventory upload, **observe mode only**. Packaging + install script. No executors. |
 | **1 — Proposals** (wk 7-12) | Job runner, signature + permission verification, `apply_updates` and `reboot` executors, log streaming, health checks. |
 | **2 — Safe automation** (wk 13-20) | Snapshot providers (snapper, zfs, lvm), `rollback`, `self_update`, richer preflight. |
 | **3 — Lifecycle** (wk 21+) | `dist_upgrade` per distro family, third-party repo readiness probing, then zypper/apk/pacman backends. |
