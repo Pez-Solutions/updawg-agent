@@ -1,0 +1,14 @@
+# Example agent configuration. The installed copy lives at /etc/updawg/agent.toml.
+server = "https://agents.updawg.net"
+
+# "observe": report only, never change anything.
+# "managed": execute signed jobs permitted below.
+mode = "managed"
+
+[permissions]
+allow = ["refresh", "apply_security", "apply_patch", "apply_kernel", "reboot", "snapshot"]
+deny  = ["dist_upgrade"]
+
+[schedule]
+inventory_interval = "6h"
+refresh_metadata   = "1h"

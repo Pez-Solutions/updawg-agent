@@ -1,0 +1,69 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/updawg-protocol",
+    "crates/updawg-crypto",
+    "crates/updawg-collectors",
+    "crates/updawg-backends",
+    "crates/updawg-snapshots",
+    "crates/updawg-executor",
+    "crates/updawg-agent-core",
+    "bin/updawgd",
+    "bin/updawgctl",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/Pez-Solutions/updawg-agent"
+authors = ["Updawg"]
+
+[workspace.dependencies]
+# Internal crates. updawg-protocol is the one we publish; everything else is
+# internal to the agent.
+updawg-protocol = { path = "crates/updawg-protocol", version = "0.1.0" }
+updawg-crypto = { path = "crates/updawg-crypto" }
+updawg-collectors = { path = "crates/updawg-collectors" }
+updawg-backends = { path = "crates/updawg-backends" }
+updawg-snapshots = { path = "crates/updawg-snapshots" }
+updawg-executor = { path = "crates/updawg-executor" }
+updawg-agent-core = { path = "crates/updawg-agent-core" }
+
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "fs", "signal", "sync"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Lints applied to every crate in the workspace. The agent runs as root on other
+# people's servers, so the bar for an unhandled panic or a silent truncation is
+# higher than usual.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"

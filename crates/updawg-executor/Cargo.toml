@@ -1,0 +1,20 @@
+[package]
+name = "updawg-executor"
+description = "Job executors and health checks for the Updawg agent."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+updawg-protocol.workspace = true
+updawg-backends.workspace = true
+updawg-snapshots.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

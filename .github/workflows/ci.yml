@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Formatting first: it is the fastest signal and the least interesting
+      # thing to argue about in review.
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
+
+      # The agent is statically linked against musl so one build per
+      # architecture runs on every supported distro. Checking it here stops a
+      # dependency that needs glibc from landing unnoticed.
+      - name: check musl target builds
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          cargo check --workspace --target x86_64-unknown-linux-musl
+
+  # DAWG-22 extends this with cargo audit and cargo deny as a shared workflow
+  # used by both Rust repositories.

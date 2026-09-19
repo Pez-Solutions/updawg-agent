@@ -1,0 +1,6 @@
+# unwrap and expect are forbidden in the agent itself — it runs as root on other
+# people's servers and a panic there is an outage. In tests they are the clearest
+# way to assert, so they are allowed only there.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
