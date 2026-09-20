@@ -33,8 +33,68 @@ struct Cli {
     #[arg(long, default_value = STATE_DIR, env = "UPDAWG_STATE_DIR")]
     state_dir: String,
 
+    #[command(flatten)]
+    extra_root: extra_root::ExtraRoot,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// The `--insecure-extra-root` flag, which exists only in a build that asked
+/// for it.
+///
+/// Two definitions of one struct, chosen by feature. The disabled one has no
+/// fields, so clap has never heard of the flag and `--insecure-extra-root
+/// ca.pem` comes back as "unexpected argument". That is what DAWG-206 asked
+/// for: not a flag that refuses, a flag that is not there.
+///
+/// Flattening it means the rest of this binary calls `load()` once and carries
+/// no `#[cfg]` anywhere.
+mod extra_root {
+    #[cfg(feature = "insecure-extra-root")]
+    #[derive(Debug, clap::Args)]
+    pub(super) struct ExtraRoot {
+        /// PEM certificate authority to trust in addition to the system store.
+        ///
+        /// For running against a gateway you started yourself. Deliberately
+        /// accepts no environment variable: every other option here does, and
+        /// this is the one that should not be settable by something inherited.
+        #[arg(long = "insecure-extra-root", value_name = "PEM")]
+        path: Option<std::path::PathBuf>,
+    }
+
+    #[cfg(not(feature = "insecure-extra-root"))]
+    #[derive(Debug, clap::Args)]
+    pub(super) struct ExtraRoot {}
+
+    impl ExtraRoot {
+        /// The PEM to trust, if this build can be told to trust one and was.
+        ///
+        /// Returns `Ok(None)` in a release build without looking at anything,
+        /// because there is nothing to look at.
+        #[cfg(feature = "insecure-extra-root")]
+        pub(super) fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
+            use anyhow::Context as _;
+            let Some(path) = &self.path else {
+                return Ok(None);
+            };
+            let pem = updawg_agent_core::insecure::load_root(path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            eprintln!("{}", updawg_agent_core::insecure::WARNING);
+            eprintln!("!! Trusting: {}", path.display());
+            Ok(Some(pem))
+        }
+
+        #[cfg(not(feature = "insecure-extra-root"))]
+        #[expect(
+            clippy::unnecessary_wraps,
+            clippy::unused_self,
+            reason = "same signature as the build that can be told to trust one"
+        )]
+        pub(super) fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -94,6 +154,7 @@ async fn main() -> Result<()> {
                     force,
                     accept_new_org_key,
                 },
+                cli.extra_root.load()?,
             )
             .await?;
         }
@@ -110,12 +171,13 @@ async fn enroll(
     state: &LocalState,
     token: &str,
     options: EnrollOptions,
+    extra_root: Option<Vec<u8>>,
 ) -> Result<()> {
     let config = AgentConfig::load(config_path)
         .with_context(|| format!("reading {config_path} for the server address"))?;
     state.ensure().context("preparing the state directory")?;
 
-    let exchange = HttpsEnrollExchange::new(&config.server)?;
+    let exchange = HttpsEnrollExchange::with_extra_root(&config.server, extra_root)?;
     let enroller = Enroller::new(state, &exchange);
 
     match enroller.enroll(token, options).await? {

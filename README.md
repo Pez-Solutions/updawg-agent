@@ -104,6 +104,59 @@ they know about the rotation.
 What got pinned is printed by `enroll` and by `updawgctl status`, so it can be
 compared against the portal. Pinning nobody can check is pinning nobody trusts.
 
+## Running against a gateway you control
+
+The agent verifies the gateway against the platform trust store, which is the
+right default and means it cannot talk to a gateway with a certificate the
+platform has never heard of — including one you started yourself. That is what
+the `insecure-extra-root` feature is for, and **a release build does not have
+it**: with the feature off clap has never heard of `--insecure-extra-root`, so
+the binary people install answers `unexpected argument` rather than warning and
+complying.
+
+```sh
+cargo build --bin updawgd --bin updawgctl \
+  --features updawgd/insecure-extra-root,updawgctl/insecure-extra-root
+
+updawgctl --insecure-extra-root ./local-ca.crt enroll --token enr_...
+updawgd   --insecure-extra-root ./local-ca.crt
+```
+
+Every use prints what it gives away, in full, with no way to suppress it: anyone
+holding that CA's key can impersonate the gateway to this host and read what it
+reports. They still cannot make it install anything, because jobs are signed by
+the organization key pinned at enrollment, which is not this CA. It takes no
+environment variable on purpose — every other option here does, and this is the
+one that should not arrive from a parent process.
+
+**The gateway's certificate needs its own CA.** A single self-signed
+`openssl req -x509` certificate has `CA:TRUE`, and rustls refuses a CA
+certificate presented as an end-entity — `invalid peer certificate:
+Other(OtherError(CaUsedAsEndEntity))`. `curl` accepts one, which is how the
+gateway came to be verified end to end without this ever being noticed. Sign a
+leaf with `CA:FALSE` from a local root and trust the root:
+
+```sh
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+  -pkeyopt ec_param_enc:named_curve -nodes -keyout local-ca.key -out local-ca.crt \
+  -days 1 -subj "/CN=local dev CA" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+  -pkeyopt ec_param_enc:named_curve -nodes -keyout server.key -out server.csr \
+  -subj "/CN=localhost"
+
+printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n' > server.ext
+
+openssl x509 -req -in server.csr -CA local-ca.crt -CAkey local-ca.key \
+  -CAcreateserial -out server.crt -days 1 -extfile server.ext
+```
+
+`ec_param_enc:named_curve` is not optional either: openssl defaults to explicit
+curve parameters, aws-lc-rs will not load those, and rustls reports it as
+`KeyMismatch` — which sends you looking for a mismatched pair.
+
 ## Transport and certificate renewal
 
 Every request after enrollment presents the client certificate. They last thirty

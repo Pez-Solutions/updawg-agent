@@ -7,6 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# Lets a binary be told to trust a certificate authority the platform does not
+# (DAWG-206), for running against a gateway you started yourself. Off by
+# default, and a release build does not turn it on: the point is that the
+# binary people install has no way to accept the flag. See `src/insecure.rs`.
+insecure-extra-root = []
+
 [dependencies]
 updawg-protocol.workspace = true
 updawg-backends.workspace = true

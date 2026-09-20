@@ -34,6 +34,30 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+      # `insecure-extra-root` is off by default and a release does not set it,
+      # so nothing above compiles a line of it. A feature-gated module whose
+      # tests never run in CI is a module that is already broken and does not
+      # know it yet.
+      - name: the insecure-extra-root feature builds, lints and passes its tests
+        run: |
+          cargo clippy --workspace --all-targets \
+            --features updawgd/insecure-extra-root,updawgctl/insecure-extra-root -- -D warnings
+          cargo test --workspace \
+            --features updawgd/insecure-extra-root,updawgctl/insecure-extra-root
+
+      # And the property the feature exists for: with it off, the flag is not
+      # something the binary refuses, it is something the binary has never
+      # heard of. This is the check, because it is the whole argument.
+      - name: a default build has never heard of --insecure-extra-root
+        run: |
+          cargo build --bin updawgctl
+          out=$(./target/debug/updawgctl --insecure-extra-root /dev/null status 2>&1 || true)
+          echo "$out"
+          case "$out" in
+            *"unexpected argument"*) echo "ok: the flag does not exist here" ;;
+            *) echo "FAIL: a default build accepted --insecure-extra-root"; exit 1 ;;
+          esac
+
       # The agent is statically linked against musl so one build per
       # architecture runs on every supported distro. Checking it here stops a
       # dependency that needs glibc from landing unnoticed.

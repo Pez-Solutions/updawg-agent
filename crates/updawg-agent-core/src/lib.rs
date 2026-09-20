@@ -8,6 +8,8 @@ pub mod checkin;
 pub mod config;
 pub mod duration;
 pub mod enroll;
+#[cfg(feature = "insecure-extra-root")]
+pub mod insecure;
 pub mod inventory;
 pub mod logging;
 pub mod scheduler;

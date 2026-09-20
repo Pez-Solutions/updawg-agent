@@ -11,6 +11,13 @@ publish = false
 name = "updawgd"
 path = "src/main.rs"
 
+[features]
+# Lets this binary be told to trust a certificate authority the platform does
+# not, for running against a gateway you started yourself (DAWG-206). Off by
+# default: with it off clap has never heard of `--insecure-extra-root`, so the
+# binary people install cannot be talked into it. Release builds do not set it.
+insecure-extra-root = ["updawg-agent-core/insecure-extra-root"]
+
 [dependencies]
 updawg-agent-core.workspace = true
 updawg-backends.workspace = true

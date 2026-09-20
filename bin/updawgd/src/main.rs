@@ -53,6 +53,68 @@ struct Cli {
     /// Parse the configuration, report what it permits, and exit.
     #[arg(long)]
     check_config: bool,
+
+    #[command(flatten)]
+    extra_root: extra_root::ExtraRoot,
+}
+
+/// The `--insecure-extra-root` flag, which exists only in a build that asked
+/// for it.
+///
+/// Two definitions of one struct, chosen by feature. The disabled one has no
+/// fields, so clap has never heard of the flag and `--insecure-extra-root
+/// ca.pem` comes back as "unexpected argument". That is what DAWG-206 asked
+/// for: not a flag that refuses, a flag that is not there.
+///
+/// Flattening it means the rest of this binary calls `load()` once and carries
+/// no `#[cfg]` anywhere.
+mod extra_root {
+    #[cfg(feature = "insecure-extra-root")]
+    #[derive(Debug, clap::Args)]
+    pub(super) struct ExtraRoot {
+        /// PEM certificate authority to trust in addition to the system store.
+        ///
+        /// For running against a gateway you started yourself. Deliberately
+        /// accepts no environment variable: every other option here does, and
+        /// this is the one that should not be settable by something inherited.
+        #[arg(long = "insecure-extra-root", value_name = "PEM")]
+        path: Option<std::path::PathBuf>,
+    }
+
+    #[cfg(not(feature = "insecure-extra-root"))]
+    #[derive(Debug, clap::Args)]
+    pub(super) struct ExtraRoot {}
+
+    impl ExtraRoot {
+        /// The PEM to trust, if this build can be told to trust one and was.
+        ///
+        /// Returns `Ok(None)` in a release build without looking at anything,
+        /// because there is nothing to look at.
+        #[cfg(feature = "insecure-extra-root")]
+        pub(super) fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
+            use anyhow::Context as _;
+            let Some(path) = &self.path else {
+                return Ok(None);
+            };
+            let pem = updawg_agent_core::insecure::load_root(path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            tracing::warn!(root = %path.display(), "trusting an extra certificate authority");
+            for line in updawg_agent_core::insecure::WARNING.lines() {
+                tracing::warn!("{line}");
+            }
+            Ok(Some(pem))
+        }
+
+        #[cfg(not(feature = "insecure-extra-root"))]
+        #[expect(
+            clippy::unnecessary_wraps,
+            clippy::unused_self,
+            reason = "same signature as the build that can be told to trust one"
+        )]
+        pub(super) fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+    }
 }
 
 #[tokio::main]
@@ -65,6 +127,10 @@ async fn main() -> Result<()> {
         journald = logging::under_journald(),
         "updawgd starting"
     );
+
+    // Loaded before anything talks to the gateway, so the warning is in the
+    // log above the first request rather than somewhere in the middle of it.
+    let extra_root = cli.extra_root.load()?;
 
     let config = AgentConfig::load(&cli.config).context("loading configuration")?;
 
@@ -122,7 +188,7 @@ async fn main() -> Result<()> {
     // check-in loop in DAWG-32; it belongs there because that loop is what
     // already knows whether the gateway is reachable.
     if state.is_enrolled() {
-        renew_certificate(&config, &state).await;
+        renew_certificate(&config, &state, extra_root.as_deref()).await;
     }
 
     let placeholder = Arc::new(NotWiredUp);
@@ -130,15 +196,17 @@ async fn main() -> Result<()> {
     // what it needs is more useful than one that exits: the operator may be
     // about to run `updawgctl enroll`, and a dead unit is harder to notice
     // than a running one complaining.
-    let checkin: Arc<dyn CheckIn> = build_checkin(&config, &state).unwrap_or_else(|| {
-        tracing::warn!("not checking in: this host has no usable identity");
-        placeholder.clone()
-    });
+    let checkin: Arc<dyn CheckIn> = build_checkin(&config, &state, extra_root.as_deref())
+        .unwrap_or_else(|| {
+            tracing::warn!("not checking in: this host has no usable identity");
+            placeholder.clone()
+        });
 
-    let inventory: Arc<dyn Inventory> = build_inventory(&config, &state).unwrap_or_else(|| {
-        tracing::warn!("not collecting inventory: this host has no usable identity or backend");
-        placeholder.clone()
-    });
+    let inventory: Arc<dyn Inventory> = build_inventory(&config, &state, extra_root.as_deref())
+        .unwrap_or_else(|| {
+            tracing::warn!("not collecting inventory: this host has no usable identity or backend");
+            placeholder.clone()
+        });
 
     let scheduler = Scheduler::new(config, checkin, inventory);
 
@@ -146,6 +214,23 @@ async fn main() -> Result<()> {
 
     tracing::info!("stopped");
     Ok(())
+}
+
+/// The one place a transport is built, so an extra root cannot reach two of the
+/// three callers and miss the third.
+///
+/// It was three copies of `MtlsTransport::new` before DAWG-206, which is fine
+/// until they need to agree about something.
+fn transport(
+    config: &AgentConfig,
+    state: &LocalState,
+    extra_root: Option<&[u8]>,
+) -> Result<MtlsTransport, updawg_agent_core::transport::TransportError> {
+    MtlsTransport::with_extra_root(
+        &config.server,
+        state.clone(),
+        extra_root.map(<[u8]>::to_vec),
+    )
 }
 
 /// Say who this host is and what it will verify jobs against.
@@ -179,11 +264,15 @@ fn report_identity(state: &LocalState) -> Result<()> {
 }
 
 /// Build the real check-in loop, if this host can talk to the gateway at all.
-fn build_checkin(config: &AgentConfig, state: &LocalState) -> Option<Arc<dyn CheckIn>> {
+fn build_checkin(
+    config: &AgentConfig,
+    state: &LocalState,
+    extra_root: Option<&[u8]>,
+) -> Option<Arc<dyn CheckIn>> {
     if !state.is_enrolled() {
         return None;
     }
-    let transport = match MtlsTransport::new(&config.server, state.clone()) {
+    let transport = match transport(config, state, extra_root) {
         Ok(t) => Arc::new(t),
         Err(error) => {
             tracing::error!(%error, "cannot build the gateway transport");
@@ -216,11 +305,15 @@ fn build_checkin(config: &AgentConfig, state: &LocalState) -> Option<Arc<dyn Che
 /// reports its release — and it should say so rather than uploading an empty
 /// package list, which the server would take as "this host has nothing
 /// installed".
-fn build_inventory(config: &AgentConfig, state: &LocalState) -> Option<Arc<dyn Inventory>> {
+fn build_inventory(
+    config: &AgentConfig,
+    state: &LocalState,
+    extra_root: Option<&[u8]>,
+) -> Option<Arc<dyn Inventory>> {
     if !state.is_enrolled() {
         return None;
     }
-    let transport = match MtlsTransport::new(&config.server, state.clone()) {
+    let transport = match transport(config, state, extra_root) {
         Ok(t) => Arc::new(t),
         Err(error) => {
             tracing::error!(%error, "cannot build the gateway transport for inventory");
@@ -293,8 +386,8 @@ fn report_host(root: &Root) {
 /// Never fatal. A daemon that refuses to start because it could not reach the
 /// gateway is a daemon that cannot report anything at all, including the fact
 /// that it could not reach the gateway.
-async fn renew_certificate(config: &AgentConfig, state: &LocalState) {
-    let transport = match MtlsTransport::new(&config.server, state.clone()) {
+async fn renew_certificate(config: &AgentConfig, state: &LocalState, extra_root: Option<&[u8]>) {
+    let transport = match transport(config, state, extra_root) {
         Ok(t) => t,
         Err(error) => {
             tracing::error!(%error, "cannot use the stored identity");

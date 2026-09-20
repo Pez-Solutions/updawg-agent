@@ -339,6 +339,22 @@ impl HttpsEnrollExchange {
     /// [`EnrollError::NotHttps`] if the configured server is not an https URL,
     /// and [`EnrollError::Unreachable`] if the HTTP client cannot be built.
     pub fn new(server: &str) -> Result<Self> {
+        Self::with_extra_root(server, None)
+    }
+
+    /// As [`Self::new`], additionally trusting a PEM CA for the server side.
+    ///
+    /// The counterpart of [`crate::transport::MtlsTransport::with_extra_root`],
+    /// and it exists for the same reason: enrollment is the *first* request an
+    /// agent makes, so a transport that can be pointed at a gateway you control
+    /// is no use if the exchange that comes before it cannot.
+    ///
+    /// It adds to the platform trust store rather than replacing it.
+    ///
+    /// # Errors
+    /// As [`Self::new`], plus [`EnrollError::Unreachable`] if the PEM does not
+    /// parse.
+    pub fn with_extra_root(server: &str, extra_root: Option<Vec<u8>>) -> Result<Self> {
         let server = server.trim_end_matches('/');
         if !server.starts_with("https://") {
             return Err(EnrollError::NotHttps {
@@ -346,14 +362,23 @@ impl HttpsEnrollExchange {
             });
         }
 
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(ENROLL_TIMEOUT)
-            .user_agent(format!("updawg-agent/{}", crate::VERSION))
-            .build()
-            .map_err(|e| EnrollError::Unreachable {
-                url: server.to_string(),
-                detail: e.to_string(),
-            })?;
+            .user_agent(format!("updawg-agent/{}", crate::VERSION));
+
+        if let Some(pem) = extra_root {
+            let root =
+                reqwest::Certificate::from_pem(&pem).map_err(|e| EnrollError::Unreachable {
+                    url: server.to_string(),
+                    detail: format!("the extra root certificate did not parse: {e}"),
+                })?;
+            builder = builder.add_root_certificate(root);
+        }
+
+        let client = builder.build().map_err(|e| EnrollError::Unreachable {
+            url: server.to_string(),
+            detail: e.to_string(),
+        })?;
 
         Ok(Self {
             url: format!("{server}{API_PATH}/enroll"),
