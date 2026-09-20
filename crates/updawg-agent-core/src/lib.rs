@@ -8,6 +8,7 @@ pub mod checkin;
 pub mod config;
 pub mod duration;
 pub mod enroll;
+pub mod inventory;
 pub mod logging;
 pub mod scheduler;
 pub mod state;

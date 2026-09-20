@@ -9,13 +9,15 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::time::SystemTime;
+use std::{fmt::Write as _, sync::Arc, time::SystemTime};
 use updawg_agent_core::{
     CONFIG_PATH, STATE_DIR, VERSION,
     config::AgentConfig,
     enroll::{EnrollOptions, Enrolled, Enroller, HttpsEnrollExchange, KEY_FILE},
+    inventory::Collected,
     state::LocalState,
 };
+use updawg_collectors::{FactCollector, PlatformFacts, Root};
 use updawg_crypto::{ClientCertificate, PinnedKeys};
 
 #[derive(Debug, Parser)]
@@ -96,16 +98,7 @@ async fn main() -> Result<()> {
             .await?;
         }
         Command::Status => status(&cli, &state)?,
-        Command::PrintInventory { json } => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "error": "not implemented yet (DAWG-36)" })
-                );
-            } else {
-                println!("print-inventory: not implemented yet (DAWG-36)");
-            }
-        }
+        Command::PrintInventory { json } => print_inventory(&cli.config, json).await?,
         Command::Jobs => println!("jobs: not implemented yet (DAWG-29)"),
         Command::Sign { .. } => println!("sign: not implemented yet (DAWG-148)"),
     }
@@ -196,4 +189,178 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
 
     println!("status:    check-in state not implemented yet (DAWG-32)");
     Ok(())
+}
+
+/// Print exactly what an inventory upload would send, and send nothing.
+///
+/// **The point is that this is the same value.** It builds the very
+/// `InventoryUpload` the agent would PUT and prints that, rather than describing
+/// it — an answer to "what does Updawg collect about my servers?" is only worth
+/// something if it cannot drift from what is actually collected.
+///
+/// It deliberately shows the **full** inventory rather than the delta that would
+/// really go out, because the question is what Updawg knows, not what changed
+/// since Tuesday.
+async fn print_inventory(config_path: &str, json: bool) -> Result<()> {
+    let backend = updawg_backends::detect().context("finding a package manager on this host")?;
+    let facts = Arc::new(PlatformFacts::new(Root::default()));
+
+    // Collection only — no transport, so this works on a host that has never
+    // enrolled. Someone evaluating Updawg should be able to see what it would
+    // collect before letting it talk to anything.
+    let collected = Collected {
+        facts: facts.facts().await.context("gathering platform facts")?,
+        packages: backend
+            .installed()
+            .await
+            .context("listing installed packages")?,
+        updates: backend
+            .available_updates()
+            .await
+            .context("listing available updates")?,
+        repositories: backend
+            .repositories()
+            .await
+            .context("listing repositories")?,
+        held: backend
+            .held_packages()
+            .await
+            .context("listing held packages")?,
+    };
+    let upload = collected.upload(None);
+
+    if json {
+        return emit(&format!("{}\n", serde_json::to_string_pretty(&upload)?));
+    }
+
+    let mut out = String::new();
+    let server = AgentConfig::load(config_path)
+        .map_or_else(|_| "<no configuration>".to_string(), |c| c.server);
+    let _ = writeln!(
+        out,
+        "host      {} (uploads to {server})",
+        upload.facts.as_ref().map_or("?", |f| f.hostname.as_str())
+    );
+    if let Some(f) = &upload.facts {
+        let _ = writeln!(
+            out,
+            "release   {} {} ({})",
+            f.distro, f.version_id, f.kernel
+        );
+        let _ = writeln!(out, "arch      {}", f.arch);
+    }
+    let _ = writeln!(out, "hash      {}", upload.hash);
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{}",
+        plural(upload.packages.added.len(), "package", "installed")
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        plural(upload.updates.len(), "update", "available")
+    );
+    let (_, security) = collected.counts();
+    let _ = writeln!(
+        out,
+        "  {security} of them come from a security pocket, as this host's package manager sees it"
+    );
+    let _ = writeln!(
+        out,
+        "  (what actually counts as a security update is decided server-side, against advisory data)"
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        plural(upload.repositories.len(), "repository", "configured")
+    );
+    let third_party = upload.repositories.iter().filter(|r| r.third_party).count();
+    if third_party > 0 {
+        let _ = writeln!(
+            out,
+            "  {third_party} of {} not this distribution's",
+            if third_party == 1 {
+                "them is"
+            } else {
+                "them are"
+            }
+        );
+    }
+    let _ = writeln!(
+        out,
+        "{}",
+        plural(upload.held_packages.len(), "package", "held")
+    );
+    for held in &upload.held_packages {
+        let _ = writeln!(out, "  {held}");
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Nothing else is collected. `--json` prints the exact request body."
+    );
+    emit(&out)
+}
+
+/// `1 package held`, `2 packages held`, `0 packages held`.
+///
+/// English, because this output is for a person. "1 packages held" in a tool
+/// somebody is reading to decide whether to trust it with their servers is a
+/// small thing that reads as carelessness.
+fn plural(n: usize, noun: &str, verb: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun} {verb}")
+    } else if let Some(stem) = noun.strip_suffix('y') {
+        format!("{n} {stem}ies {verb}")
+    } else {
+        format!("{n} {noun}s {verb}")
+    }
+}
+
+/// Write to stdout, and stop quietly if whoever was reading has stopped.
+///
+/// Rust sets `SIGPIPE` to ignore, so `println!` into a closed pipe **panics** —
+/// and `updawgctl print-inventory --json | head` is exactly how somebody will
+/// read this. A backtrace where `head` should simply have ended is alarming
+/// about nothing.
+///
+/// The usual fix is to restore the default `SIGPIPE` disposition, which needs
+/// `unsafe`. This workspace forbids `unsafe`, and that is worth more than the
+/// tidiness — this is the binary a customer audits. So the output is built up
+/// and written once, and a broken pipe ends the process the way the signal would
+/// have.
+fn emit(text: &str) -> Result<()> {
+    use std::io::Write as _;
+    match std::io::stdout().write_all(text.as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plural;
+
+    #[test]
+    fn counts_read_as_english() {
+        // This output exists to be read by somebody deciding whether to trust
+        // Updawg with their servers. "1 packages held" reads as carelessness.
+        assert_eq!(plural(1, "package", "held"), "1 package held");
+        assert_eq!(plural(2, "package", "held"), "2 packages held");
+        assert_eq!(plural(0, "package", "held"), "0 packages held");
+    }
+
+    #[test]
+    fn a_noun_ending_in_y_pluralises_properly() {
+        assert_eq!(
+            plural(1, "repository", "configured"),
+            "1 repository configured"
+        );
+        assert_eq!(
+            plural(3, "repository", "configured"),
+            "3 repositories configured"
+        );
+    }
 }

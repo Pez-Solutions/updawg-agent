@@ -44,6 +44,17 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// certificate's life left, so there is room for many passes before it matters.
 const RENEW_ATTEMPTS: u32 = 3;
 
+/// zstd level 3, its default.
+///
+/// The body is a few hundred kilobytes of repetitive text and the host is
+/// somebody's production server. Higher levels cost noticeably more CPU for a few
+/// percent less over the wire, and the agent's job is to be unnoticeable.
+const COMPRESSION_LEVEL: i32 = 3;
+
+/// Longer than a normal request: this one is a few hundred kilobytes and the
+/// gateway writes several thousand rows before answering.
+const INVENTORY_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TransportError {
@@ -90,6 +101,26 @@ pub enum TransportError {
     Crypto(#[from] updawg_crypto::CryptoError),
     #[error(transparent)]
     State(#[from] crate::state::StateError),
+}
+
+impl TransportError {
+    /// Whether the gateway refused an inventory delta because it does not hold
+    /// the base it was computed against.
+    ///
+    /// Branching on the **code**, never the message: the protocol says so
+    /// explicitly, so the gateway's wording can change without breaking hosts
+    /// running older builds. The status is checked too, because a 409 is the only
+    /// thing that carries this code and reading it from any other status would
+    /// mean trusting a body we have not authenticated as meaning what we think.
+    #[must_use]
+    pub fn is_inventory_base_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::Server { status, detail, .. }
+                if *status == 409
+                    && detail.contains(updawg_protocol::ApiError::INVENTORY_BASE_MISMATCH)
+        )
+    }
 }
 
 pub type Result<T> = std::result::Result<T, TransportError>;
@@ -400,6 +431,63 @@ impl MtlsTransport {
                 url,
                 detail: e.to_string(),
             })
+    }
+
+    /// `PUT /agent/v1/inventory`, zstd-compressed.
+    ///
+    /// A full package list is 800–2,500 entries. Compressing it is not a
+    /// micro-optimisation: across a fleet on a six-hourly cycle it is most of
+    /// what the gateway receives, and the body is highly repetitive text, which
+    /// is the case zstd is best at.
+    ///
+    /// The gateway decompresses by `Content-Encoding` and passes an unlabelled
+    /// body through untouched, so this is safe to send at any point after the
+    /// server side has shipped and needs no negotiation.
+    ///
+    /// Returns `()` — the gateway's answer carries nothing the agent acts on
+    /// except its status, and [`TransportError::is_inventory_base_mismatch`] is
+    /// how the one case that matters is recognised.
+    pub async fn upload_inventory(&self, upload: &updawg_protocol::InventoryUpload) -> Result<()> {
+        let url = self.url("/inventory");
+        let json = serde_json::to_vec(upload).map_err(|e| TransportError::BadResponse {
+            url: url.clone(),
+            detail: format!("could not serialise the inventory: {e}"),
+        })?;
+        let body = zstd::encode_all(json.as_slice(), COMPRESSION_LEVEL).map_err(|e| {
+            TransportError::BadResponse {
+                url: url.clone(),
+                detail: format!("could not compress the inventory: {e}"),
+            }
+        })?;
+
+        let response = self
+            .client()
+            .put(&url)
+            .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
+            .header("content-type", "application/json")
+            .header("content-encoding", "zstd")
+            .timeout(INVENTORY_TIMEOUT)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| self.connection_error(&url, &e))?;
+
+        let status = response.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(self.certificate_rejected());
+        }
+        if !status.is_success() {
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "no response body".into());
+            return Err(TransportError::Server {
+                url,
+                status: status.as_u16(),
+                detail,
+            });
+        }
+        Ok(())
     }
 
     /// Turn a connection failure into something worth reading.

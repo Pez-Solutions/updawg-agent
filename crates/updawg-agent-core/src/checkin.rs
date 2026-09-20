@@ -160,6 +160,15 @@ impl GatewayCheckIn {
         });
         note_unknown_reboot_state(state.reboot_required);
 
+        // Zero before the first inventory, which is honest: nothing has counted
+        // yet. It is not "no updates" — the server knows this host has no
+        // inventory and is asking for one on every check-in until it arrives.
+        let counts = self
+            .state
+            .inventory_snapshot()
+            .unwrap_or_default()
+            .map_or((0, 0), |s| (s.pending_updates, s.security_updates));
+
         CheckinRequest {
             boot_id: state.boot_id,
             uptime_s: state.uptime_s,
@@ -172,13 +181,18 @@ impl GatewayCheckIn {
                 // Unknown is reported as false, because the wire type is a
                 // bool — but it is logged on the way past, so the gap is
                 // visible rather than silently absorbed. Widening the wire
-                // type is a protocol change and belongs with the server work.
+                // type is a protocol change (DAWG-210).
                 reboot_required: state.reboot_required.is_yes(),
                 services_need_restart: state.services_needing_restart,
-                // Filled in by the backends, which is where package questions
-                // live (DAWG-34/35).
-                pending_updates: 0,
-                security_updates: 0,
+                // From the last inventory collection, not from the package
+                // manager. These are package questions and answering them
+                // properly means `apt-get -s dist-upgrade`, which takes seconds
+                // and reads the whole package database — on a request that runs
+                // every fifty-five seconds, for ever. The counts are a heartbeat
+                // signal between inventories, and the inventory is what makes
+                // them true; the authoritative answer was always the server's.
+                pending_updates: counts.0,
+                security_updates: counts.1,
                 package_lock_held: false,
             },
             metrics: state.metrics,

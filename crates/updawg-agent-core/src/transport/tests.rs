@@ -292,3 +292,144 @@ fn durations_are_described_in_units_an_operator_can_act_on() {
     assert_eq!(approximate(Duration::from_secs(7200)), "2 hours");
     assert_eq!(approximate(Duration::from_secs(10 * 86_400)), "10 days");
 }
+
+/* ------------------------------------------------------- inventory upload */
+
+fn inventory_upload() -> updawg_protocol::InventoryUpload {
+    updawg_protocol::InventoryUpload {
+        kind: updawg_protocol::InventoryKind::Full,
+        base_hash: None,
+        hash: "sha256:aaa".into(),
+        collected_at: chrono::Utc::now(),
+        facts: None,
+        packages: updawg_protocol::PackageDelta {
+            // Repetitive on purpose: a real package list is hundreds of similar
+            // lines, which is the case zstd is best at, and a body that did not
+            // actually shrink would make the assertion below meaningless.
+            added: (0..200)
+                .map(|i| updawg_protocol::InstalledPackage {
+                    name: format!("package-{i}"),
+                    version: "1.2.3-0ubuntu4".into(),
+                    arch: "amd64".into(),
+                    repo: Some("noble-updates".into()),
+                })
+                .collect(),
+            removed: vec![],
+        },
+        updates: vec![],
+        repositories: vec![],
+        held_packages: vec![],
+    }
+}
+
+#[tokio::test]
+async fn an_inventory_is_uploaded_compressed_and_arrives_intact() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::new(&ca, THIRTY_DAYS);
+    let gateway = TestGateway::start(&ca, vec![(200, r#"{"accepted":true}"#.into())]).await;
+
+    let upload = inventory_upload();
+    transport(&host, &gateway, &ca)
+        .upload_inventory(&upload)
+        .await
+        .unwrap();
+
+    let seen = gateway.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].method, "PUT",
+        "inventory replaces a state, so it is a PUT"
+    );
+    assert_eq!(seen[0].path, "/agent/v1/inventory");
+    assert_eq!(seen[0].header("content-encoding"), Some("zstd"));
+
+    // The bytes on the wire are genuinely compressed, and genuinely smaller.
+    // Sending the header without compressing, or compressing something that grew,
+    // would both pass a test that only checked the header.
+    let raw = serde_json::to_vec(&upload).unwrap();
+    assert!(
+        seen[0].body_bytes.len() < raw.len() / 2,
+        "the body was {} bytes against {} uncompressed; it was not really compressed",
+        seen[0].body_bytes.len(),
+        raw.len()
+    );
+
+    // And it decompresses back to exactly what was sent — the agent compressing
+    // something the gateway cannot read is the failure this is really for.
+    let decoded = zstd::decode_all(seen[0].body_bytes.as_slice()).expect("the body is zstd");
+    let round_tripped: updawg_protocol::InventoryUpload =
+        serde_json::from_slice(&decoded).expect("the body is the inventory JSON");
+    assert_eq!(round_tripped.hash, upload.hash);
+    assert_eq!(round_tripped.packages.added.len(), 200);
+}
+
+#[tokio::test]
+async fn a_refused_delta_is_recognised_by_its_code() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::new(&ca, THIRTY_DAYS);
+    let gateway = TestGateway::start(
+        &ca,
+        vec![(
+            409,
+            r#"{"code":"inventory_base_mismatch","message":"send a full one"}"#.into(),
+        )],
+    )
+    .await;
+
+    let error = transport(&host, &gateway, &ca)
+        .upload_inventory(&inventory_upload())
+        .await
+        .expect_err("a 409 is an error");
+
+    // The agent answers this one case by sending a full inventory, so it has to
+    // be told apart from every other server error — and told apart by the
+    // *code*, which the protocol makes stable, rather than by the wording.
+    assert!(
+        error.is_inventory_base_mismatch(),
+        "a base mismatch was not recognised: {error}"
+    );
+}
+
+#[tokio::test]
+async fn any_other_server_error_is_not_a_base_mismatch() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::new(&ca, THIRTY_DAYS);
+    // A 409 is the only status that carries the code, and a 500 that happened to
+    // mention it must not send the agent down the re-upload path.
+    let gateway = TestGateway::start(
+        &ca,
+        vec![(
+            500,
+            r#"{"code":"unavailable","message":"inventory_base_mismatch appears here by accident"}"#
+                .into(),
+        )],
+    )
+    .await;
+
+    let error = transport(&host, &gateway, &ca)
+        .upload_inventory(&inventory_upload())
+        .await
+        .expect_err("a 500 is an error");
+    assert!(!error.is_inventory_base_mismatch(), "{error}");
+}
+
+#[tokio::test]
+async fn a_rejected_certificate_is_reported_as_such_on_upload_too() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::new(&ca, THIRTY_DAYS);
+    let gateway =
+        TestGateway::start(&ca, vec![(401, r#"{"code":"certificate_revoked"}"#.into())]).await;
+
+    let error = transport(&host, &gateway, &ca)
+        .upload_inventory(&inventory_upload())
+        .await
+        .expect_err("a 401 is an error");
+
+    // "re-enroll this host", not "the inventory was bad". Every path to the
+    // gateway has to say the same thing about a dead certificate, or an operator
+    // gets a different diagnosis depending on which request happened to run.
+    assert!(
+        matches!(error, TransportError::CertificateRejected { .. }),
+        "{error}"
+    );
+}

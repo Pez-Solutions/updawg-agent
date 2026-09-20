@@ -31,7 +31,7 @@ use std::{
     },
     time::{Duration, SystemTime},
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use updawg_protocol::{CheckinRequest, HostId, HostMetrics, HostStateReport};
 
 pub(crate) static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -196,8 +196,25 @@ impl Drop for EnrolledHost {
 #[derive(Debug, Clone)]
 pub(crate) struct Seen {
     pub(crate) path: String,
+    pub(crate) method: String,
     pub(crate) body: String,
+    /// The body before any lossy conversion.
+    ///
+    /// An inventory upload is zstd, so `body` is meaningless for it — a lossy
+    /// UTF-8 conversion of compressed bytes is not the bytes.
+    pub(crate) body_bytes: Vec<u8>,
+    /// Lowercased header names to values, for the handful a test cares about.
+    pub(crate) headers: Vec<(String, String)>,
     pub(crate) client_subject: Option<String>,
+}
+
+impl Seen {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 /// A TLS server that demands a client certificate and answers canned JSON.
@@ -295,19 +312,14 @@ impl TestGateway {
                                 .map(|(_, c)| c.subject().to_string())
                         });
 
-                    let mut buf = vec![0u8; 16 * 1024];
-                    let n = tls.read(&mut buf).await.unwrap_or(0);
-                    let raw = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let path = raw
-                        .split_whitespace()
-                        .nth(1)
-                        .unwrap_or_default()
-                        .to_string();
-                    let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+                    let (method, path, headers, body_bytes) = read_request(&mut tls).await;
 
                     recorded.lock().unwrap().push(Seen {
                         path,
-                        body,
+                        method,
+                        body: String::from_utf8_lossy(&body_bytes).to_string(),
+                        body_bytes,
+                        headers,
                         client_subject,
                     });
 
@@ -371,4 +383,58 @@ pub(crate) fn checkin_request() -> CheckinRequest {
         },
         running_job_ids: vec![],
     }
+}
+
+/// Read one HTTP/1.1 request: method, path, headers, body.
+///
+/// Reads until the headers are complete, then until `Content-Length` is
+/// satisfied. A single `read` was enough while every body was small JSON; a
+/// compressed inventory arrives in more than one TCP segment, and a harness that
+/// read once would fail or pass depending on how the kernel happened to split it
+/// — which is the kind of test failure nobody can reproduce.
+async fn read_request<S>(tls: &mut S) -> (String, String, Vec<(String, String)>, Vec<u8>)
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let mut raw: Vec<u8> = Vec::new();
+    let mut chunk = vec![0u8; 16 * 1024];
+    let head_end = loop {
+        let n = tls.read(&mut chunk).await.unwrap_or(0);
+        if n == 0 {
+            break raw.windows(4).position(|w| w == b"\r\n\r\n");
+        }
+        raw.extend_from_slice(&chunk[..n]);
+        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break Some(i);
+        }
+    };
+    let head_end = head_end.map_or(raw.len(), |i| i + 4);
+    let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+
+    let mut headers: Vec<(String, String)> = Vec::new();
+    for line in head.lines().skip(1) {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+        }
+    }
+    let content_length: usize = headers
+        .iter()
+        .find(|(k, _)| k == "content-length")
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(0);
+
+    while raw.len() - head_end < content_length {
+        let n = tls.read(&mut chunk).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&chunk[..n]);
+    }
+
+    let mut words = head.split_whitespace();
+    let method = words.next().unwrap_or_default().to_string();
+    let path = words.next().unwrap_or_default().to_string();
+    (method, path, headers, raw[head_end..].to_vec())
 }

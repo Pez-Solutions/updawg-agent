@@ -473,3 +473,47 @@ mod tests {
         assert!(matches!(err, CryptoError::BadSignature), "got {err:?}");
     }
 }
+
+/// SHA-256 of `bytes`, rendered as `sha256:<hex>`.
+///
+/// Through `aws-lc-rs`, which is already the agent's one crypto backend. Pulling
+/// in a `RustCrypto` `sha2` for this would put a second SHA-256 implementation in a
+/// binary whose whole argument is that there is one set of primitives to audit —
+/// and it would be there to hash a list of package names.
+///
+/// The prefix is part of the value, not decoration: it is what lets the algorithm
+/// change later without the server having to guess which one produced a given
+/// hash.
+#[must_use]
+pub fn content_hash(bytes: &[u8]) -> String {
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, bytes);
+    let mut out = String::with_capacity(7 + digest.as_ref().len() * 2);
+    out.push_str("sha256:");
+    for b in digest.as_ref() {
+        use std::fmt::Write as _;
+        // Infallible for a String.
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+#[cfg(test)]
+mod content_hash_tests {
+    use super::content_hash;
+
+    #[test]
+    fn it_is_sha256_and_says_so() {
+        // The empty-input digest, which is the one SHA-256 value worth knowing by
+        // sight: if this changes, the algorithm changed underneath us.
+        assert_eq!(
+            content_hash(b""),
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn different_content_hashes_differently() {
+        assert_ne!(content_hash(b"a"), content_hash(b"b"));
+        assert_eq!(content_hash(b"a"), content_hash(b"a"));
+    }
+}

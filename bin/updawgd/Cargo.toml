@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 updawg-agent-core.workspace = true
+updawg-backends.workspace = true
 updawg-collectors.workspace = true
 updawg-crypto.workspace = true
 updawg-protocol.workspace = true

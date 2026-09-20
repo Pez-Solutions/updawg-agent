@@ -83,6 +83,24 @@ const SEEN_JOBS_CAPACITY: usize = 2048;
 // compile time rather than by a test, because it is a property of the constant.
 const _: () = assert!(SEEN_JOBS_CAPACITY >= 1024);
 
+/// The inventory this host last uploaded, as it was sent.
+///
+/// Persisted rather than held in memory: a restart must not look like an
+/// inventory change, and it must not lose the base a delta is computed against.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InventorySnapshot {
+    /// Hash of `packages`, and what the server holds against this host.
+    pub hash: String,
+    /// Exactly what was uploaded, so the next run can say what changed.
+    pub packages: Vec<updawg_protocol::InstalledPackage>,
+    /// Cheap counts, answered on every check-in without touching the package
+    /// manager. See [`LocalState::inventory_snapshot`].
+    #[serde(default)]
+    pub pending_updates: u32,
+    #[serde(default)]
+    pub security_updates: u32,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SeenJobs {
     ids: VecDeque<String>,
@@ -214,6 +232,51 @@ impl LocalState {
             source,
         })?;
         self.write_atomic("inventory-hash.json", &bytes)
+    }
+
+    /* ----------------------------------------------- inventory snapshot */
+
+    /// What this host last uploaded, and the cheap counts taken with it.
+    ///
+    /// The package list is here because **a delta is meaningless without it**: to
+    /// say what changed, the agent has to know what it said last time. The
+    /// alternative is uploading everything every six hours, which is what the
+    /// delta exists to avoid.
+    ///
+    /// The counts are here for a different reason. A check-in carries
+    /// `pending_updates` and `security_updates` and runs every fifty-five
+    /// seconds; asking the package manager for them means `apt-get -s
+    /// dist-upgrade`, which takes seconds and reads the whole package database.
+    /// Answering a heartbeat from the last collection is the difference between a
+    /// heartbeat that costs nothing and one that hammers the host all day.
+    pub fn inventory_snapshot(&self) -> Result<Option<InventorySnapshot>> {
+        self.read_json::<InventorySnapshot>("inventory.json")
+    }
+
+    pub fn set_inventory_snapshot(&self, snapshot: &InventorySnapshot) -> Result<()> {
+        let bytes = serde_json::to_vec(snapshot).map_err(|source| StateError::Corrupt {
+            path: "inventory.json".into(),
+            source,
+        })?;
+        self.write_atomic("inventory.json", &bytes)
+    }
+
+    /// Forget what we believe the server holds.
+    ///
+    /// Called when the server refuses a delta: the two disagree about the base,
+    /// and the only way back into step is a full upload. Clearing this rather
+    /// than retrying is what stops a host re-sending a delta that can never
+    /// apply.
+    pub fn clear_inventory_snapshot(&self) -> Result<()> {
+        let path = self.root.join("inventory.json");
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StateError::Write {
+                path: path.display().to_string(),
+                source,
+            }),
+        }
     }
 
     /* --------------------------------------------------------- seen jobs */

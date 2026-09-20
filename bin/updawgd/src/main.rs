@@ -22,6 +22,7 @@ use updawg_agent_core::{
     CONFIG_PATH, STATE_DIR, VERSION,
     checkin::{GatewayCheckIn, UnhandledJobs},
     config::AgentConfig,
+    inventory::GatewayInventory,
     logging,
     scheduler::{CheckIn, CheckinOutcome, Inventory, Scheduler},
     state::LocalState,
@@ -134,7 +135,12 @@ async fn main() -> Result<()> {
         placeholder.clone()
     });
 
-    let scheduler = Scheduler::new(config, checkin, placeholder.clone());
+    let inventory: Arc<dyn Inventory> = build_inventory(&config, &state).unwrap_or_else(|| {
+        tracing::warn!("not collecting inventory: this host has no usable identity or backend");
+        placeholder.clone()
+    });
+
+    let scheduler = Scheduler::new(config, checkin, inventory);
 
     scheduler.run(shutdown_signal()).await;
 
@@ -200,6 +206,41 @@ fn build_checkin(config: &AgentConfig, state: &LocalState) -> Option<Arc<dyn Che
         // different problem with its own security story (DAWG-38). Until then
         // the agent says so loudly rather than dropping them silently.
         Arc::new(UnhandledJobs),
+    )))
+}
+
+/// Wire up inventory collection and upload, if this host can do it (DAWG-36).
+///
+/// `None` rather than a stub on failure, and the caller logs why. A host with no
+/// recognised package manager is a real thing — it still enrolls, heartbeats and
+/// reports its release — and it should say so rather than uploading an empty
+/// package list, which the server would take as "this host has nothing
+/// installed".
+fn build_inventory(config: &AgentConfig, state: &LocalState) -> Option<Arc<dyn Inventory>> {
+    if !state.is_enrolled() {
+        return None;
+    }
+    let transport = match MtlsTransport::new(&config.server, state.clone()) {
+        Ok(t) => Arc::new(t),
+        Err(error) => {
+            tracing::error!(%error, "cannot build the gateway transport for inventory");
+            return None;
+        }
+    };
+    let backend = match updawg_backends::detect() {
+        Ok(b) => Arc::from(b),
+        Err(error) => {
+            tracing::warn!(%error, "no package backend on this host; not collecting inventory");
+            return None;
+        }
+    };
+    let facts = Arc::new(PlatformFacts::new(Root::default()));
+
+    Some(Arc::new(GatewayInventory::new(
+        transport,
+        state.clone(),
+        backend,
+        facts,
     )))
 }
 
