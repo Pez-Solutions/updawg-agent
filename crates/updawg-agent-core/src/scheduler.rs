@@ -195,13 +195,42 @@ impl Cancel {
 
     /// Sleep, waking early if cancelled. Returns false if cancelled.
     pub async fn sleep(&self, d: Duration) -> bool {
-        if self.is_cancelled() {
-            return false;
-        }
         tokio::select! {
             () = tokio::time::sleep(d) => !self.is_cancelled(),
-            () = self.inner.1.notified() => false,
+            () = self.cancelled() => false,
         }
+    }
+
+    /// Resolves when cancelled, immediately if it already has been.
+    ///
+    /// For racing against work that would otherwise have to finish. The
+    /// check-in long poll is held open by the gateway for up to 55 seconds, and
+    /// waiting that out on every SIGTERM is the difference between
+    /// `systemctl restart` taking a second and taking a minute (DAWG-222).
+    ///
+    /// # The registration has to come before the second check
+    ///
+    /// `Notify::notify_waiters` wakes the waiters that are *already*
+    /// registered and remembers nothing for anybody who arrives later. A cancel
+    /// landing between the flag check and the registration would therefore be
+    /// missed for ever, and this future would never resolve. `enable()` is
+    /// tokio's way of joining the wait list without polling to completion, so
+    /// the flag can be re-read afterwards and the window is closed.
+    ///
+    /// The old `sleep` had the same race with a milder symptom: it would have
+    /// waited out the full duration and then noticed. Which for the inventory
+    /// timer is six hours.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let notified = self.inner.1.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -236,7 +265,20 @@ async fn checkin_loop(
     }
 
     while !cancel.is_cancelled() {
-        match checkin.check_in().await {
+        // Raced against the cancel token rather than awaited, because this is
+        // the call the gateway deliberately holds open for up to 55 seconds.
+        // Dropping the future aborts the request, which the gateway already
+        // copes with — a long poll dropped by the client is indistinguishable
+        // from one a network trimmed, and it handles that every day.
+        //
+        // The inventory upload below is *not* raced. It takes well under a
+        // second, and interrupting a write to the server is a worse trade than
+        // waiting for it.
+        let result = tokio::select! {
+            result = checkin.check_in() => result,
+            () = cancel.cancelled() => break,
+        };
+        match result {
             Ok(outcome) => {
                 backoff = MIN_BACKOFF;
                 if outcome.inventory_requested {
@@ -345,6 +387,38 @@ mod tests {
         }
     }
 
+    /// A check-in that never answers, which is what a held long poll looks
+    /// like from here.
+    ///
+    /// The gateway holds a check-in open for up to 55 seconds when there is
+    /// nothing to report. `Fake` above returns immediately, so every shutdown
+    /// test written against it has been measuring a scheduler that had nothing
+    /// to interrupt.
+    struct Held {
+        started: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl CheckIn for Held {
+        async fn check_in(&self) -> anyhow::Result<CheckinOutcome> {
+            self.started.add_permits(1);
+            // An hour, not a minute: the assertion should fail by being slow,
+            // not by the test hanging for ever if the race is wrong.
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            unreachable!("the held check-in was allowed to finish")
+        }
+    }
+
+    #[async_trait]
+    impl Inventory for Held {
+        async fn collect_and_upload(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn refresh_metadata(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
     fn config(inventory: &str, refresh: &str) -> AgentConfig {
         AgentConfig::from_toml(&format!(
             r#"
@@ -437,6 +511,81 @@ refresh_metadata = "{refresh}"
 
     /// Half to full, never zero. Full jitter would halve the effective
     /// backoff, quietly making a long outage noisier than the constants say.
+    #[tokio::test]
+    async fn shutdown_does_not_wait_out_a_held_check_in() {
+        // DAWG-222. Measured at 39 seconds against a real gateway before the
+        // fix, because the in-flight long poll was awaited rather than raced.
+        //
+        // `shutdown_stops_everything_promptly` below asserts exactly this and
+        // passed throughout, because its check-in returns immediately. The
+        // assertion was right; the input could not exercise it.
+        let started = Arc::new(tokio::sync::Semaphore::new(0));
+        let held = Arc::new(Held {
+            started: started.clone(),
+        });
+        let sched = Scheduler::new(config("1h", "1h"), held.clone(), held.clone())
+            .with_startup_spread(Duration::ZERO);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(sched.run(async move {
+            let _ = rx.await;
+        }));
+
+        // Wait for the check-in to actually be in flight. Sleeping a fixed
+        // amount here is the difference between a test that is slow and a test
+        // that is flaky, and it would also let a shutdown that never had
+        // anything to interrupt pass by accident.
+        let _permit = tokio::time::timeout(Duration::from_secs(5), started.acquire())
+            .await
+            .expect("the check-in never started");
+
+        let at = std::time::Instant::now();
+        let _ = tx.send(());
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("shutdown hung with a check-in in flight")
+            .expect("the scheduler task panicked");
+
+        assert!(
+            at.elapsed() < Duration::from_secs(2),
+            "shutdown waited {:?} for a held check-in",
+            at.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_between_the_check_and_the_wait_is_not_missed() {
+        // `notify_waiters` wakes only the waiters already registered, so a
+        // cancel landing in the window between reading the flag and joining
+        // the wait list would be lost and `cancelled()` would never resolve.
+        //
+        // Run enough times to hit the window, and with a timeout, so the
+        // failure is a failure rather than a hang.
+        for _ in 0..200 {
+            let cancel = Cancel::new();
+            let waiter = {
+                let cancel = cancel.clone();
+                tokio::spawn(async move { cancel.cancelled().await })
+            };
+            tokio::task::yield_now().await;
+            cancel.cancel();
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .expect("cancelled() missed a cancel and waited for ever")
+                .expect("waiter panicked");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_before_waiting_resolves_immediately() {
+        let cancel = Cancel::new();
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), cancel.cancelled())
+            .await
+            .expect("a cancel that already happened was not noticed");
+        assert!(!cancel.sleep(Duration::from_secs(3600)).await);
+    }
+
     #[test]
     fn backoff_jitter_stays_in_the_upper_half() {
         for base in [MIN_BACKOFF, Duration::from_secs(30), MAX_BACKOFF] {
