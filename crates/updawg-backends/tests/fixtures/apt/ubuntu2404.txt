@@ -1,0 +1,210 @@
+===DPKG_QUERY===
+apt	2.8.3	arm64	installed
+base-files	13ubuntu10.5	arm64	installed
+base-passwd	3.6.3build1	arm64	installed
+bash	5.2.21-2ubuntu4	arm64	installed
+bsdutils	1:2.39.3-9ubuntu6.6	arm64	installed
+coreutils	9.4-3ubuntu6.3	arm64	installed
+dash	0.5.12-6ubuntu5	arm64	installed
+debconf	1.5.86ubuntu1	all	installed
+debianutils	5.17build1	arm64	installed
+diffutils	1:3.10-1ubuntu0.1	arm64	installed
+dpkg	1.22.6ubuntu6.6	arm64	installed
+e2fsprogs	1.47.0-2.4~exp1ubuntu4.1	arm64	installed
+findutils	4.9.0-5build1	arm64	installed
+gcc-14-base	14.2.0-4ubuntu2~24.04.1	arm64	installed
+gpgv	2.4.4-2ubuntu17.6	arm64	installed
+grep	3.11-4build1	arm64	installed
+gzip	1.12-1ubuntu3.2	arm64	installed
+hostname	3.23+nmu2ubuntu2	arm64	installed
+init-system-helpers	1.66ubuntu1	all	installed
+libacl1	2.3.2-1build1.1	arm64	installed
+libapt-pkg6.0t64	2.8.3	arm64	installed
+libassuan0	2.5.6-1build1	arm64	installed
+libattr1	1:2.5.2-1ubuntu0.1	arm64	installed
+libaudit-common	1:3.1.2-2.1build1.1	all	installed
+libaudit1	1:3.1.2-2.1build1.1	arm64	installed
+libblkid1	2.39.3-9ubuntu6.6	arm64	installed
+libbz2-1.0	1.0.8-5.1ubuntu0.1	arm64	installed
+libc-bin	2.39-0ubuntu8.9	arm64	installed
+libc6	2.39-0ubuntu8.9	arm64	installed
+libcap-ng0	0.8.4-2build2	arm64	installed
+libcap2	1:2.66-5ubuntu2.4	arm64	installed
+libcom-err2	1.47.0-2.4~exp1ubuntu4.1	arm64	installed
+libcrypt1	1:4.4.36-4build1	arm64	installed
+libdb5.3t64	5.3.28+dfsg2-7	arm64	installed
+libdebconfclient0	0.271ubuntu3	arm64	installed
+libext2fs2t64	1.47.0-2.4~exp1ubuntu4.1	arm64	installed
+libffi8	3.4.6-1build1	arm64	installed
+libgcc-s1	14.2.0-4ubuntu2~24.04.1	arm64	installed
+libgcrypt20	1.10.3-2ubuntu0.2	arm64	installed
+libgmp10	2:6.3.0+dfsg-2ubuntu6.1	arm64	installed
+libgnutls30t64	3.8.3-1.1ubuntu3.6	arm64	installed
+libgpg-error0	1.47-3build2.1	arm64	installed
+libhogweed6t64	3.9.1-2.2build1.1	arm64	installed
+libidn2-0	2.3.7-2build1.1	arm64	installed
+liblz4-1	1.9.4-1build1.1	arm64	installed
+liblzma5	5.6.1+really5.4.5-1ubuntu0.3	arm64	installed
+libmd0	1.1.0-2build1.1	arm64	installed
+libmount1	2.39.3-9ubuntu6.6	arm64	installed
+libncursesw6	6.4+20240113-1ubuntu2.2	arm64	installed
+libnettle8t64	3.9.1-2.2build1.1	arm64	installed
+libnpth0t64	1.6-3.1build1	arm64	installed
+libp11-kit0	0.25.3-4ubuntu2.2	arm64	installed
+libpam-modules	1.5.3-5ubuntu5.7	arm64	installed
+libpam-modules-bin	1.5.3-5ubuntu5.7	arm64	installed
+libpam-runtime	1.5.3-5ubuntu5.7	all	installed
+libpam0g	1.5.3-5ubuntu5.7	arm64	installed
+libpcre2-8-0	10.42-4ubuntu2.1	arm64	installed
+libproc2-0	2:4.0.4-4ubuntu3.3	arm64	installed
+libseccomp2	2.5.5-1ubuntu3.1	arm64	installed
+libselinux1	3.5-2ubuntu2.1	arm64	installed
+libsemanage-common	3.5-1build5	all	installed
+libsemanage2	3.5-1build5	arm64	installed
+libsepol2	3.5-2build1	arm64	installed
+libsmartcols1	2.39.3-9ubuntu6.6	arm64	installed
+libss2	1.47.0-2.4~exp1ubuntu4.1	arm64	installed
+libssl3t64	3.0.13-0ubuntu3.15	arm64	installed
+libstdc++6	14.2.0-4ubuntu2~24.04.1	arm64	installed
+libsystemd0	255.4-1ubuntu8.17	arm64	installed
+libtasn1-6	4.19.0-3ubuntu0.24.04.2	arm64	installed
+libtinfo6	6.4+20240113-1ubuntu2.2	arm64	installed
+libudev1	255.4-1ubuntu8.17	arm64	installed
+libunistring5	1.1-2build1.1	arm64	installed
+libuuid1	2.39.3-9ubuntu6.6	arm64	installed
+libxxhash0	0.8.2-2build1	arm64	installed
+libzstd1	1.5.5+dfsg2-2build1.1	arm64	installed
+login	1:4.13+dfsg1-4ubuntu3.2	arm64	installed
+logsave	1.47.0-2.4~exp1ubuntu4.1	arm64	installed
+mawk	1.3.4.20240123-1build1	arm64	installed
+mount	2.39.3-9ubuntu6.6	arm64	installed
+ncurses-base	6.4+20240113-1ubuntu2.2	all	installed
+ncurses-bin	6.4+20240113-1ubuntu2.2	arm64	installed
+passwd	1:4.13+dfsg1-4ubuntu3.2	arm64	installed
+perl-base	5.38.2-3.2ubuntu0.4	arm64	installed
+procps	2:4.0.4-4ubuntu3.3	arm64	installed
+sed	4.9-2ubuntu0.24.04.1	arm64	installed
+sensible-utils	0.0.22	all	installed
+sysvinit-utils	3.08-6ubuntu3	arm64	installed
+tar	1.35+dfsg-3ubuntu0.4	arm64	installed
+ubuntu-keyring	2023.11.28.1	all	installed
+unminimize	0.2.1	arm64	installed
+util-linux	2.39.3-9ubuntu6.6	arm64	installed
+zlib1g	1:1.3.dfsg-3.1ubuntu2.2	arm64	installed
+===DIST_UPGRADE===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  perl-base
+1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Inst perl-base [5.38.2-3.2ubuntu0.4] (5.38.2-3.2ubuntu0.6 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Conf perl-base (5.38.2-3.2ubuntu0.6 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+===POLICY===
+Package files:
+ 100 /var/lib/dpkg/status
+     release a=now
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-security/multiverse arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-security,n=noble,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-security/restricted arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-security,n=noble,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-security/universe arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-security,n=noble,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-security/main arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-security,n=noble,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 100 http://ports.ubuntu.com/ubuntu-ports noble-backports/multiverse arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-backports,n=noble,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 100 http://ports.ubuntu.com/ubuntu-ports noble-backports/universe arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-backports,n=noble,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 100 http://ports.ubuntu.com/ubuntu-ports noble-backports/main arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-backports,n=noble,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-updates/multiverse arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-updates,n=noble,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-updates/restricted arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-updates,n=noble,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-updates,n=noble,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble-updates,n=noble,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble/multiverse arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble,n=noble,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble/restricted arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble,n=noble,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble/universe arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble,n=noble,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 Packages
+     release v=24.04,o=Ubuntu,a=noble,n=noble,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+Pinned packages:
+===HOLDS===
+perl-base
+===DIST_UPGRADE_WITH_HOLDS===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages have been kept back:
+  perl-base
+0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+===INSTALL_SIM===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libbrotli1 libcurl4t64 libgssapi-krb5-2 libk5crypto3 libkeyutils1 libkrb5-3
+  libkrb5support0 libldap2 libnghttp2-14 libpsl5t64 librtmp1 libsasl2-2
+  libsasl2-modules-db libssh-4
+Suggested packages:
+  krb5-doc krb5-user
+Recommended packages:
+  ca-certificates krb5-locales libldap-common publicsuffix libsasl2-modules
+The following NEW packages will be installed:
+  curl libbrotli1 libcurl4t64 libgssapi-krb5-2 libk5crypto3 libkeyutils1
+  libkrb5-3 libkrb5support0 libldap2 libnghttp2-14 libpsl5t64 librtmp1
+  libsasl2-2 libsasl2-modules-db libssh-4
+0 upgraded, 15 newly installed, 0 to remove and 1 not upgraded.
+Inst libkrb5support0 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Inst libk5crypto3 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Inst libkeyutils1 (1.6.3-3build1 Ubuntu:24.04/noble [arm64])
+Inst libkrb5-3 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Inst libgssapi-krb5-2 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Inst libnghttp2-14 (1.59.0-1ubuntu0.4 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Inst libpsl5t64 (0.21.2-1.1build1 Ubuntu:24.04/noble [arm64])
+Inst libbrotli1 (1.1.0-2build2 Ubuntu:24.04/noble [arm64])
+Inst libsasl2-modules-db (2.1.28+dfsg1-5ubuntu3.1 Ubuntu:24.04/noble-updates [arm64])
+Inst libsasl2-2 (2.1.28+dfsg1-5ubuntu3.1 Ubuntu:24.04/noble-updates [arm64])
+Inst libldap2 (2.6.10+dfsg-0ubuntu0.24.04.1 Ubuntu:24.04/noble-updates [arm64])
+Inst librtmp1 (2.4+20151223.gitfa8646d.1-2build7 Ubuntu:24.04/noble [arm64])
+Inst libssh-4 (0.10.6-2ubuntu0.5 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Inst libcurl4t64 (8.5.0-2ubuntu10.13 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Inst curl (8.5.0-2ubuntu10.13 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Conf libkrb5support0 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Conf libk5crypto3 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Conf libkeyutils1 (1.6.3-3build1 Ubuntu:24.04/noble [arm64])
+Conf libkrb5-3 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Conf libgssapi-krb5-2 (1.20.1-6ubuntu2.10 Ubuntu:24.04/noble-updates [arm64])
+Conf libnghttp2-14 (1.59.0-1ubuntu0.4 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Conf libpsl5t64 (0.21.2-1.1build1 Ubuntu:24.04/noble [arm64])
+Conf libbrotli1 (1.1.0-2build2 Ubuntu:24.04/noble [arm64])
+Conf libsasl2-modules-db (2.1.28+dfsg1-5ubuntu3.1 Ubuntu:24.04/noble-updates [arm64])
+Conf libsasl2-2 (2.1.28+dfsg1-5ubuntu3.1 Ubuntu:24.04/noble-updates [arm64])
+Conf libldap2 (2.6.10+dfsg-0ubuntu0.24.04.1 Ubuntu:24.04/noble-updates [arm64])
+Conf librtmp1 (2.4+20151223.gitfa8646d.1-2build7 Ubuntu:24.04/noble [arm64])
+Conf libssh-4 (0.10.6-2ubuntu0.5 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Conf libcurl4t64 (8.5.0-2ubuntu10.13 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])
+Conf curl (8.5.0-2ubuntu10.13 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])

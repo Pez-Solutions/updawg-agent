@@ -1,0 +1,229 @@
+===DPKG_QUERY===
+adduser	3.118ubuntu5	all	installed
+apt	2.4.14	arm64	installed
+base-files	12ubuntu4.7	arm64	installed
+base-passwd	3.5.52build1	arm64	installed
+bash	5.1-6ubuntu1.1	arm64	installed
+bsdutils	1:2.37.2-4ubuntu3.6	arm64	installed
+coreutils	8.32-4.1ubuntu1.4	arm64	installed
+dash	0.5.11+git20210903+057cd650a4ed-3build1	arm64	installed
+debconf	1.5.79ubuntu1	all	installed
+debianutils	5.5-1ubuntu2	arm64	installed
+diffutils	1:3.8-0ubuntu2.1	arm64	installed
+dpkg	1.21.1ubuntu2.6	arm64	installed
+e2fsprogs	1.46.5-2ubuntu1.2	arm64	installed
+findutils	4.8.0-1ubuntu3	arm64	installed
+gcc-12-base	12.3.0-1ubuntu1~22.04.3	arm64	installed
+gpgv	2.2.27-3ubuntu2.5	arm64	installed
+grep	3.7-1build1	arm64	installed
+gzip	1.10-4ubuntu4.2	arm64	installed
+hostname	3.23ubuntu2	arm64	installed
+init-system-helpers	1.62	all	installed
+libacl1	2.3.1-1	arm64	installed
+libapt-pkg6.0	2.4.14	arm64	installed
+libattr1	1:2.5.1-1ubuntu0.1	arm64	installed
+libaudit-common	1:3.0.7-1build1	all	installed
+libaudit1	1:3.0.7-1build1	arm64	installed
+libblkid1	2.37.2-4ubuntu3.6	arm64	installed
+libbz2-1.0	1.0.8-5ubuntu0.1	arm64	installed
+libc-bin	2.35-0ubuntu3.14	arm64	installed
+libc6	2.35-0ubuntu3.14	arm64	installed
+libcap-ng0	0.7.9-2.2build3	arm64	installed
+libcap2	1:2.44-1ubuntu0.22.04.3	arm64	installed
+libcom-err2	1.46.5-2ubuntu1.2	arm64	installed
+libcrypt1	1:4.4.27-1	arm64	installed
+libdb5.3	5.3.28+dfsg1-0.8ubuntu3	arm64	installed
+libdebconfclient0	0.261ubuntu1	arm64	installed
+libext2fs2	1.46.5-2ubuntu1.2	arm64	installed
+libffi8	3.4.2-4	arm64	installed
+libgcc-s1	12.3.0-1ubuntu1~22.04.3	arm64	installed
+libgcrypt20	1.9.4-3ubuntu3.3	arm64	installed
+libgmp10	2:6.2.1+dfsg-3ubuntu1	arm64	installed
+libgnutls30	3.7.3-4ubuntu1.9	arm64	installed
+libgpg-error0	1.43-3	arm64	installed
+libgssapi-krb5-2	1.19.2-2ubuntu0.8	arm64	installed
+libhogweed6	3.7.3-1build2	arm64	installed
+libidn2-0	2.3.2-2build1	arm64	installed
+libk5crypto3	1.19.2-2ubuntu0.8	arm64	installed
+libkeyutils1	1.6.1-2ubuntu3	arm64	installed
+libkrb5-3	1.19.2-2ubuntu0.8	arm64	installed
+libkrb5support0	1.19.2-2ubuntu0.8	arm64	installed
+liblz4-1	1.9.3-2build2	arm64	installed
+liblzma5	5.2.5-2ubuntu1.1	arm64	installed
+libmount1	2.37.2-4ubuntu3.6	arm64	installed
+libncurses6	6.3-2ubuntu0.3	arm64	installed
+libncursesw6	6.3-2ubuntu0.3	arm64	installed
+libnettle8	3.7.3-1build2	arm64	installed
+libnsl2	1.3.0-2build2	arm64	installed
+libp11-kit0	0.24.0-6ubuntu0.1	arm64	installed
+libpam-modules	1.4.0-11ubuntu2.8	arm64	installed
+libpam-modules-bin	1.4.0-11ubuntu2.8	arm64	installed
+libpam-runtime	1.4.0-11ubuntu2.8	all	installed
+libpam0g	1.4.0-11ubuntu2.8	arm64	installed
+libpcre2-8-0	10.39-3ubuntu0.1	arm64	installed
+libpcre3	2:8.39-13ubuntu0.22.04.1	arm64	installed
+libprocps8	2:3.3.17-6ubuntu2.1	arm64	installed
+libseccomp2	2.5.3-2ubuntu3~22.04.1	arm64	installed
+libselinux1	3.3-1build2	arm64	installed
+libsemanage-common	3.3-1build2	all	installed
+libsemanage2	3.3-1build2	arm64	installed
+libsepol2	3.3-1build1	arm64	installed
+libsmartcols1	2.37.2-4ubuntu3.6	arm64	installed
+libss2	1.46.5-2ubuntu1.2	arm64	installed
+libssl3	3.0.2-0ubuntu1.29	arm64	installed
+libstdc++6	12.3.0-1ubuntu1~22.04.3	arm64	installed
+libsystemd0	249.11-0ubuntu3.22	arm64	installed
+libtasn1-6	4.18.0-4ubuntu0.2	arm64	installed
+libtinfo6	6.3-2ubuntu0.3	arm64	installed
+libtirpc-common	1.3.2-2ubuntu0.1	all	installed
+libtirpc3	1.3.2-2ubuntu0.1	arm64	installed
+libudev1	249.11-0ubuntu3.22	arm64	installed
+libunistring2	1.0-1	arm64	installed
+libuuid1	2.37.2-4ubuntu3.6	arm64	installed
+libxxhash0	0.8.1-1	arm64	installed
+libzstd1	1.4.8+dfsg-3build1	arm64	installed
+login	1:4.8.1-2ubuntu2.2	arm64	installed
+logsave	1.46.5-2ubuntu1.2	arm64	installed
+lsb-base	11.1.0ubuntu4	all	installed
+mawk	1.3.4.20200120-3	arm64	installed
+mount	2.37.2-4ubuntu3.6	arm64	installed
+ncurses-base	6.3-2ubuntu0.3	all	installed
+ncurses-bin	6.3-2ubuntu0.3	arm64	installed
+passwd	1:4.8.1-2ubuntu2.2	arm64	installed
+perl-base	5.34.0-3ubuntu1.8	arm64	installed
+procps	2:3.3.17-6ubuntu2.1	arm64	installed
+sed	4.8-1ubuntu2.1	arm64	installed
+sensible-utils	0.0.17	all	installed
+sysvinit-utils	3.01-1ubuntu1	arm64	installed
+tar	1.34+dfsg-1ubuntu0.1.22.04.6	arm64	installed
+ubuntu-keyring	2021.03.26	all	installed
+usrmerge	25ubuntu2	all	installed
+util-linux	2.37.2-4ubuntu3.6	arm64	installed
+zlib1g	1:1.2.11.dfsg-2ubuntu9.2	arm64	installed
+===DIST_UPGRADE===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  libc-bin libc6 libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0
+  perl-base
+7 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Inst perl-base [5.34.0-3ubuntu1.8] (5.34.0-3ubuntu1.9 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf perl-base (5.34.0-3ubuntu1.9 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst libc6 [2.35-0ubuntu3.14] (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf libc6 (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst libc-bin [2.35-0ubuntu3.14] (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf libc-bin (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst libk5crypto3 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+Conf libk5crypto3 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+Inst libkrb5support0 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libkrb5-3:arm64 ]
+Conf libkrb5support0 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libkrb5-3:arm64 ]
+Inst libkrb5-3 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libgssapi-krb5-2:arm64 ]
+Conf libkrb5-3 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libgssapi-krb5-2:arm64 ]
+Inst libgssapi-krb5-2 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+Conf libgssapi-krb5-2 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+===POLICY===
+Package files:
+ 100 /var/lib/dpkg/status
+     release a=now
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-security/multiverse arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-security,n=jammy,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-security/universe arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-security,n=jammy,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-security/restricted arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-security,n=jammy,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-security/main arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-security,n=jammy,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 100 http://ports.ubuntu.com/ubuntu-ports jammy-backports/universe arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-backports,n=jammy,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 100 http://ports.ubuntu.com/ubuntu-ports jammy-backports/main arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-backports,n=jammy,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-updates/multiverse arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-updates,n=jammy,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-updates/universe arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-updates,n=jammy,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-updates/restricted arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-updates,n=jammy,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy-updates/main arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy-updates,n=jammy,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy/multiverse arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy,n=jammy,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy/universe arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy,n=jammy,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy/restricted arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy,n=jammy,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports jammy/main arm64 Packages
+     release v=22.04,o=Ubuntu,a=jammy,n=jammy,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+Pinned packages:
+===HOLDS===
+perl-base
+===DIST_UPGRADE_WITH_HOLDS===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages have been kept back:
+  perl-base
+The following packages will be upgraded:
+  libc-bin libc6 libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0
+6 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+Inst libc6 [2.35-0ubuntu3.14] (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf libc6 (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst libc-bin [2.35-0ubuntu3.14] (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf libc-bin (2.35-0ubuntu3.15 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst libk5crypto3 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+Conf libk5crypto3 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+Inst libkrb5support0 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libkrb5-3:arm64 ]
+Conf libkrb5support0 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libkrb5-3:arm64 ]
+Inst libkrb5-3 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libgssapi-krb5-2:arm64 ]
+Conf libkrb5-3 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64]) [libgssapi-krb5-2:arm64 ]
+Inst libgssapi-krb5-2 [1.19.2-2ubuntu0.8] (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+Conf libgssapi-krb5-2 (1.19.2-2ubuntu0.10 Ubuntu:22.04/jammy-updates [arm64])
+===INSTALL_SIM===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libbrotli1 libcurl4 libldap-2.5-0 libnghttp2-14 libpsl5 librtmp1 libsasl2-2
+  libsasl2-modules-db libssh-4
+Recommended packages:
+  ca-certificates libldap-common publicsuffix libsasl2-modules
+The following NEW packages will be installed:
+  curl libbrotli1 libcurl4 libldap-2.5-0 libnghttp2-14 libpsl5 librtmp1
+  libsasl2-2 libsasl2-modules-db libssh-4
+0 upgraded, 10 newly installed, 0 to remove and 7 not upgraded.
+Inst libnghttp2-14 (1.43.0-1ubuntu0.4 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst libpsl5 (0.21.0-1.2build2 Ubuntu:22.04/jammy [arm64])
+Inst libbrotli1 (1.0.9-2build6 Ubuntu:22.04/jammy [arm64])
+Inst libsasl2-modules-db (2.1.27+dfsg2-3ubuntu1.2 Ubuntu:22.04/jammy-updates [arm64])
+Inst libsasl2-2 (2.1.27+dfsg2-3ubuntu1.2 Ubuntu:22.04/jammy-updates [arm64])
+Inst libldap-2.5-0 (2.5.20+dfsg-0ubuntu0.22.04.1 Ubuntu:22.04/jammy-updates [arm64])
+Inst librtmp1 (2.4+20151223.gitfa8646d.1-2build4 Ubuntu:22.04/jammy [arm64])
+Inst libssh-4 (0.9.6-2ubuntu0.22.04.8 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst libcurl4 (7.81.0-1ubuntu1.27 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Inst curl (7.81.0-1ubuntu1.27 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf libnghttp2-14 (1.43.0-1ubuntu0.4 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf libpsl5 (0.21.0-1.2build2 Ubuntu:22.04/jammy [arm64])
+Conf libbrotli1 (1.0.9-2build6 Ubuntu:22.04/jammy [arm64])
+Conf libsasl2-modules-db (2.1.27+dfsg2-3ubuntu1.2 Ubuntu:22.04/jammy-updates [arm64])
+Conf libsasl2-2 (2.1.27+dfsg2-3ubuntu1.2 Ubuntu:22.04/jammy-updates [arm64])
+Conf libldap-2.5-0 (2.5.20+dfsg-0ubuntu0.22.04.1 Ubuntu:22.04/jammy-updates [arm64])
+Conf librtmp1 (2.4+20151223.gitfa8646d.1-2build4 Ubuntu:22.04/jammy [arm64])
+Conf libssh-4 (0.9.6-2ubuntu0.22.04.8 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf libcurl4 (7.81.0-1ubuntu1.27 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])
+Conf curl (7.81.0-1ubuntu1.27 Ubuntu:22.04/jammy-updates, Ubuntu:22.04/jammy-security [arm64])

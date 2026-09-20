@@ -46,6 +46,16 @@ impl PackageBackend for DnfBackend {
         })
     }
 
+    async fn held_packages(&self) -> Result<Vec<String>> {
+        // `dnf versionlock list`, once DAWG-35 lands. Reporting an empty list
+        // here would be a lie with consequences: the server would plan an upgrade
+        // for a package that is locked, the job would report success, and the
+        // version would not move.
+        Err(BackendError::ToolMissing {
+            tool: "dnf versionlock (DAWG-35)",
+        })
+    }
+
     async fn repositories(&self) -> Result<Vec<Repository>> {
         Err(BackendError::ToolMissing {
             tool: "dnf (DAWG-35)",

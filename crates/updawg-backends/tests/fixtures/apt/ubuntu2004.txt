@@ -1,0 +1,256 @@
+===DPKG_QUERY===
+adduser	3.118ubuntu2	all	installed
+apt	2.0.10	arm64	installed
+base-files	11ubuntu5.8	arm64	installed
+base-passwd	3.5.47	arm64	installed
+bash	5.0-6ubuntu1.2	arm64	installed
+bsdutils	1:2.34-0.1ubuntu9.6	arm64	installed
+bzip2	1.0.8-2	arm64	installed
+coreutils	8.30-3ubuntu2	arm64	installed
+dash	0.5.10.2-6	arm64	installed
+debconf	1.5.73	all	installed
+debianutils	4.9.1	arm64	installed
+diffutils	1:3.7-3	arm64	installed
+dpkg	1.19.7ubuntu3.2	arm64	installed
+e2fsprogs	1.45.5-2ubuntu1.2	arm64	installed
+fdisk	2.34-0.1ubuntu9.6	arm64	installed
+findutils	4.7.0-1ubuntu1	arm64	installed
+gcc-10-base	10.5.0-1ubuntu1~20.04	arm64	installed
+gpgv	2.2.19-3ubuntu2.4	arm64	installed
+grep	3.4-1	arm64	installed
+gzip	1.10-0ubuntu4.1	arm64	installed
+hostname	3.23	arm64	installed
+init-system-helpers	1.57	all	installed
+libacl1	2.2.53-6	arm64	installed
+libapt-pkg6.0	2.0.10	arm64	installed
+libattr1	1:2.4.48-5	arm64	installed
+libaudit-common	1:2.8.5-2ubuntu6	all	installed
+libaudit1	1:2.8.5-2ubuntu6	arm64	installed
+libblkid1	2.34-0.1ubuntu9.6	arm64	installed
+libbz2-1.0	1.0.8-2	arm64	installed
+libc-bin	2.31-0ubuntu9.17	arm64	installed
+libc6	2.31-0ubuntu9.17	arm64	installed
+libcap-ng0	0.7.9-2.1build1	arm64	installed
+libcom-err2	1.45.5-2ubuntu1.2	arm64	installed
+libcrypt1	1:4.4.10-10ubuntu4	arm64	installed
+libdb5.3	5.3.28+dfsg1-0.6ubuntu2	arm64	installed
+libdebconfclient0	0.251ubuntu1	arm64	installed
+libext2fs2	1.45.5-2ubuntu1.2	arm64	installed
+libfdisk1	2.34-0.1ubuntu9.6	arm64	installed
+libffi7	3.3-4	arm64	installed
+libgcc-s1	10.5.0-1ubuntu1~20.04	arm64	installed
+libgcrypt20	1.8.5-5ubuntu1.1	arm64	installed
+libgmp10	2:6.2.0+dfsg-4ubuntu0.1	arm64	installed
+libgnutls30	3.6.13-2ubuntu1.12	arm64	installed
+libgpg-error0	1.37-1	arm64	installed
+libhogweed5	3.5.1+really3.5.1-2ubuntu0.2	arm64	installed
+libidn2-0	2.2.0-2	arm64	installed
+liblz4-1	1.9.2-2ubuntu0.20.04.1	arm64	installed
+liblzma5	5.2.4-1ubuntu1.1	arm64	installed
+libmount1	2.34-0.1ubuntu9.6	arm64	installed
+libncurses6	6.2-0ubuntu2.1	arm64	installed
+libncursesw6	6.2-0ubuntu2.1	arm64	installed
+libnettle7	3.5.1+really3.5.1-2ubuntu0.2	arm64	installed
+libp11-kit0	0.23.20-1ubuntu0.1	arm64	installed
+libpam-modules	1.3.1-5ubuntu4.7	arm64	installed
+libpam-modules-bin	1.3.1-5ubuntu4.7	arm64	installed
+libpam-runtime	1.3.1-5ubuntu4.7	all	installed
+libpam0g	1.3.1-5ubuntu4.7	arm64	installed
+libpcre2-8-0	10.34-7ubuntu0.1	arm64	installed
+libpcre3	2:8.39-12ubuntu0.1	arm64	installed
+libprocps8	2:3.3.16-1ubuntu2.4	arm64	installed
+libseccomp2	2.5.1-1ubuntu1~20.04.2	arm64	installed
+libselinux1	3.0-1build2	arm64	installed
+libsemanage-common	3.0-1build2	all	installed
+libsemanage1	3.0-1build2	arm64	installed
+libsepol1	3.0-1ubuntu0.1	arm64	installed
+libsmartcols1	2.34-0.1ubuntu9.6	arm64	installed
+libss2	1.45.5-2ubuntu1.2	arm64	installed
+libstdc++6	10.5.0-1ubuntu1~20.04	arm64	installed
+libsystemd0	245.4-4ubuntu3.24	arm64	installed
+libtasn1-6	4.16.0-2ubuntu0.1	arm64	installed
+libtinfo6	6.2-0ubuntu2.1	arm64	installed
+libudev1	245.4-4ubuntu3.24	arm64	installed
+libunistring2	0.9.10-2	arm64	installed
+libuuid1	2.34-0.1ubuntu9.6	arm64	installed
+libzstd1	1.4.4+dfsg-3ubuntu0.1	arm64	installed
+login	1:4.8.1-1ubuntu5.20.04.5	arm64	installed
+logsave	1.45.5-2ubuntu1.2	arm64	installed
+lsb-base	11.1.0ubuntu2	all	installed
+mawk	1.3.4.20200120-2	arm64	installed
+mount	2.34-0.1ubuntu9.6	arm64	installed
+ncurses-base	6.2-0ubuntu2.1	all	installed
+ncurses-bin	6.2-0ubuntu2.1	arm64	installed
+passwd	1:4.8.1-1ubuntu5.20.04.5	arm64	installed
+perl-base	5.30.0-9ubuntu0.5	arm64	installed
+procps	2:3.3.16-1ubuntu2.4	arm64	installed
+sed	4.7-1	arm64	installed
+sensible-utils	0.0.12+nmu1	all	installed
+sysvinit-utils	2.96-2.1ubuntu1	arm64	installed
+tar	1.30+dfsg-7ubuntu0.20.04.4	arm64	installed
+ubuntu-keyring	2020.02.11.4	all	installed
+util-linux	2.34-0.1ubuntu9.6	arm64	installed
+zlib1g	1:1.2.11.dfsg-2ubuntu1.5	arm64	installed
+===DIST_UPGRADE===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  apt gpgv libapt-pkg6.0 libc-bin libc6
+5 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Inst libc6 [2.31-0ubuntu9.17] (2.31-0ubuntu9.18 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libc6 (2.31-0ubuntu9.18 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libc-bin [2.31-0ubuntu9.17] (2.31-0ubuntu9.18 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libc-bin (2.31-0ubuntu9.18 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libapt-pkg6.0 [2.0.10] (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+Conf libapt-pkg6.0 (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+Inst gpgv [2.2.19-3ubuntu2.4] (2.2.19-3ubuntu2.5 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf gpgv (2.2.19-3ubuntu2.5 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst apt [2.0.10] (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+Conf apt (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+===POLICY===
+Package files:
+ 100 /var/lib/dpkg/status
+     release a=now
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-security/multiverse arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-security,n=focal,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-security/universe arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-security,n=focal,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-security/restricted arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-security,n=focal,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-security/main arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-security,n=focal,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 100 http://ports.ubuntu.com/ubuntu-ports focal-backports/universe arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-backports,n=focal,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 100 http://ports.ubuntu.com/ubuntu-ports focal-backports/main arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-backports,n=focal,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-updates/multiverse arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-updates,n=focal,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-updates/universe arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-updates,n=focal,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-updates/restricted arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-updates,n=focal,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal-updates/main arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal-updates,n=focal,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal/multiverse arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal,n=focal,l=Ubuntu,c=multiverse,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal/universe arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal,n=focal,l=Ubuntu,c=universe,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal/restricted arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal,n=focal,l=Ubuntu,c=restricted,b=arm64
+     origin ports.ubuntu.com
+ 500 http://ports.ubuntu.com/ubuntu-ports focal/main arm64 Packages
+     release v=20.04,o=Ubuntu,a=focal,n=focal,l=Ubuntu,c=main,b=arm64
+     origin ports.ubuntu.com
+Pinned packages:
+===HOLDS===
+libc6
+perl-base
+===DIST_UPGRADE_WITH_HOLDS===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages have been kept back:
+  libc6
+The following packages will be upgraded:
+  apt gpgv libapt-pkg6.0 libc-bin
+4 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+Inst libc-bin [2.31-0ubuntu9.17] (2.31-0ubuntu9.18 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libc-bin (2.31-0ubuntu9.18 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libapt-pkg6.0 [2.0.10] (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+Conf libapt-pkg6.0 (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+Inst gpgv [2.2.19-3ubuntu2.4] (2.2.19-3ubuntu2.5 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf gpgv (2.2.19-3ubuntu2.5 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst apt [2.0.10] (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+Conf apt (2.0.11 Ubuntu:20.04/focal-updates [arm64])
+===INSTALL_SIM===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libasn1-8-heimdal libbrotli1 libcurl4 libgssapi-krb5-2 libgssapi3-heimdal
+  libhcrypto4-heimdal libheimbase1-heimdal libheimntlm0-heimdal
+  libhx509-5-heimdal libk5crypto3 libkeyutils1 libkrb5-26-heimdal libkrb5-3
+  libkrb5support0 libldap-2.4-2 libldap-common libnghttp2-14 libpsl5
+  libroken18-heimdal librtmp1 libsasl2-2 libsasl2-modules-db libsqlite3-0
+  libssh-4 libssl1.1 libwind0-heimdal
+Suggested packages:
+  krb5-doc krb5-user
+Recommended packages:
+  ca-certificates krb5-locales publicsuffix libsasl2-modules
+The following NEW packages will be installed:
+  curl libasn1-8-heimdal libbrotli1 libcurl4 libgssapi-krb5-2
+  libgssapi3-heimdal libhcrypto4-heimdal libheimbase1-heimdal
+  libheimntlm0-heimdal libhx509-5-heimdal libk5crypto3 libkeyutils1
+  libkrb5-26-heimdal libkrb5-3 libkrb5support0 libldap-2.4-2 libldap-common
+  libnghttp2-14 libpsl5 libroken18-heimdal librtmp1 libsasl2-2
+  libsasl2-modules-db libsqlite3-0 libssh-4 libssl1.1 libwind0-heimdal
+0 upgraded, 27 newly installed, 0 to remove and 5 not upgraded.
+Inst libsqlite3-0 (3.31.1-4ubuntu0.7 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libssl1.1 (1.1.1f-1ubuntu2.24 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libkrb5support0 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libk5crypto3 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libkeyutils1 (1.6-6ubuntu1.1 Ubuntu:20.04/focal-updates [arm64])
+Inst libkrb5-3 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libgssapi-krb5-2 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libpsl5 (0.21.0-1ubuntu1 Ubuntu:20.04/focal [arm64])
+Inst libbrotli1 (1.0.7-6ubuntu0.1 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libroken18-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libasn1-8-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libheimbase1-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libhcrypto4-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libwind0-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libhx509-5-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libkrb5-26-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libheimntlm0-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libgssapi3-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libsasl2-modules-db (2.1.27+dfsg-2ubuntu0.1 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libsasl2-2 (2.1.27+dfsg-2ubuntu0.1 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libldap-common (2.4.49+dfsg-2ubuntu1.10 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [all])
+Inst libldap-2.4-2 (2.4.49+dfsg-2ubuntu1.10 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libnghttp2-14 (1.40.0-1ubuntu0.3 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst librtmp1 (2.4+20151223.gitfa8646d.1-2build1 Ubuntu:20.04/focal [arm64])
+Inst libssh-4 (0.9.3-2ubuntu2.5 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst libcurl4 (7.68.0-1ubuntu2.25 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Inst curl (7.68.0-1ubuntu2.25 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libsqlite3-0 (3.31.1-4ubuntu0.7 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libssl1.1 (1.1.1f-1ubuntu2.24 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libkrb5support0 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libk5crypto3 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libkeyutils1 (1.6-6ubuntu1.1 Ubuntu:20.04/focal-updates [arm64])
+Conf libkrb5-3 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libgssapi-krb5-2 (1.17-6ubuntu4.11 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libpsl5 (0.21.0-1ubuntu1 Ubuntu:20.04/focal [arm64])
+Conf libbrotli1 (1.0.7-6ubuntu0.1 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libroken18-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libasn1-8-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libheimbase1-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libhcrypto4-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libwind0-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libhx509-5-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libkrb5-26-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libheimntlm0-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libgssapi3-heimdal (7.7.0+dfsg-1ubuntu1.4 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libsasl2-modules-db (2.1.27+dfsg-2ubuntu0.1 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libsasl2-2 (2.1.27+dfsg-2ubuntu0.1 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libldap-common (2.4.49+dfsg-2ubuntu1.10 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [all])
+Conf libldap-2.4-2 (2.4.49+dfsg-2ubuntu1.10 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libnghttp2-14 (1.40.0-1ubuntu0.3 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf librtmp1 (2.4+20151223.gitfa8646d.1-2build1 Ubuntu:20.04/focal [arm64])
+Conf libssh-4 (0.9.3-2ubuntu2.5 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf libcurl4 (7.68.0-1ubuntu2.25 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])
+Conf curl (7.68.0-1ubuntu2.25 Ubuntu:20.04/focal-updates, Ubuntu:20.04/focal-security [arm64])

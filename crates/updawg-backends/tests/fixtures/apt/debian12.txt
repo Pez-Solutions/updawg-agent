@@ -1,0 +1,166 @@
+===DPKG_QUERY===
+adduser	3.134	all	installed
+apt	2.6.1	arm64	installed
+base-files	12.4+deb12u15	arm64	installed
+base-passwd	3.6.1	arm64	installed
+bash	5.2.15-2+b13	arm64	installed
+bsdutils	1:2.38.1-5+deb12u3	arm64	installed
+coreutils	9.1-1	arm64	installed
+dash	0.5.12-2	arm64	installed
+debconf	1.5.82	all	installed
+debian-archive-keyring	2023.3+deb12u2	all	installed
+debianutils	5.7-0.5~deb12u1	arm64	installed
+diffutils	1:3.8-4	arm64	installed
+dpkg	1.21.23	arm64	installed
+e2fsprogs	1.47.0-2+b2	arm64	installed
+findutils	4.9.0-4	arm64	installed
+gcc-12-base	12.2.0-14+deb12u1	arm64	installed
+gpgv	2.2.40-1.1+deb12u2	arm64	installed
+grep	3.8-5	arm64	installed
+gzip	1.12-1	arm64	installed
+hostname	3.23+nmu1	arm64	installed
+init-system-helpers	1.65.2+deb12u1	all	installed
+libacl1	2.3.1-3	arm64	installed
+libapt-pkg6.0	2.6.1	arm64	installed
+libattr1	1:2.5.1-4	arm64	installed
+libaudit-common	1:3.0.9-1	all	installed
+libaudit1	1:3.0.9-1	arm64	installed
+libblkid1	2.38.1-5+deb12u3	arm64	installed
+libbz2-1.0	1.0.8-5+b1	arm64	installed
+libc-bin	2.36-9+deb12u14	arm64	installed
+libc6	2.36-9+deb12u14	arm64	installed
+libcap-ng0	0.8.3-1+b3	arm64	installed
+libcap2	1:2.66-4+deb12u3+b1	arm64	installed
+libcom-err2	1.47.0-2+b2	arm64	installed
+libcrypt1	1:4.4.33-2	arm64	installed
+libdb5.3	5.3.28+dfsg2-1	arm64	installed
+libdebconfclient0	0.270	arm64	installed
+libext2fs2	1.47.0-2+b2	arm64	installed
+libffi8	3.4.4-1	arm64	installed
+libgcc-s1	12.2.0-14+deb12u1	arm64	installed
+libgcrypt20	1.10.1-3+deb12u1	arm64	installed
+libgmp10	2:6.2.1+dfsg1-1.1	arm64	installed
+libgnutls30	3.7.9-2+deb12u7	arm64	installed
+libgpg-error0	1.46-1	arm64	installed
+libhogweed6	3.8.1-2	arm64	installed
+libidn2-0	2.3.3-1+b1	arm64	installed
+liblz4-1	1.9.4-1	arm64	installed
+liblzma5	5.4.1-1+deb12u2	arm64	installed
+libmd0	1.0.4-2	arm64	installed
+libmount1	2.38.1-5+deb12u3	arm64	installed
+libnettle8	3.8.1-2	arm64	installed
+libp11-kit0	0.24.1-2	arm64	installed
+libpam-modules	1.5.2-6+deb12u2	arm64	installed
+libpam-modules-bin	1.5.2-6+deb12u2	arm64	installed
+libpam-runtime	1.5.2-6+deb12u2	all	installed
+libpam0g	1.5.2-6+deb12u2	arm64	installed
+libpcre2-8-0	10.42-1+deb12u1	arm64	installed
+libseccomp2	2.5.4-1+deb12u1	arm64	installed
+libselinux1	3.4-1+b6	arm64	installed
+libsemanage-common	3.4-1	all	installed
+libsemanage2	3.4-1+b5	arm64	installed
+libsepol2	3.4-2.1	arm64	installed
+libsmartcols1	2.38.1-5+deb12u3	arm64	installed
+libss2	1.47.0-2+b2	arm64	installed
+libstdc++6	12.2.0-14+deb12u1	arm64	installed
+libsystemd0	252.39-1~deb12u2	arm64	installed
+libtasn1-6	4.19.0-2+deb12u1	arm64	installed
+libtinfo6	6.4-4	arm64	installed
+libudev1	252.39-1~deb12u2	arm64	installed
+libunistring2	1.0-2	arm64	installed
+libuuid1	2.38.1-5+deb12u3	arm64	installed
+libxxhash0	0.8.1-1	arm64	installed
+libzstd1	1.5.4+dfsg2-5	arm64	installed
+login	1:4.13+dfsg1-1+deb12u2	arm64	installed
+logsave	1.47.0-2+b2	arm64	installed
+mawk	1.3.4.20200120-3.1	arm64	installed
+mount	2.38.1-5+deb12u3	arm64	installed
+ncurses-base	6.4-4	all	installed
+ncurses-bin	6.4-4	arm64	installed
+passwd	1:4.13+dfsg1-1+deb12u2	arm64	installed
+perl-base	5.36.0-7+deb12u3	arm64	installed
+sed	4.9-1+deb12u1	arm64	installed
+sysvinit-utils	3.06-4	arm64	installed
+tar	1.34+dfsg-1.2+deb12u1	arm64	installed
+tzdata	2026b-0+deb12u1	all	installed
+usr-is-merged	37~deb12u1	all	installed
+util-linux	2.38.1-5+deb12u3	arm64	installed
+util-linux-extra	2.38.1-5+deb12u3	arm64	installed
+zlib1g	1:1.2.13.dfsg-1	arm64	installed
+===DIST_UPGRADE===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+===POLICY===
+Package files:
+ 100 /var/lib/dpkg/status
+     release a=now
+ 500 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages
+     release v=12,o=Debian,a=oldstable-security,n=bookworm-security,l=Debian-Security,c=main,b=arm64
+     origin deb.debian.org
+ 500 http://deb.debian.org/debian bookworm-updates/main arm64 Packages
+     release v=12-updates,o=Debian,a=oldstable-updates,n=bookworm-updates,l=Debian,c=main,b=arm64
+     origin deb.debian.org
+ 500 http://deb.debian.org/debian bookworm/main arm64 Packages
+     release v=12.15,o=Debian,a=oldstable,n=bookworm,l=Debian,c=main,b=arm64
+     origin deb.debian.org
+Pinned packages:
+===HOLDS===
+perl-base
+===DIST_UPGRADE_WITH_HOLDS===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+===INSTALL_SIM===
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libbrotli1 libcurl4 libgssapi-krb5-2 libk5crypto3 libkeyutils1 libkrb5-3
+  libkrb5support0 libldap-2.5-0 libnghttp2-14 libpsl5 librtmp1 libsasl2-2
+  libsasl2-modules-db libssh2-1 libssl3
+Suggested packages:
+  krb5-doc krb5-user
+Recommended packages:
+  ca-certificates krb5-locales libldap-common publicsuffix libsasl2-modules
+The following NEW packages will be installed:
+  curl libbrotli1 libcurl4 libgssapi-krb5-2 libk5crypto3 libkeyutils1
+  libkrb5-3 libkrb5support0 libldap-2.5-0 libnghttp2-14 libpsl5 librtmp1
+  libsasl2-2 libsasl2-modules-db libssh2-1 libssl3
+0 upgraded, 16 newly installed, 0 to remove and 0 not upgraded.
+Inst libbrotli1 (1.0.9-2+b6 Debian:12.15/oldstable [arm64])
+Inst libkrb5support0 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Inst libk5crypto3 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Inst libkeyutils1 (1.6.3-2 Debian:12.15/oldstable [arm64])
+Inst libssl3 (3.0.20-1~deb12u2 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Inst libkrb5-3 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Inst libgssapi-krb5-2 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Inst libsasl2-modules-db (2.1.28+dfsg-10 Debian:12.15/oldstable [arm64])
+Inst libsasl2-2 (2.1.28+dfsg-10 Debian:12.15/oldstable [arm64])
+Inst libldap-2.5-0 (2.5.13+dfsg-5 Debian:12.15/oldstable [arm64])
+Inst libnghttp2-14 (1.52.0-1+deb12u3 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Inst libpsl5 (0.21.2-1 Debian:12.15/oldstable [arm64])
+Inst librtmp1 (2.4+20151223.gitfa8646d.1-2+b2 Debian:12.15/oldstable [arm64])
+Inst libssh2-1 (1.10.0-3+deb12u1 Debian-Security:12/oldstable-security [arm64])
+Inst libcurl4 (7.88.1-10+deb12u15 Debian:12.15/oldstable [arm64])
+Inst curl (7.88.1-10+deb12u15 Debian:12.15/oldstable [arm64])
+Conf libbrotli1 (1.0.9-2+b6 Debian:12.15/oldstable [arm64])
+Conf libkrb5support0 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Conf libk5crypto3 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Conf libkeyutils1 (1.6.3-2 Debian:12.15/oldstable [arm64])
+Conf libssl3 (3.0.20-1~deb12u2 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Conf libkrb5-3 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Conf libgssapi-krb5-2 (1.20.1-2+deb12u5 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Conf libsasl2-modules-db (2.1.28+dfsg-10 Debian:12.15/oldstable [arm64])
+Conf libsasl2-2 (2.1.28+dfsg-10 Debian:12.15/oldstable [arm64])
+Conf libldap-2.5-0 (2.5.13+dfsg-5 Debian:12.15/oldstable [arm64])
+Conf libnghttp2-14 (1.52.0-1+deb12u3 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])
+Conf libpsl5 (0.21.2-1 Debian:12.15/oldstable [arm64])
+Conf librtmp1 (2.4+20151223.gitfa8646d.1-2+b2 Debian:12.15/oldstable [arm64])
+Conf libssh2-1 (1.10.0-3+deb12u1 Debian-Security:12/oldstable-security [arm64])
+Conf libcurl4 (7.88.1-10+deb12u15 Debian:12.15/oldstable [arm64])
+Conf curl (7.88.1-10+deb12u15 Debian:12.15/oldstable [arm64])

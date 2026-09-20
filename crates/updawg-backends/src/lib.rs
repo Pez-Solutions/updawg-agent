@@ -9,8 +9,10 @@
 //! keeps the binary statically linked against musl, so one build per
 //! architecture runs on every supported distro.
 //!
-//! Scope note: DAWG-19 defines the trait. DAWG-34 implements apt and DAWG-35
-//! implements dnf.
+//! Scope note: DAWG-19 defines the trait, DAWG-34 implements apt. DAWG-35
+//! implements dnf; until then its methods report that the tool is missing rather
+//! than returning empty lists, because "no packages" and "I cannot tell you" must
+//! not look the same to the server.
 
 pub mod apt;
 pub mod dnf;
@@ -72,6 +74,18 @@ pub trait PackageBackend: Send + Sync {
     async fn refresh_metadata(&self) -> Result<()>;
     async fn available_updates(&self) -> Result<Vec<AvailableUpdate>>;
     async fn repositories(&self) -> Result<Vec<Repository>>;
+    /// Packages pinned or held locally, which will not be upgraded whatever a
+    /// proposal says.
+    ///
+    /// A package question, and therefore the backend's: it is `apt-mark
+    /// showhold` on one family and `dnf versionlock list` on another. This is why
+    /// `held_packages` was removed from `HostState` rather than left permanently
+    /// empty — a collector could never answer it.
+    ///
+    /// It matters because a plan that ignores these is a plan that silently does
+    /// nothing: the job reports success, the version does not move, and the host
+    /// stays vulnerable while the dashboard says it was patched.
+    async fn held_packages(&self) -> Result<Vec<String>>;
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;
 }
 
