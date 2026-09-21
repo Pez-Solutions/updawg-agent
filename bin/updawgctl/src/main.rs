@@ -17,7 +17,7 @@ use updawg_agent_core::{
     inventory::Collected,
     state::LocalState,
 };
-use updawg_collectors::{FactCollector, PlatformFacts, Root};
+use updawg_collectors::{PlatformFacts, Root};
 use updawg_crypto::{ClientCertificate, PinnedKeys};
 
 #[derive(Debug, Parser)]
@@ -270,25 +270,9 @@ async fn print_inventory(config_path: &str, json: bool) -> Result<()> {
     // Collection only — no transport, so this works on a host that has never
     // enrolled. Someone evaluating Updawg should be able to see what it would
     // collect before letting it talk to anything.
-    let collected = Collected {
-        facts: facts.facts().await.context("gathering platform facts")?,
-        packages: backend
-            .installed()
-            .await
-            .context("listing installed packages")?,
-        updates: backend
-            .available_updates()
-            .await
-            .context("listing available updates")?,
-        repositories: backend
-            .repositories()
-            .await
-            .context("listing repositories")?,
-        held: backend
-            .held_packages()
-            .await
-            .context("listing held packages")?,
-    };
+    let collected = Collected::from_host(backend.as_ref(), facts.as_ref())
+        .await
+        .context("asking this host what it has")?;
     let upload = collected.upload(None);
 
     if json {
@@ -326,7 +310,7 @@ async fn print_inventory(config_path: &str, json: bool) -> Result<()> {
     let (_, security) = collected.counts();
     let _ = writeln!(
         out,
-        "  {security} of them come from a security pocket, as this host's package manager sees it"
+        "  {security} of them are a security fix, as this host's package manager sees it"
     );
     let _ = writeln!(
         out,

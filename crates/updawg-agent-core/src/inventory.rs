@@ -42,9 +42,46 @@ pub struct Collected {
     pub updates: Vec<updawg_protocol::AvailableUpdate>,
     pub repositories: Vec<updawg_protocol::Repository>,
     pub held: Vec<String>,
+    /// The packages the host's own package manager calls a security fix.
+    ///
+    /// Names rather than updates, because the two families answer the question in
+    /// different places and only the backend knows which one applies — see
+    /// [`updawg_backends::PackageBackend::security_updates`]. Not uploaded: it is
+    /// a count on the heartbeat, and the server decides what a security update
+    /// really is against advisory data.
+    pub security: BTreeSet<String>,
 }
 
 impl Collected {
+    /// Ask a host what it has, through a backend and a fact collector.
+    ///
+    /// The **one** description of what a collection pass is, called by the
+    /// uploader and by `updawgctl print-inventory` alike. Building it in two
+    /// places is how the command that answers "what does Updawg collect about my
+    /// servers?" starts answering it about a slightly different collection — and
+    /// that answer is only worth something if it cannot drift.
+    ///
+    /// # Errors
+    /// Whatever the backend or the fact collector could not answer.
+    pub async fn from_host(
+        backend: &dyn PackageBackend,
+        facts: &dyn FactCollector,
+    ) -> anyhow::Result<Self> {
+        // The updates first: which of them the package manager calls security is
+        // a question about that list, and on apt it is answered from the list
+        // rather than by asking again.
+        let updates = backend.available_updates().await?;
+        let security = backend.security_updates(&updates).await?;
+        Ok(Self {
+            facts: facts.facts().await?,
+            packages: backend.installed().await?,
+            updates,
+            security,
+            repositories: backend.repositories().await?,
+            held: backend.held_packages().await?,
+        })
+    }
+
     /// Hash of the package list, which is what a delta applies to.
     ///
     /// Only the packages. The updates and repositories are replaced wholesale on
@@ -56,23 +93,28 @@ impl Collected {
         updawg_crypto::content_hash(canonical(&self.packages).as_bytes())
     }
 
-    /// How many updates are outstanding, and how many apt itself calls security.
+    /// How many updates are outstanding, and how many the package manager itself
+    /// calls security.
     ///
     /// The second is a local hint for the heartbeat, not a classification: the
     /// authoritative answer is the server's, against advisory data. The
     /// distribution's own metadata is incomplete and inconsistent between
     /// families, which is why the server does not take this as the truth.
+    ///
+    /// Counted from [`Collected::security`], which the backend filled in, rather
+    /// than by reading the pocket off each update here. Reading the pocket is
+    /// apt's answer and **only** apt's: the RHEL family publishes security fixes
+    /// to the same repository as everything else, so the same filter returns zero
+    /// on every RHEL host, for ever, with nothing to notice. `security` is
+    /// intersected with `updates` by the backend, so an advisory for something not
+    /// upgradable here cannot push the count above `pending`.
     #[must_use]
     pub fn counts(&self) -> (u32, u32) {
         let pending = u32::try_from(self.updates.len()).unwrap_or(u32::MAX);
         let security = self
             .updates
             .iter()
-            .filter(|u| {
-                u.repo
-                    .as_deref()
-                    .is_some_and(updawg_backends::apt::is_security_archive)
-            })
+            .filter(|u| self.security.contains(&u.name))
             .count();
         (pending, u32::try_from(security).unwrap_or(u32::MAX))
     }
@@ -202,16 +244,11 @@ impl GatewayInventory {
 
     /// Ask the host what it has, without sending anything.
     ///
-    /// Also what `updawgctl print-inventory` calls, so what it prints is what
-    /// would be uploaded rather than a description of it.
+    /// The same [`Collected::from_host`] that `updawgctl print-inventory` calls,
+    /// so what it prints is what would be uploaded rather than a description of
+    /// it.
     pub async fn collect(&self) -> anyhow::Result<Collected> {
-        Ok(Collected {
-            facts: self.facts.facts().await?,
-            packages: self.backend.installed().await?,
-            updates: self.backend.available_updates().await?,
-            repositories: self.backend.repositories().await?,
-            held: self.backend.held_packages().await?,
-        })
+        Collected::from_host(self.backend.as_ref(), self.facts.as_ref()).await
     }
 }
 

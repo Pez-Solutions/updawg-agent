@@ -111,6 +111,8 @@ pub trait PackageBackend: Send + Sync {
     async fn refresh_metadata(&self) -> Result<()>;         // apt-get update / dnf makecache
     async fn available_updates(&self) -> Result<Vec<AvailableUpdate>>;
     async fn repositories(&self) -> Result<Vec<Repository>>;
+    async fn held_packages(&self) -> Result<Vec<String>>;   // apt-mark showhold / versionlock
+    async fn security_updates(&self, updates: &[AvailableUpdate]) -> Result<BTreeSet<String>>;
     async fn apply(&self, plan: &ApplyPlan, log: &LogSink) -> Result<ApplyOutcome>;
 }
 ```
@@ -126,10 +128,22 @@ machine-readable modes:
 - **apt:** installed from `dpkg-query -W` with a tab-separated format string;
   candidates from a simulated `apt-get -s dist-upgrade`; repository origin (e.g.
   the `-security` pocket) from `apt-cache policy`.
-- **dnf:** `rpm -qa --qf`, `dnf check-update`, `dnf updateinfo`.
+- **dnf:** installed from `rpm -qa --qf`; candidates from `dnf repoquery
+  --upgrades --latest-limit=1 --qf`, **not** `dnf check-update`, whose output is
+  a terminal table that wraps a long package name onto two lines; repositories
+  from `dnf repolist --all -v`, whose plain form truncates a name to the terminal
+  width; advisories from `dnf updateinfo list`; holds from `dnf versionlock
+  list`.
 
 Security classification is *refined server-side* by matching versions against
 advisory data — the agent reports what it sees, the server decides what it means.
+
+**`security_updates` is on the trait because the two families keep the answer in
+different places.** apt puts it on the update itself, as the `-security` pocket.
+The RHEL family has no security pocket at all — a fix and a rebuild are published
+to the same `baseos` — and keeps it in a separate `updateinfo` database that has
+to be asked. Filtering on the pocket gives the right answer on Debian and zero on
+every RHEL host in the fleet.
 
 ## 5. What it collects (and what it must never collect)
 

@@ -9,15 +9,18 @@
 //! keeps the binary statically linked against musl, so one build per
 //! architecture runs on every supported distro.
 //!
-//! Scope note: DAWG-19 defines the trait, DAWG-34 implements apt. DAWG-35
-//! implements dnf; until then its methods report that the tool is missing rather
-//! than returning empty lists, because "no packages" and "I cannot tell you" must
-//! not look the same to the server.
+//! Scope note: DAWG-19 defines the trait, DAWG-34 implements apt and DAWG-35
+//! implements dnf. Both report the whole of what they can see; neither can apply
+//! anything yet, because the mutating half belongs with job execution and its
+//! permission checks (DAWG-38), and both say so by name rather than by returning
+//! an empty result. "No packages" and "I cannot tell you" must never look the
+//! same to the server.
 
 pub mod apt;
 pub mod dnf;
 
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, Repository};
 
 /// Anything that can go wrong talking to a package manager.
@@ -86,6 +89,27 @@ pub trait PackageBackend: Send + Sync {
     /// nothing: the job reports success, the version does not move, and the host
     /// stays vulnerable while the dashboard says it was patched.
     async fn held_packages(&self) -> Result<Vec<String>>;
+
+    /// Which of `updates` the package manager itself calls a security fix.
+    ///
+    /// A local hint for the heartbeat, not a classification — the authoritative
+    /// answer is the server's, against advisory data.
+    ///
+    /// It is the backend's question because **the two families keep the answer in
+    /// different places**. apt puts it on the update: the candidate comes from a
+    /// pocket whose archive ends in `-security`, which is already on
+    /// [`AvailableUpdate::repo`]. dnf has no security pocket at all — a fix and a
+    /// rebuild are published to the same `baseos` — and keeps it in a separate
+    /// `updateinfo` database that has to be asked. A caller filtering on the
+    /// pocket gets the right answer on Debian and **zero on every RHEL host in
+    /// the fleet**, which is the shape of wrongness this product exists to
+    /// prevent.
+    ///
+    /// Takes the updates rather than collecting them again, because on apt the
+    /// answer is already in them and re-running `apt-get -s dist-upgrade` to
+    /// re-derive it would double the cost of a collection pass.
+    async fn security_updates(&self, updates: &[AvailableUpdate]) -> Result<BTreeSet<String>>;
+
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;
 }
 

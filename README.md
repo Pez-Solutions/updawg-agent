@@ -67,6 +67,35 @@ build runs on every supported distro. That rules out linking `libapt` or
 `libdnf`, so the backends drive the package managers through their command-line
 tools in machine-readable modes instead. It is a deliberate trade.
 
+**Machine-readable is the load-bearing word.** Both package managers have a
+command a person runs and a command a program runs, and they are not the same
+command. `dnf check-update` prints a padded table that wraps a package whose
+`name.arch` is too wide for the first column onto two lines, and `dnf repolist`
+truncates a repository name to the terminal width — a parser taking three fields
+per line drops the first silently, and a name cut off mid-word matches nothing.
+So the dnf backend asks `dnf repoquery --qf` and `dnf repolist -v`, which emit
+the fields asked for and nothing else. The offline tests still cross-check the
+two against each other, because the day they stop agreeing is the day the query
+stopped meaning what it used to.
+
+### Security is not in the same place on both families
+
+apt names the pocket a candidate comes from, so an update from `noble-security`
+carries its own hint. The RHEL family has no security pocket — a security fix
+and a routine rebuild are both published to `baseos` — and keeps the answer in a
+separate `updateinfo` database. That is why `security_updates` is a method on
+the backend rather than a filter the caller applies: the filter that is right
+for apt returns **zero on every RHEL host, for ever**, and nothing anywhere
+would look wrong.
+
+### Amazon Linux 2023 reports nothing, correctly
+
+AL2023 does deterministic upgrades: `$releasever` is pinned to a dated snapshot,
+and `dnf check-update` finds nothing at all until somebody moves it. A fleet of
+those hosts is genuinely at zero outstanding updates and will stay there. The
+agent does not pass `--releasever=latest` to make the number look more
+interesting, because that would report updates the host is not going to install.
+
 ## Local state
 
 Durable state lives in `/var/lib/updawg`, mode `0700`. Three things have to
@@ -231,6 +260,20 @@ The parsers are additionally tested against output captured from live hosts, not
 only hand-written fixtures: real `needrestart`, `df` and `/proc/meminfo` output
 carries fields and column widths that invented examples make suspiciously
 uniform.
+
+The same applies to the package backends. `tests/fixtures/apt/` and
+`tests/fixtures/dnf/` are the literal output of the real tools inside official
+container images — Ubuntu 20.04, 22.04 and 24.04, Debian 11 and 12, Rocky 8 and
+9, Amazon Linux 2023 — and `tests/apt_live.rs` and `tests/dnf_live.rs`
+re-capture them from live containers on demand:
+
+```sh
+cargo test -p updawg-backends --test dnf_live -- --ignored --nocapture
+```
+
+Those two are the canary for a format drifting under us. They are ignored by
+default because they need Docker, and `UPDAWG_REQUIRE_DOCKER=1` turns "no
+Docker, so this quietly did nothing" into a failure.
 
 ## Checking in
 

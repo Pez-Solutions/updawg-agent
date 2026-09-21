@@ -59,6 +59,7 @@ fn collected(packages: Vec<InstalledPackage>) -> Collected {
         facts: facts(),
         packages,
         updates: vec![],
+        security: std::collections::BTreeSet::new(),
         repositories: vec![],
         held: vec![],
     }
@@ -262,20 +263,38 @@ fn facts_ride_on_every_upload_including_a_delta() {
 /* ----------------------------------------------------------------- counts */
 
 #[test]
-fn security_updates_are_counted_from_the_pocket_apt_named() {
+fn security_updates_are_counted_from_what_the_backend_named() {
     let mut c = collected(vec![]);
     c.updates = vec![
         update("openssl", Some("noble-security")),
         update("jq", Some("noble-updates")),
         update("mystery", None),
     ];
+    // What `AptBackend::security_updates` would return for those three.
+    c.security = ["openssl".to_string()].into_iter().collect();
 
     let (pending, security) = c.counts();
     assert_eq!(pending, 3);
-    // An update with no pocket is not counted as security. This is a hint for
-    // the heartbeat; the authoritative answer is the server's, against advisory
-    // data.
+    // An update the backend did not name is not counted as security. This is a
+    // hint for the heartbeat; the authoritative answer is the server's, against
+    // advisory data.
     assert_eq!(security, 1);
+}
+
+#[test]
+fn an_advisory_for_something_not_upgradable_does_not_inflate_the_count() {
+    // dnf's `updateinfo` lists an advisory per *version*, including ones between
+    // the installed package and the candidate, and a backend that returned those
+    // names without intersecting them could report more security updates than
+    // there are updates. The count is over `updates`, so it cannot.
+    let mut c = collected(vec![]);
+    c.updates = vec![update("openssl", None)];
+    c.security = ["openssl", "glibc", "curl"]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+
+    assert_eq!(c.counts(), (1, 1));
 }
 
 #[test]

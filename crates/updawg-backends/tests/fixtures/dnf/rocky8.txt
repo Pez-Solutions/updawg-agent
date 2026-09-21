@@ -1,0 +1,714 @@
+===OS_RELEASE===
+NAME="Rocky Linux"
+VERSION="8.10 (Green Obsidian)"
+ID="rocky"
+ID_LIKE="rhel centos fedora"
+VERSION_ID="8.10"
+PLATFORM_ID="platform:el8"
+PRETTY_NAME="Rocky Linux 8.10 (Green Obsidian)"
+ANSI_COLOR="0;32"
+LOGO="fedora-logo-icon"
+CPE_NAME="cpe:/o:rocky:rocky:8:GA"
+HOME_URL="https://rockylinux.org/"
+BUG_REPORT_URL="https://bugs.rockylinux.org/"
+SUPPORT_END="2029-05-31"
+ROCKY_SUPPORT_PRODUCT="Rocky-Linux-8"
+ROCKY_SUPPORT_PRODUCT_VERSION="8.10"
+REDHAT_SUPPORT_PRODUCT="Rocky Linux"
+REDHAT_SUPPORT_PRODUCT_VERSION="8.10"
+===RPM_QA===
+crypto-policies	20230731-1.git3177e06.el8	noarch
+python3-pip-wheel	9.0.3-24.el8.rocky.0	noarch
+rocky-gpg-keys	8.10-1.7.el8	noarch
+rocky-repos	8.10-1.7.el8	noarch
+filesystem	3.8-6.el8	aarch64
+ncurses-base	6.1-10.20180224.el8	noarch
+libselinux	2.9-8.el8	aarch64
+glibc-minimal-langpack	2.28-251.el8_10.2	aarch64
+glibc	2.28-251.el8_10.2	aarch64
+libsepol	2.9-3.el8	aarch64
+xz-libs	5.2.4-4.el8_6	aarch64
+libgpg-error	1.31-1.el8	aarch64
+libcap	2.48-6.el8_9	aarch64
+libzstd	1.4.4-1.el8	aarch64
+libxcrypt	4.1.1-6.el8	aarch64
+libuuid	2.32.1-46.el8	aarch64
+chkconfig	1.19.2-1.el8	aarch64
+expat	2.2.5-13.el8_10	aarch64
+json-c	0.13.1-3.el8	aarch64
+libacl	2.2.53-3.el8	aarch64
+libblkid	2.32.1-46.el8	aarch64
+sed	4.5-5.el8	aarch64
+libsmartcols	2.32.1-46.el8	aarch64
+lua-libs	5.3.4-12.el8	aarch64
+file-libs	5.33-26.el8	aarch64
+audit-libs	3.1.2-1.el8	aarch64
+p11-kit	0.23.22-2.el8	aarch64
+libunistring	0.9.9-3.el8	aarch64
+libassuan	2.5.1-3.el8	aarch64
+keyutils-libs	1.5.10-9.el8	aarch64
+p11-kit-trust	0.23.22-2.el8	aarch64
+grep	3.1-6.el8	aarch64
+dbus-libs	1:1.12.8-26.el8	aarch64
+libusbx	1.0.23-4.el8	aarch64
+openssl-libs	1:1.1.1k-12.el8_9	aarch64
+libdb-utils	5.3.28-42.el8_4	aarch64
+libarchive	3.3.3-5.el8	aarch64
+libsemanage	2.9-9.el8_6	aarch64
+libutempter	1.1.6-14.el8	aarch64
+ima-evm-utils	1.3.2-12.el8	aarch64
+gzip	1.9-13.el8_5	aarch64
+cracklib-dicts	2.9.6-15.el8	aarch64
+mpfr	3.1.6-1.el8	aarch64
+gnutls	3.6.16-8.el8_10.2	aarch64
+libcomps	0.1.18-1.el8	aarch64
+libnghttp2	1.33.0-5.el8_8	aarch64
+libsigsegv	2.11-5.el8	aarch64
+libverto	0.3.2-2.el8	aarch64
+libtirpc	1.1.4-11.el8	aarch64
+platform-python-setuptools	39.2.0-7.el8	noarch
+python3-libs	3.6.8-62.el8_10.rocky.0	aarch64
+pam	1.3.1-33.el8	aarch64
+libcurl-minimal	7.61.1-34.el8	aarch64
+rpm	4.14.3-31.el8	aarch64
+libsolv	0.7.20-6.el8	aarch64
+device-mapper-libs	8:1.02.181-14.el8	aarch64
+elfutils-default-yama-scope	0.190-2.el8	noarch
+dbus-common	1:1.12.8-26.el8	noarch
+systemd-pam	239-82.el8	aarch64
+dbus	1:1.12.8-26.el8	aarch64
+cyrus-sasl-lib	2.1.27-6.el8_5	aarch64
+libyaml	0.1.7-5.el8	aarch64
+npth	1.5-4.el8	aarch64
+gpgme	1.13.1-12.el8	aarch64
+libdnf	0.63.0-19.el8	aarch64
+python3-hawkey	0.63.0-19.el8	aarch64
+rpm-build-libs	4.14.3-31.el8	aarch64
+libreport-filesystem	2.9.5-15.el8.rocky.6.3	aarch64
+python3-dnf	4.7.0-20.el8	noarch
+yum	4.7.0-20.el8	noarch
+binutils	2.30-123.el8	aarch64
+vim-minimal	2:8.0.1763-19.el8_6.4	aarch64
+less	530-2.el8_9	aarch64
+rootfiles	8.1-22.el8	noarch
+libgcc	8.5.0-22.el8_10	aarch64
+python3-setuptools-wheel	39.2.0-7.el8	noarch
+tzdata	2024a-1.el8	noarch
+rocky-release	8.10-1.7.el8	noarch
+setup	2.12.2-11.el8	noarch
+basesystem	11-5.el8	noarch
+pcre2	10.32-3.el8_6	aarch64
+ncurses-libs	6.1-10.20180224.el8	aarch64
+glibc-common	2.28-251.el8_10.2	aarch64
+bash	4.4.20-5.el8	aarch64
+zlib	1.2.11-26.el8	aarch64
+bzip2-libs	1.0.6-26.el8	aarch64
+sqlite-libs	3.26.0-19.el8_9	aarch64
+info	6.5-7.el8	aarch64
+elfutils-libelf	0.190-2.el8	aarch64
+libxml2	2.9.7-18.el8	aarch64
+popt	1.18-1.el8	aarch64
+readline	7.0-10.el8	aarch64
+gmp	1:6.1.2-12.el8	aarch64
+libattr	2.4.48-3.el8	aarch64
+coreutils-single	8.30-15.el8	aarch64
+libmount	2.32.1-46.el8	aarch64
+libcom_err	1.45.6-5.el8	aarch64
+libstdc++	8.5.0-22.el8_10	aarch64
+libgcrypt	1.8.5-7.el8_6	aarch64
+libcap-ng	0.7.11-1.el8	aarch64
+libffi	3.1-24.el8	aarch64
+lz4-libs	1.8.3-3.el8_4	aarch64
+libidn2	2.2.0-1.el8	aarch64
+gdbm-libs	1:1.18-2.el8	aarch64
+libtasn1	4.13-4.el8_7	aarch64
+pcre	8.42-6.el8	aarch64
+systemd-libs	239-82.el8	aarch64
+dbus-tools	1:1.12.8-26.el8	aarch64
+ca-certificates	2023.2.60_v7.0.306-80.0.el8_8	noarch
+libdb	5.3.28-42.el8_4	aarch64
+kmod-libs	25-20.el8	aarch64
+gdbm	1:1.18-2.el8	aarch64
+shadow-utils	2:4.6-22.el8	aarch64
+tpm2-tss	2.3.2-6.el8	aarch64
+libfdisk	2.32.1-46.el8	aarch64
+cracklib	2.9.6-15.el8	aarch64
+acl	2.2.53-3.el8	aarch64
+nettle	3.4.1-7.el8	aarch64
+glib2	2.56.4-164.el8	aarch64
+libksba	1.3.5-9.el8_7	aarch64
+libseccomp	2.5.2-1.el8	aarch64
+gawk	4.2.1-4.el8	aarch64
+krb5-libs	1.18.2-27.el8_10	aarch64
+libnsl2	1.2.0-2.20180605git4a062cf.el8	aarch64
+platform-python	3.6.8-62.el8_10.rocky.0	aarch64
+libpwquality	1.4.4-6.el8	aarch64
+util-linux	2.32.1-46.el8	aarch64
+curl	7.61.1-34.el8	aarch64
+rpm-libs	4.14.3-31.el8	aarch64
+device-mapper	8:1.02.181-14.el8	aarch64
+cryptsetup-libs	2.3.7-7.el8	aarch64
+elfutils-libs	0.190-2.el8	aarch64
+dbus-daemon	1:1.12.8-26.el8	aarch64
+systemd	239-82.el8	aarch64
+python3-libcomps	0.1.18-1.el8	aarch64
+openldap	2.4.46-18.el8	aarch64
+libmodulemd	2.13.0-1.el8	aarch64
+gnupg2	2.2.20-3.el8_6	aarch64
+librepo	1.14.2-5.el8	aarch64
+python3-libdnf	0.63.0-19.el8	aarch64
+python3-gpg	1.13.1-12.el8	aarch64
+python3-rpm	4.14.3-31.el8	aarch64
+dnf-data	4.7.0-20.el8	noarch
+dnf	4.7.0-20.el8	noarch
+iputils	20180629-11.el8	aarch64
+tar	2:1.30-9.el8	aarch64
+hostname	3.20-6.el8	aarch64
+langpacks-en	1.0-12.el8	noarch
+===UPGRADES===
+acl	2.4.0-1.el8_10	aarch64	baseos
+audit-libs	3.1.2-1.el8_10.1	aarch64	baseos
+bash	4.4.20-6.el8_10	aarch64	baseos
+binutils	2.30-128.el8_10	aarch64	baseos
+bzip2-libs	1.0.6-28.el8_10	aarch64	baseos
+ca-certificates	2025.2.80_v9.0.304-80.2.el8_10	noarch	baseos
+coreutils-single	8.30-20.el8_10	aarch64	baseos
+curl	7.61.1-34.el8_10.13	aarch64	baseos
+dbus	1:1.12.8-28.el8_10	aarch64	baseos
+dbus-common	1:1.12.8-28.el8_10	noarch	baseos
+dbus-daemon	1:1.12.8-28.el8_10	aarch64	baseos
+dbus-libs	1:1.12.8-28.el8_10	aarch64	baseos
+dbus-tools	1:1.12.8-28.el8_10	aarch64	baseos
+device-mapper	8:1.02.181-15.el8_10.3	aarch64	baseos
+device-mapper-libs	8:1.02.181-15.el8_10.3	aarch64	baseos
+dnf	4.7.0-21.el8_10	noarch	baseos
+dnf-data	4.7.0-21.el8_10	noarch	baseos
+expat	2.5.0-2.el8_10.2	aarch64	baseos
+file-libs	5.33-27.el8_10	aarch64	baseos
+glib2	2.56.4-178.el8_10	aarch64	baseos
+glibc	2.28-251.el8_10.40	aarch64	baseos
+glibc-common	2.28-251.el8_10.40	aarch64	baseos
+glibc-minimal-langpack	2.28-251.el8_10.40	aarch64	baseos
+gnupg2	2.2.20-4.el8_10	aarch64	baseos
+gnutls	3.6.16-8.el8_10.6	aarch64	baseos
+gzip	1.9-15.el8_10	aarch64	baseos
+krb5-libs	1.18.2-34.el8_10	aarch64	baseos
+less	530-3.el8_10	aarch64	baseos
+libacl	2.4.0-1.el8_10	aarch64	baseos
+libarchive	3.3.3-7.el8_10	aarch64	baseos
+libattr	2.6.0-1.el8_10	aarch64	baseos
+libblkid	2.32.1-48.el8_10	aarch64	baseos
+libcap	2.48-6.el8_10.1	aarch64	baseos
+libcom_err	1.45.6-7.el8_10	aarch64	baseos
+libcurl-minimal	7.61.1-34.el8_10.13	aarch64	baseos
+libdnf	0.63.0-21.el8_10	aarch64	baseos
+libfdisk	2.32.1-48.el8_10	aarch64	baseos
+libgcc	8.5.0-28.el8_10	aarch64	baseos
+libgcrypt	1.8.5-8.el8_10	aarch64	baseos
+libmount	2.32.1-48.el8_10	aarch64	baseos
+libnghttp2	1.33.0-6.el8_10.3	aarch64	baseos
+libselinux	2.9-11.el8_10	aarch64	baseos
+libsemanage	2.9-12.el8_10	aarch64	baseos
+libsmartcols	2.32.1-48.el8_10	aarch64	baseos
+libsolv	0.7.20-7.el8_10	aarch64	baseos
+libstdc++	8.5.0-28.el8_10	aarch64	baseos
+libtasn1	4.13-6.el8_10	aarch64	baseos
+libtirpc	1.1.4-12.el8_10	aarch64	baseos
+libusbx	1.0.30-1.el8_10	aarch64	baseos
+libuuid	2.32.1-48.el8_10	aarch64	baseos
+libxml2	2.9.7-21.el8_10.7	aarch64	baseos
+lz4-libs	1.8.3-5.el8_10	aarch64	baseos
+openldap	2.4.46-21.el8_10	aarch64	baseos
+openssl-libs	1:1.1.1k-17.el8_10	aarch64	baseos
+pam	1.3.1-40.el8_10	aarch64	baseos
+platform-python	3.6.8-78.el8_10.rocky.0	aarch64	baseos
+platform-python-setuptools	39.2.0-9.el8_10	noarch	baseos
+python3-dnf	4.7.0-21.el8_10	noarch	baseos
+python3-hawkey	0.63.0-21.el8_10	aarch64	baseos
+python3-libdnf	0.63.0-21.el8_10	aarch64	baseos
+python3-libs	3.6.8-78.el8_10.rocky.0	aarch64	baseos
+python3-rpm	4.14.3-32.el8_10	aarch64	baseos
+python3-setuptools-wheel	39.2.0-9.el8_10	noarch	baseos
+rocky-gpg-keys	8.10-1.14.el8	noarch	baseos
+rocky-release	8.10-1.14.el8	noarch	baseos
+rocky-repos	8.10-1.14.el8	noarch	baseos
+rpm	4.14.3-32.el8_10	aarch64	baseos
+rpm-build-libs	4.14.3-32.el8_10	aarch64	baseos
+rpm-libs	4.14.3-32.el8_10	aarch64	baseos
+shadow-utils	2:4.6-23.el8_10	aarch64	baseos
+sqlite-libs	3.26.0-21.el8_10	aarch64	baseos
+systemd	239-82.el8_10.19	aarch64	baseos
+systemd-libs	239-82.el8_10.19	aarch64	baseos
+systemd-pam	239-82.el8_10.19	aarch64	baseos
+tar	2:1.30-11.el8_10	aarch64	baseos
+tzdata	2026c-1.el8_10	noarch	baseos
+util-linux	2.32.1-48.el8_10	aarch64	baseos
+vim-minimal	2:8.0.1763-31.el8_10.7	aarch64	baseos
+yum	4.7.0-21.el8_10	noarch	baseos
+===CHECK_UPDATE===
+
+acl.aarch64                           2.4.0-1.el8_10                      baseos
+audit-libs.aarch64                    3.1.2-1.el8_10.1                    baseos
+bash.aarch64                          4.4.20-6.el8_10                     baseos
+binutils.aarch64                      2.30-128.el8_10                     baseos
+bzip2-libs.aarch64                    1.0.6-28.el8_10                     baseos
+ca-certificates.noarch                2025.2.80_v9.0.304-80.2.el8_10      baseos
+coreutils-single.aarch64              8.30-20.el8_10                      baseos
+curl.aarch64                          7.61.1-34.el8_10.13                 baseos
+dbus.aarch64                          1:1.12.8-28.el8_10                  baseos
+dbus-common.noarch                    1:1.12.8-28.el8_10                  baseos
+dbus-daemon.aarch64                   1:1.12.8-28.el8_10                  baseos
+dbus-libs.aarch64                     1:1.12.8-28.el8_10                  baseos
+dbus-tools.aarch64                    1:1.12.8-28.el8_10                  baseos
+device-mapper.aarch64                 8:1.02.181-15.el8_10.3              baseos
+device-mapper-libs.aarch64            8:1.02.181-15.el8_10.3              baseos
+dnf.noarch                            4.7.0-21.el8_10                     baseos
+dnf-data.noarch                       4.7.0-21.el8_10                     baseos
+expat.aarch64                         2.5.0-2.el8_10.2                    baseos
+file-libs.aarch64                     5.33-27.el8_10                      baseos
+glib2.aarch64                         2.56.4-178.el8_10                   baseos
+glibc.aarch64                         2.28-251.el8_10.40                  baseos
+glibc-common.aarch64                  2.28-251.el8_10.40                  baseos
+glibc-minimal-langpack.aarch64        2.28-251.el8_10.40                  baseos
+gnupg2.aarch64                        2.2.20-4.el8_10                     baseos
+gnutls.aarch64                        3.6.16-8.el8_10.6                   baseos
+gzip.aarch64                          1.9-15.el8_10                       baseos
+krb5-libs.aarch64                     1.18.2-34.el8_10                    baseos
+less.aarch64                          530-3.el8_10                        baseos
+libacl.aarch64                        2.4.0-1.el8_10                      baseos
+libarchive.aarch64                    3.3.3-7.el8_10                      baseos
+libattr.aarch64                       2.6.0-1.el8_10                      baseos
+libblkid.aarch64                      2.32.1-48.el8_10                    baseos
+libcap.aarch64                        2.48-6.el8_10.1                     baseos
+libcom_err.aarch64                    1.45.6-7.el8_10                     baseos
+libcurl-minimal.aarch64               7.61.1-34.el8_10.13                 baseos
+libdnf.aarch64                        0.63.0-21.el8_10                    baseos
+libfdisk.aarch64                      2.32.1-48.el8_10                    baseos
+libgcc.aarch64                        8.5.0-28.el8_10                     baseos
+libgcrypt.aarch64                     1.8.5-8.el8_10                      baseos
+libmount.aarch64                      2.32.1-48.el8_10                    baseos
+libnghttp2.aarch64                    1.33.0-6.el8_10.3                   baseos
+libselinux.aarch64                    2.9-11.el8_10                       baseos
+libsemanage.aarch64                   2.9-12.el8_10                       baseos
+libsmartcols.aarch64                  2.32.1-48.el8_10                    baseos
+libsolv.aarch64                       0.7.20-7.el8_10                     baseos
+libstdc++.aarch64                     8.5.0-28.el8_10                     baseos
+libtasn1.aarch64                      4.13-6.el8_10                       baseos
+libtirpc.aarch64                      1.1.4-12.el8_10                     baseos
+libusbx.aarch64                       1.0.30-1.el8_10                     baseos
+libuuid.aarch64                       2.32.1-48.el8_10                    baseos
+libxml2.aarch64                       2.9.7-21.el8_10.7                   baseos
+lz4-libs.aarch64                      1.8.3-5.el8_10                      baseos
+openldap.aarch64                      2.4.46-21.el8_10                    baseos
+openssl-libs.aarch64                  1:1.1.1k-17.el8_10                  baseos
+pam.aarch64                           1.3.1-40.el8_10                     baseos
+platform-python.aarch64               3.6.8-78.el8_10.rocky.0             baseos
+platform-python-setuptools.noarch     39.2.0-9.el8_10                     baseos
+python3-dnf.noarch                    4.7.0-21.el8_10                     baseos
+python3-hawkey.aarch64                0.63.0-21.el8_10                    baseos
+python3-libdnf.aarch64                0.63.0-21.el8_10                    baseos
+python3-libs.aarch64                  3.6.8-78.el8_10.rocky.0             baseos
+python3-rpm.aarch64                   4.14.3-32.el8_10                    baseos
+python3-setuptools-wheel.noarch       39.2.0-9.el8_10                     baseos
+rocky-gpg-keys.noarch                 8.10-1.14.el8                       baseos
+rocky-release.noarch                  8.10-1.14.el8                       baseos
+rocky-repos.noarch                    8.10-1.14.el8                       baseos
+rpm.aarch64                           4.14.3-32.el8_10                    baseos
+rpm-build-libs.aarch64                4.14.3-32.el8_10                    baseos
+rpm-libs.aarch64                      4.14.3-32.el8_10                    baseos
+shadow-utils.aarch64                  2:4.6-23.el8_10                     baseos
+sqlite-libs.aarch64                   3.26.0-21.el8_10                    baseos
+systemd.aarch64                       239-82.el8_10.19                    baseos
+systemd-libs.aarch64                  239-82.el8_10.19                    baseos
+systemd-pam.aarch64                   239-82.el8_10.19                    baseos
+tar.aarch64                           2:1.30-11.el8_10                    baseos
+tzdata.noarch                         2026c-1.el8_10                      baseos
+util-linux.aarch64                    2.32.1-48.el8_10                    baseos
+vim-minimal.aarch64                   2:8.0.1763-31.el8_10.7              baseos
+yum.noarch                            4.7.0-21.el8_10                     baseos
+===UPDATEINFO===
+RLSA-2026:43420 Important/Sec. acl-2.4.0-1.el8_10.aarch64
+RLSA-2024:9689  Low/Sec.       binutils-2.30-125.el8_10.aarch64
+RLSA-2025:23382 Moderate/Sec.  binutils-2.30-128.el8_10.aarch64
+RLSA-2024:8922  Low/Sec.       bzip2-libs-1.0.6-27.el8_10.aarch64
+RLSA-2025:0733  Moderate/Sec.  bzip2-libs-1.0.6-28.el8_10.aarch64
+RLBA-2024:5736  bugfix         ca-certificates-2024.2.69_v8.0.303-80.0.el8_10.noarch
+RLBA-2026:47115 bugfix         coreutils-single-8.30-20.el8_10.aarch64
+RLSA-2026:57462 Important/Sec. curl-7.61.1-34.el8_10.13.aarch64
+RLSA-2024:5654  Moderate/Sec.  curl-7.61.1-34.el8_10.2.aarch64
+RLBA-2025:0731  bugfix         curl-7.61.1-34.el8_10.3.aarch64
+RLSA-2025:23383 Moderate/Sec.  curl-7.61.1-34.el8_10.9.aarch64
+RLBA-2025:2596  bugfix         device-mapper-8:1.02.181-15.el8_10.aarch64
+RLBA-2025:2596  bugfix         device-mapper-libs-8:1.02.181-15.el8_10.aarch64
+RLBA-2025:2595  bugfix         dnf-4.7.0-21.el8_10.noarch
+RLBA-2025:2595  bugfix         dnf-data-4.7.0-21.el8_10.noarch
+RLSA-2024:6989  Moderate/Sec.  expat-2.2.5-15.el8_10.aarch64
+RLSA-2024:9502  Moderate/Sec.  expat-2.2.5-16.el8_10.aarch64
+RLSA-2025:3913  Moderate/Sec.  expat-2.2.5-17.el8_10.aarch64
+RLSA-2025:21776 Important/Sec. expat-2.5.0-1.el8_10.aarch64
+RLSA-2026:64809 Moderate/Sec.  expat-2.5.0-2.el8_10.2.aarch64
+RLSA-2026:22721 Important/Sec. expat-2.5.0-2.el8_10.aarch64
+RLBA-2024:8866  bugfix         glib2-2.56.4-165.el8_10.aarch64
+RLSA-2025:11327 Moderate/Sec.  glib2-2.56.4-166.el8_10.aarch64
+RLSA-2026:0991  Moderate/Sec.  glib2-2.56.4-168.el8_10.aarch64
+RLSA-2026:15953 Moderate/Sec.  glib2-2.56.4-169.el8_10.aarch64
+RLSA-2026:42090 Important/Sec. glib2-2.56.4-170.el8_10.aarch64
+RLSA-2026:61766 Moderate/Sec.  glib2-2.56.4-177.el8_10.aarch64
+RLSA-2026:66451 Moderate/Sec.  glib2-2.56.4-178.el8_10.aarch64
+RLSA-2024:3269  Important/Sec. glibc-2.28-251.el8_10.11.aarch64
+RLBA-2025:0728  bugfix         glibc-2.28-251.el8_10.11.aarch64
+RLBA-2025:1573  bugfix         glibc-2.28-251.el8_10.13.aarch64
+RLBA-2025:2871  bugfix         glibc-2.28-251.el8_10.14.aarch64
+RLSA-2025:3828  Moderate/Sec.  glibc-2.28-251.el8_10.16.aarch64
+RLSA-2025:8686  Moderate/Sec.  glibc-2.28-251.el8_10.22.aarch64
+RLSA-2025:12980 Moderate/Sec.  glibc-2.28-251.el8_10.25.aarch64
+RLSA-2026:4772  Moderate/Sec.  glibc-2.28-251.el8_10.31.aarch64
+RLSA-2026:20587 Moderate/Sec.  glibc-2.28-251.el8_10.37.aarch64
+RLSA-2026:33126 Moderate/Sec.  glibc-2.28-251.el8_10.38.aarch64
+RLBA-2024:5834  bugfix         glibc-2.28-251.el8_10.4.aarch64
+RLSA-2026:42733 Moderate/Sec.  glibc-2.28-251.el8_10.40.aarch64
+RLBA-2024:6988  bugfix         glibc-2.28-251.el8_10.5.aarch64
+RLSA-2024:3269  Important/Sec. glibc-common-2.28-251.el8_10.11.aarch64
+RLBA-2025:0728  bugfix         glibc-common-2.28-251.el8_10.11.aarch64
+RLBA-2025:1573  bugfix         glibc-common-2.28-251.el8_10.13.aarch64
+RLBA-2025:2871  bugfix         glibc-common-2.28-251.el8_10.14.aarch64
+RLSA-2025:3828  Moderate/Sec.  glibc-common-2.28-251.el8_10.16.aarch64
+RLSA-2025:8686  Moderate/Sec.  glibc-common-2.28-251.el8_10.22.aarch64
+RLSA-2025:12980 Moderate/Sec.  glibc-common-2.28-251.el8_10.25.aarch64
+RLSA-2026:4772  Moderate/Sec.  glibc-common-2.28-251.el8_10.31.aarch64
+RLSA-2026:20587 Moderate/Sec.  glibc-common-2.28-251.el8_10.37.aarch64
+RLSA-2026:33126 Moderate/Sec.  glibc-common-2.28-251.el8_10.38.aarch64
+RLBA-2024:5834  bugfix         glibc-common-2.28-251.el8_10.4.aarch64
+RLSA-2026:42733 Moderate/Sec.  glibc-common-2.28-251.el8_10.40.aarch64
+RLBA-2024:6988  bugfix         glibc-common-2.28-251.el8_10.5.aarch64
+RLSA-2024:3269  Important/Sec. glibc-minimal-langpack-2.28-251.el8_10.11.aarch64
+RLBA-2025:0728  bugfix         glibc-minimal-langpack-2.28-251.el8_10.11.aarch64
+RLBA-2025:1573  bugfix         glibc-minimal-langpack-2.28-251.el8_10.13.aarch64
+RLBA-2025:2871  bugfix         glibc-minimal-langpack-2.28-251.el8_10.14.aarch64
+RLSA-2025:3828  Moderate/Sec.  glibc-minimal-langpack-2.28-251.el8_10.16.aarch64
+RLSA-2025:8686  Moderate/Sec.  glibc-minimal-langpack-2.28-251.el8_10.22.aarch64
+RLSA-2025:12980 Moderate/Sec.  glibc-minimal-langpack-2.28-251.el8_10.25.aarch64
+RLSA-2026:4772  Moderate/Sec.  glibc-minimal-langpack-2.28-251.el8_10.31.aarch64
+RLSA-2026:20587 Moderate/Sec.  glibc-minimal-langpack-2.28-251.el8_10.37.aarch64
+RLSA-2026:33126 Moderate/Sec.  glibc-minimal-langpack-2.28-251.el8_10.38.aarch64
+RLBA-2024:5834  bugfix         glibc-minimal-langpack-2.28-251.el8_10.4.aarch64
+RLSA-2026:42733 Moderate/Sec.  glibc-minimal-langpack-2.28-251.el8_10.40.aarch64
+RLBA-2024:6988  bugfix         glibc-minimal-langpack-2.28-251.el8_10.5.aarch64
+RLSA-2026:0728  Important/Sec. gnupg2-2.2.20-4.el8_10.aarch64
+RLSA-2025:4051  Moderate/Sec.  gnutls-3.6.16-8.el8_10.3.aarch64
+RLSA-2025:17415 Moderate/Sec.  gnutls-3.6.16-8.el8_10.4.aarch64
+RLSA-2026:5585  Moderate/Sec.  gnutls-3.6.16-8.el8_10.5.aarch64
+RLSA-2026:20611 Important/Sec. gnutls-3.6.16-8.el8_10.6.aarch64
+RLSA-2026:65998 Moderate/Sec.  gzip-1.9-15.el8_10.aarch64
+RLBA-2024:4263  bugfix         krb5-libs-1.18.2-28.el8_10.aarch64
+RLSA-2024:5312  Moderate/Sec.  krb5-libs-1.18.2-29.el8_10.aarch64
+RLSA-2024:8860  Important/Sec. krb5-libs-1.18.2-30.el8_10.aarch64
+RLSA-2025:2722  Moderate/Sec.  krb5-libs-1.18.2-31.el8_10.aarch64
+RLSA-2025:8411  Moderate/Sec.  krb5-libs-1.18.2-32.el8_10.aarch64
+RLSA-2026:16799 Important/Sec. krb5-libs-1.18.2-34.el8_10.aarch64
+RLSA-2024:4256  Important/Sec. less-530-3.el8_10.aarch64
+RLSA-2026:43420 Important/Sec. libacl-2.4.0-1.el8_10.aarch64
+RLSA-2025:14135 Important/Sec. libarchive-3.3.3-6.el8_10.aarch64
+RLSA-2026:8534  Important/Sec. libarchive-3.3.3-7.el8_10.aarch64
+RLSA-2026:56133 Moderate/Sec.  libattr-2.6.0-1.el8_10.aarch64
+RLSA-2026:1852  Moderate/Sec.  libblkid-2.32.1-48.el8_10.aarch64
+RLSA-2026:13285 Important/Sec. libcap-2.48-6.el8_10.1.aarch64
+RLSA-2026:57462 Important/Sec. libcurl-minimal-7.61.1-34.el8_10.13.aarch64
+RLSA-2024:5654  Moderate/Sec.  libcurl-minimal-7.61.1-34.el8_10.2.aarch64
+RLBA-2025:0731  bugfix         libcurl-minimal-7.61.1-34.el8_10.3.aarch64
+RLSA-2025:23383 Moderate/Sec.  libcurl-minimal-7.61.1-34.el8_10.9.aarch64
+RLBA-2024:5308  bugfix         libdnf-0.63.0-20.el8_10.aarch64
+RLBA-2025:0732  bugfix         libdnf-0.63.0-21.el8_10.aarch64
+RLSA-2026:1852  Moderate/Sec.  libfdisk-2.32.1-48.el8_10.aarch64
+RLSA-2025:1301  Moderate/Sec.  libgcc-8.5.0-23.el8_10.aarch64
+RLBA-2025:2602  bugfix         libgcc-8.5.0-24.el8_10.aarch64
+RLSA-2026:47117 Moderate/Sec.  libgcrypt-1.8.5-8.el8_10.aarch64
+RLSA-2026:1852  Moderate/Sec.  libmount-2.32.1-48.el8_10.aarch64
+RLSA-2024:4252  Moderate/Sec.  libnghttp2-1.33.0-6.el8_10.1.aarch64
+RLSA-2026:7667  Important/Sec. libnghttp2-1.33.0-6.el8_10.2.aarch64
+RLSA-2026:55804 Moderate/Sec.  libnghttp2-1.33.0-6.el8_10.3.aarch64
+RLBA-2024:11159 bugfix         libselinux-2.9-9.el8_10.aarch64
+RLBA-2019:3534  bugfix         libsemanage-2.9-10.el8_10.aarch64
+RLBA-2024:11159 bugfix         libsemanage-2.9-10.el8_10.aarch64
+RLSA-2026:1852  Moderate/Sec.  libsmartcols-2.32.1-48.el8_10.aarch64
+RLSA-2026:36730 Moderate/Sec.  libsolv-0.7.20-7.el8_10.aarch64
+RLSA-2025:1301  Moderate/Sec.  libstdc++-8.5.0-23.el8_10.aarch64
+RLBA-2025:2602  bugfix         libstdc++-8.5.0-24.el8_10.aarch64
+RLSA-2025:4049  Moderate/Sec.  libtasn1-4.13-5.el8_10.aarch64
+RLSA-2026:36728 Low/Sec.       libtasn1-4.13-6.el8_10.aarch64
+RLBA-2024:4250  bugfix         libtirpc-1.1.4-12.el8_10.aarch64
+RLSA-2026:1852  Moderate/Sec.  libuuid-2.32.1-48.el8_10.aarch64
+RLSA-2024:3626  Moderate/Sec.  libxml2-2.9.7-18.el8_10.1.aarch64
+RLSA-2025:1517  Moderate/Sec.  libxml2-2.9.7-18.el8_10.2.aarch64
+RLSA-2024:0119  Moderate/Sec.  libxml2-2.9.7-18.el8_9.aarch64
+RLSA-2025:2686  Important/Sec. libxml2-2.9.7-19.el8_10.aarch64
+RLSA-2025:8958  Moderate/Sec.  libxml2-2.9.7-20.el8_10.aarch64
+RLSA-2025:10698 Important/Sec. libxml2-2.9.7-21.el8_10.1.aarch64
+RLSA-2025:13203 Moderate/Sec.  libxml2-2.9.7-21.el8_10.3.aarch64
+RLSA-2026:11349 Moderate/Sec.  libxml2-2.9.7-21.el8_10.4.aarch64
+RLSA-2026:26354 Low/Sec.       libxml2-2.9.7-21.el8_10.5.aarch64
+RLSA-2026:36734 Low/Sec.       libxml2-2.9.7-21.el8_10.6.aarch64
+RLSA-2026:61248 Moderate/Sec.  libxml2-2.9.7-21.el8_10.7.aarch64
+RLSA-2025:11035 Moderate/Sec.  lz4-libs-1.8.3-5.el8_10.aarch64
+RLSA-2024:4264  Low/Sec.       openldap-2.4.46-19.el8_10.aarch64
+RLBA-2024:8861  bugfix         openldap-2.4.46-20.el8_10.aarch64
+RLBA-2025:2593  bugfix         openldap-2.4.46-21.el8_10.aarch64
+RLSA-2024:7848  Low/Sec.       openssl-libs-1:1.1.1k-14.el8_10.aarch64
+RLSA-2026:3042  Moderate/Sec.  openssl-libs-1:1.1.1k-15.el8_10.aarch64
+RLSA-2026:26275 Important/Sec. openssl-libs-1:1.1.1k-16.el8_10.aarch64
+RLSA-2026:38503 Moderate/Sec.  openssl-libs-1:1.1.1k-17.el8_10.aarch64
+RLBA-2024:4251  bugfix         pam-1.3.1-34.el8_10.aarch64
+RLSA-2024:10379 Important/Sec. pam-1.3.1-36.el8_10.aarch64
+RLSA-2025:10027 Important/Sec. pam-1.3.1-37.el8_10.aarch64
+RLSA-2025:14557 Important/Sec. pam-1.3.1-38.el8_10.aarch64
+RLSA-2026:56131 Moderate/Sec.  pam-1.3.1-40.el8_10.aarch64
+RLSA-2024:6975  Moderate/Sec.  platform-python-3.6.8-67.el8_10.rocky.0.aarch64
+RLSA-2024:10779 Moderate/Sec.  platform-python-3.6.8-69.el8_10.rocky.0.aarch64
+RLSA-2025:10128 Important/Sec. platform-python-3.6.8-70.el8_10.rocky.0.aarch64
+RLSA-2025:14560 Moderate/Sec.  platform-python-3.6.8-71.el8_10.rocky.0.aarch64
+RLSA-2026:1631  Moderate/Sec.  platform-python-3.6.8-72.el8_10.rocky.0.aarch64
+RLSA-2026:2128  Moderate/Sec.  platform-python-3.6.8-73.el8_10.rocky.0.aarch64
+RLSA-2026:6473  Important/Sec. platform-python-3.6.8-75.el8_10.rocky.0.aarch64
+RLSA-2026:11077 Important/Sec. platform-python-3.6.8-76.el8_10.rocky.0.aarch64
+RLSA-2026:39320 Important/Sec. platform-python-3.6.8-77.el8_10.rocky.0.aarch64
+RLSA-2026:56219 Important/Sec. platform-python-3.6.8-78.el8_10.rocky.0.aarch64
+RLSA-2024:5530  Important/Sec. platform-python-setuptools-39.2.0-8.el8_10.noarch
+RLSA-2025:11036 Moderate/Sec.  platform-python-setuptools-39.2.0-9.el8_10.noarch
+RLBA-2025:2595  bugfix         python3-dnf-4.7.0-21.el8_10.noarch
+RLBA-2024:5308  bugfix         python3-hawkey-0.63.0-20.el8_10.aarch64
+RLBA-2025:0732  bugfix         python3-hawkey-0.63.0-21.el8_10.aarch64
+RLBA-2024:5308  bugfix         python3-libdnf-0.63.0-20.el8_10.aarch64
+RLBA-2025:0732  bugfix         python3-libdnf-0.63.0-21.el8_10.aarch64
+RLSA-2024:6975  Moderate/Sec.  python3-libs-3.6.8-67.el8_10.rocky.0.aarch64
+RLSA-2024:10779 Moderate/Sec.  python3-libs-3.6.8-69.el8_10.rocky.0.aarch64
+RLSA-2025:10128 Important/Sec. python3-libs-3.6.8-70.el8_10.rocky.0.aarch64
+RLSA-2025:14560 Moderate/Sec.  python3-libs-3.6.8-71.el8_10.rocky.0.aarch64
+RLSA-2026:1631  Moderate/Sec.  python3-libs-3.6.8-72.el8_10.rocky.0.aarch64
+RLSA-2026:2128  Moderate/Sec.  python3-libs-3.6.8-73.el8_10.rocky.0.aarch64
+RLSA-2026:6473  Important/Sec. python3-libs-3.6.8-75.el8_10.rocky.0.aarch64
+RLSA-2026:11077 Important/Sec. python3-libs-3.6.8-76.el8_10.rocky.0.aarch64
+RLSA-2026:39320 Important/Sec. python3-libs-3.6.8-77.el8_10.rocky.0.aarch64
+RLSA-2026:56219 Important/Sec. python3-libs-3.6.8-78.el8_10.rocky.0.aarch64
+RLBA-2024:11156 bugfix         python3-rpm-4.14.3-32.el8_10.aarch64
+RLSA-2024:5530  Important/Sec. python3-setuptools-wheel-39.2.0-8.el8_10.noarch
+RLSA-2025:11036 Moderate/Sec.  python3-setuptools-wheel-39.2.0-9.el8_10.noarch
+RLBA-2024:11156 bugfix         rpm-4.14.3-32.el8_10.aarch64
+RLBA-2024:11156 bugfix         rpm-build-libs-4.14.3-32.el8_10.aarch64
+RLBA-2024:11156 bugfix         rpm-libs-4.14.3-32.el8_10.aarch64
+RLSA-2025:12010 Important/Sec. sqlite-libs-3.26.0-20.el8_10.aarch64
+RLBA-2024:4255  bugfix         systemd-239-82.el8_10.1.aarch64
+RLBA-2024:6977  bugfix         systemd-239-82.el8_10.2.aarch64
+RLBA-2024:11158 bugfix         systemd-239-82.el8_10.3.aarch64
+RLBA-2025:2594  bugfix         systemd-239-82.el8_10.4.aarch64
+RLBA-2024:4255  bugfix         systemd-libs-239-82.el8_10.1.aarch64
+RLBA-2024:6977  bugfix         systemd-libs-239-82.el8_10.2.aarch64
+RLBA-2024:11158 bugfix         systemd-libs-239-82.el8_10.3.aarch64
+RLBA-2025:2594  bugfix         systemd-libs-239-82.el8_10.4.aarch64
+RLBA-2024:4255  bugfix         systemd-pam-239-82.el8_10.1.aarch64
+RLBA-2024:6977  bugfix         systemd-pam-239-82.el8_10.2.aarch64
+RLBA-2024:11158 bugfix         systemd-pam-239-82.el8_10.3.aarch64
+RLBA-2025:2594  bugfix         systemd-pam-239-82.el8_10.4.aarch64
+RLBA-2024:8805  bugfix         tzdata-2024b-2.el9.noarch
+RLBA-2024:8805  bugfix         tzdata-2024b-4.el8.noarch
+RLBA-2025:1104  bugfix         tzdata-2025a-1.el8.noarch
+RLBA-2025:1104  bugfix         tzdata-2025a-1.el9.noarch
+RLSA-2026:1852  Moderate/Sec.  util-linux-2.32.1-48.el8_10.aarch64
+RLSA-2025:17715 Moderate/Sec.  vim-minimal-2:8.0.1763-21.el8_10.aarch64
+RLSA-2026:6915  Important/Sec. vim-minimal-2:8.0.1763-22.el8_10.1.aarch64
+RLSA-2026:11509 Important/Sec. vim-minimal-2:8.0.1763-22.el8_10.3.aarch64
+RLSA-2026:4442  Moderate/Sec.  vim-minimal-2:8.0.1763-22.el8_10.aarch64
+RLSA-2026:22730 Moderate/Sec.  vim-minimal-2:8.0.1763-23.el8_10.aarch64
+RLSA-2026:28553 Moderate/Sec.  vim-minimal-2:8.0.1763-24.el8_10.aarch64
+RLSA-2026:38510 Important/Sec. vim-minimal-2:8.0.1763-27.el8_10.aarch64
+RLSA-2026:66348 Important/Sec. vim-minimal-2:8.0.1763-31.el8_10.7.aarch64
+RLSA-2026:48703 Important/Sec. vim-minimal-2:8.0.1763-31.el8_10.aarch64
+RLBA-2025:2595  bugfix         yum-4.7.0-21.el8_10.noarch
+===REPOLIST===
+DNF version: 4.7.0
+cachedir: /var/cache/dnf
+User-Agent: constructed: 'libdnf (Rocky Linux 8.10; generic; Linux.aarch64)'
+repo: using cache for: appstream
+appstream: using metadata from Mon Sep 21 03:36:45 2026.
+repo: using cache for: baseos
+baseos: using metadata from Mon Sep 21 03:36:23 2026.
+repo: using cache for: extras
+extras: using metadata from Thu Sep  3 04:14:32 2026.
+Last metadata expiration check: 0:00:03 ago on Mon Sep 21 19:14:04 2026.
+Repo-id            : appstream
+Repo-name          : Rocky Linux 8 - AppStream
+Repo-status        : enabled
+Repo-revision      : 8.10
+Repo-distro-tags      : [cpe:/o:rocky:rocky:8.10]:  ,  , ., 0, 1, 8, L, R, c, i, k, n, o, u, x, y
+Repo-updated       : Mon Sep 21 03:36:45 2026
+Repo-pkgs          : 13781
+Repo-available-pkgs: 10247
+Repo-size          : 58 G
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=AppStream-8
+Repo-baseurl       : https://gb.mirrors.cicku.me/rocky/8.10/AppStream/aarch64/os/ (58 more)
+Repo-expire        : 172800 second(s) (last: Mon Sep 21 19:13:55 2026)
+Repo-filename      : /etc/yum.repos.d/Rocky-AppStream.repo
+
+Repo-id            : appstream-debuginfo
+Repo-name          : Rocky Linux 8 - AppStream - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=AppStream-8-debug
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Debuginfo.repo
+
+Repo-id            : appstream-source
+Repo-name          : Rocky Linux 8 - AppStream - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=source&repo=AppStream-8-source
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Sources.repo
+
+Repo-id            : baseos
+Repo-name          : Rocky Linux 8 - BaseOS
+Repo-status        : enabled
+Repo-revision      : 8.10
+Repo-distro-tags      : [cpe:/o:rocky:rocky:8.10]:  ,  , ., 0, 1, 8, L, R, c, i, k, n, o, u, x, y
+Repo-updated       : Mon Sep 21 03:36:23 2026
+Repo-pkgs          : 7678
+Repo-available-pkgs: 7672
+Repo-size          : 41 G
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=BaseOS-8
+Repo-baseurl       : https://gb.mirrors.cicku.me/rocky/8.10/BaseOS/aarch64/os/ (58 more)
+Repo-expire        : 172800 second(s) (last: Mon Sep 21 19:14:00 2026)
+Repo-filename      : /etc/yum.repos.d/Rocky-BaseOS.repo
+
+Repo-id            : baseos-debuginfo
+Repo-name          : Rocky Linux 8 - BaseOS - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=BaseOS-8-debug
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Debuginfo.repo
+
+Repo-id            : baseos-source
+Repo-name          : Rocky Linux 8 - BaseOS - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=source&repo=BaseOS-8-source
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Sources.repo
+
+Repo-id            : devel
+Repo-name          : Rocky Linux 8 - Devel WARNING! FOR BUILDROOT AND KOJI USE
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=Devel-8
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Devel.repo
+
+Repo-id            : extras
+Repo-name          : Rocky Linux 8 - Extras
+Repo-status        : enabled
+Repo-revision      : 8.10
+Repo-distro-tags      : [cpe:/o:rocky:rocky:8.10]:  ,  , ., 0, 1, 8, L, R, c, i, k, n, o, u, x, y
+Repo-updated       : Thu Sep  3 04:14:32 2026
+Repo-pkgs          : 1168
+Repo-available-pkgs: 1168
+Repo-size          : 3.3 G
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=extras-8
+Repo-baseurl       : https://rocky-linux-europe-west2.production.gcp.mirrors.ctrliq.cloud/pub/rocky//8.10/extras/aarch64/os/ (58 more)
+Repo-expire        : 172800 second(s) (last: Mon Sep 21 19:14:04 2026)
+Repo-filename      : /etc/yum.repos.d/Rocky-Extras.repo
+
+Repo-id            : ha
+Repo-name          : Rocky Linux 8 - HighAvailability
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=HighAvailability-8
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-HighAvailability.repo
+
+Repo-id            : ha-debuginfo
+Repo-name          : Rocky Linux 8 - High Availability - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=HighAvailability-8-debug
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Debuginfo.repo
+
+Repo-id            : ha-source
+Repo-name          : Rocky Linux 8 - High Availability - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=source&repo=HighAvailability-8-source
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Sources.repo
+
+Repo-id            : media-appstream
+Repo-name          : Rocky Linux 8 - Media - AppStream
+Repo-status        : disabled
+Repo-baseurl       : file:///media/Rocky/AppStream, file:///media/cdrom/AppStream, file:///media/cdrecorder/AppStream
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Media.repo
+
+Repo-id            : media-baseos
+Repo-name          : Rocky Linux 8 - Media - BaseOS
+Repo-status        : disabled
+Repo-baseurl       : file:///media/Rocky/BaseOS, file:///media/cdrom/BaseOS, file:///media/cdrecorder/BaseOS
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Media.repo
+
+Repo-id            : nfv
+Repo-name          : Rocky Linux 8 - NFV
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=NFV-8
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-NFV.repo
+
+Repo-id            : plus
+Repo-name          : Rocky Linux 8 - Plus
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=rockyplus-8
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Plus.repo
+
+Repo-id            : powertools
+Repo-name          : Rocky Linux 8 - PowerTools
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=PowerTools-8
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-PowerTools.repo
+
+Repo-id            : powertools-debuginfo
+Repo-name          : Rocky Linux 8 - PowerTools - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=PowerTools-8-debug
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Debuginfo.repo
+
+Repo-id            : powertools-source
+Repo-name          : Rocky Linux 8 - PowerTools - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=source&repo=PowerTools-8-source
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Sources.repo
+
+Repo-id            : resilient-storage
+Repo-name          : Rocky Linux 8 - ResilientStorage
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=ResilientStorage-8
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-ResilientStorage.repo
+
+Repo-id            : resilient-storage-debuginfo
+Repo-name          : Rocky Linux 8 - Resilient Storage - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=ResilientStorage-8-debug
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Debuginfo.repo
+
+Repo-id            : resilient-storage-source
+Repo-name          : Rocky Linux 8 - Resilient Storage - Source
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=source&repo=ResilientStorage-8-source
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-Sources.repo
+
+Repo-id            : rt
+Repo-name          : Rocky Linux 8 - Realtime
+Repo-status        : disabled
+Repo-mirrors       : https://mirrors.rockylinux.org/mirrorlist?arch=aarch64&repo=RT-8
+Repo-expire        : 172800 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/Rocky-RT.repo
+Total packages: 22627
+===HOLDS===
+zlib-0:1.2.11-26.el8.*
+tar-2:1.30-9.el8.*

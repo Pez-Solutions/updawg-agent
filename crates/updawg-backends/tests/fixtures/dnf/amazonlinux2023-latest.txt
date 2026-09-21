@@ -1,0 +1,468 @@
+===OS_RELEASE===
+NAME="Amazon Linux"
+VERSION="2023"
+ID="amzn"
+ID_LIKE="fedora"
+VERSION_ID="2023"
+PLATFORM_ID="platform:al2023"
+PRETTY_NAME="Amazon Linux 2023"
+ANSI_COLOR="0;33"
+CPE_NAME="cpe:2.3:o:amazon:amazon_linux:2023"
+HOME_URL="https://aws.amazon.com/linux/"
+BUG_REPORT_URL="https://github.com/amazonlinux/amazon-linux-2023"
+SUPPORT_END="2028-03-15"
+===RPM_QA===
+tzdata	2024a-1.amzn2023.0.1	noarch
+ncurses-base	6.2-4.20200222.amzn2023.0.5	noarch
+amazon-linux-repo-cdn	2023.3.20240219-0.amzn2023	noarch
+setup	2.13.7-3.amzn2023.0.2	noarch
+basesystem	11-11.amzn2023.0.2	noarch
+glibc-minimal-langpack	2.34-52.amzn2023.0.7	aarch64
+glibc	2.34-52.amzn2023.0.7	aarch64
+xz-libs	5.2.5-9.amzn2023.0.2	aarch64
+libzstd	1.5.5-1.amzn2023.0.1	aarch64
+popt	1.18-6.amzn2023.0.2	aarch64
+libxml2	2.10.4-1.amzn2023.0.6	aarch64
+libgpg-error	1.42-1.amzn2023.0.2	aarch64
+elfutils-libelf	0.188-3.amzn2023.0.2	aarch64
+libstdc++	11.4.1-2.amzn2023.0.2	aarch64
+libffi	3.4.4-1.amzn2023.0.1	aarch64
+libassuan	2.5.5-1.amzn2023.0.2	aarch64
+libattr	2.5.1-3.amzn2023.0.2	aarch64
+libsmartcols	2.37.4-1.amzn2023.0.3	aarch64
+mpfr	4.1.0-7.amzn2023.0.2	aarch64
+libgcrypt	1.10.2-1.amzn2023.0.1	aarch64
+audit-libs	3.0.6-1.amzn2023.0.2	aarch64
+libtasn1	4.19.0-1.amzn2023.0.4	aarch64
+libnghttp2	1.57.0-1.amzn2023.0.1	aarch64
+gnupg2-minimal	2.3.7-1.amzn2023.0.4	aarch64
+lz4-libs	1.9.4-1.amzn2023.0.2	aarch64
+p11-kit-trust	0.24.1-2.amzn2023.0.3	aarch64
+libidn2	2.3.2-1.amzn2023.0.5	aarch64
+libcom_err	1.46.5-2.amzn2023.0.2	aarch64
+gdbm-libs	1:1.19-2.amzn2023.0.2	aarch64
+gawk	5.1.0-3.amzn2023.0.3	aarch64
+json-c	0.14-8.amzn2023.0.2	aarch64
+elfutils-default-yama-scope	0.188-3.amzn2023.0.2	noarch
+libreport-filesystem	2.15.2-2.amzn2023.0.2	noarch
+pcre2-syntax	10.40-1.amzn2023.0.3	noarch
+libselinux	3.4-5.amzn2023.0.2	aarch64
+sed	4.8-7.amzn2023.0.2	aarch64
+libmount	2.37.4-1.amzn2023.0.3	aarch64
+ca-certificates	2023.2.64-1.0.amzn2023.0.1	noarch
+glib2	2.74.7-689.amzn2023.0.2	aarch64
+krb5-libs	1.21-3.amzn2023.0.3	aarch64
+curl-minimal	8.5.0-1.amzn2023.0.1	aarch64
+rpm	4.16.1.3-12.amzn2023.0.6	aarch64
+libsolv	0.7.22-1.amzn2023.0.2	aarch64
+rpm-sign-libs	4.16.1.3-12.amzn2023.0.6	aarch64
+libdnf	0.67.0-1.amzn2023.0.5	aarch64
+python3-setuptools-wheel	59.6.0-2.amzn2023.0.4	noarch
+python3-libs	3.9.16-1.amzn2023.0.6	aarch64
+python3-hawkey	0.67.0-1.amzn2023.0.5	aarch64
+python3-rpm	4.16.1.3-12.amzn2023.0.6	aarch64
+python3-dnf	4.12.0-2.amzn2023.0.4	noarch
+yum	4.12.0-2.amzn2023.0.4	noarch
+libgcc	11.4.1-2.amzn2023.0.2	aarch64
+crypto-policies	20220428-1.gitdfb10ea.amzn2023.0.2	noarch
+ncurses-libs	6.2-4.20200222.amzn2023.0.5	aarch64
+system-release	2023.3.20240219-0.amzn2023	noarch
+filesystem	3.14-5.amzn2023.0.3	aarch64
+bash	5.2.15-1.amzn2023.0.2	aarch64
+glibc-common	2.34-52.amzn2023.0.7	aarch64
+zlib	1.2.11-33.amzn2023.0.5	aarch64
+bzip2-libs	1.0.8-6.amzn2023.0.2	aarch64
+sqlite-libs	3.40.0-1.amzn2023.0.4	aarch64
+libcap	2.48-2.amzn2023.0.3	aarch64
+lua-libs	5.4.4-3.amzn2023.0.2	aarch64
+file-libs	5.39-7.amzn2023.0.4	aarch64
+libuuid	2.37.4-1.amzn2023.0.3	aarch64
+readline	8.1-2.amzn2023.0.2	aarch64
+p11-kit	0.24.1-2.amzn2023.0.3	aarch64
+expat	2.5.0-1.amzn2023.0.3	aarch64
+libacl	2.3.1-2.amzn2023.0.2	aarch64
+gmp	1:6.2.1-2.amzn2023.0.2	aarch64
+libcomps	0.1.18-1.amzn2023.0.2	aarch64
+libcap-ng	0.8.2-4.amzn2023.0.2	aarch64
+libxcrypt	4.4.33-7.amzn2023	aarch64
+libverto	0.3.2-1.amzn2023.0.2	aarch64
+npth	1.6-6.amzn2023.0.2	aarch64
+gpgme	1.15.1-6.amzn2023.0.3	aarch64
+alternatives	1.15-2.amzn2023.0.2	aarch64
+libunistring	0.9.10-10.amzn2023.0.2	aarch64
+libgomp	11.4.1-2.amzn2023.0.2	aarch64
+keyutils-libs	1.6.3-1.amzn2023.0.1	aarch64
+libsigsegv	2.13-2.amzn2023.0.2	aarch64
+libyaml	0.2.5-5.amzn2023.0.2	aarch64
+libsepol	3.4-3.amzn2023.0.3	aarch64
+elfutils-libs	0.188-3.amzn2023.0.2	aarch64
+dnf-data	4.12.0-2.amzn2023.0.4	noarch
+pcre2	10.40-1.amzn2023.0.3	aarch64
+coreutils-single	8.32-30.amzn2023.0.3	aarch64
+libblkid	2.37.4-1.amzn2023.0.3	aarch64
+grep	3.8-1.amzn2023.0.4	aarch64
+openssl-libs	1:3.0.8-1.amzn2023.0.11	aarch64
+libarchive	3.5.3-2.amzn2023.0.3	aarch64
+libcurl-minimal	8.5.0-1.amzn2023.0.1	aarch64
+rpm-libs	4.16.1.3-12.amzn2023.0.6	aarch64
+libmodulemd	2.13.0-2.amzn2023.0.2	aarch64
+rpm-build-libs	4.16.1.3-12.amzn2023.0.6	aarch64
+librepo	1.14.2-1.amzn2023.0.4	aarch64
+python3-pip-wheel	21.3.1-2.amzn2023.0.7	noarch
+python3	3.9.16-1.amzn2023.0.6	aarch64
+python3-libdnf	0.67.0-1.amzn2023.0.5	aarch64
+python3-libcomps	0.1.18-1.amzn2023.0.2	aarch64
+python3-gpg	1.15.1-6.amzn2023.0.3	aarch64
+dnf	4.12.0-2.amzn2023.0.4	noarch
+gpg-pubkey	d832c631-6515c85e	(none)
+===UPGRADES===
+amazon-linux-repo-cdn	2023.12.20260918-0.amzn2023	noarch	amazonlinux
+audit-libs	3.1.5-1.amzn2023.0.2	aarch64	amazonlinux
+ca-certificates	2025.2.76-1.0.amzn2023.0.3	noarch	amazonlinux
+coreutils-single	8.32-30.amzn2023.0.5	aarch64	amazonlinux
+crypto-policies	20260224-1.gitea0f072.amzn2023.0.6	noarch	amazonlinux
+curl-minimal	8.21.0-5.amzn2023.0.1	aarch64	amazonlinux
+dnf	4.14.0-1.amzn2023.0.7	noarch	amazonlinux
+dnf-data	4.14.0-1.amzn2023.0.7	noarch	amazonlinux
+elfutils-default-yama-scope	0.188-3.amzn2023.0.3	noarch	amazonlinux
+elfutils-libelf	0.188-3.amzn2023.0.3	aarch64	amazonlinux
+elfutils-libs	0.188-3.amzn2023.0.3	aarch64	amazonlinux
+expat	2.8.3-1.amzn2023.0.1	aarch64	amazonlinux
+gawk	5.1.0-3.amzn2023.0.4	aarch64	amazonlinux
+glib2	2.82.2-771.amzn2023	aarch64	amazonlinux
+glibc	2.34-231.amzn2023.0.5	aarch64	amazonlinux
+glibc-common	2.34-231.amzn2023.0.5	aarch64	amazonlinux
+glibc-minimal-langpack	2.34-231.amzn2023.0.5	aarch64	amazonlinux
+gnupg2-minimal	2.3.7-1.amzn2023.0.9	aarch64	amazonlinux
+gpgme	1.23.2-182.amzn2023.0.1	aarch64	amazonlinux
+keyutils-libs	1.6.3-1.amzn2023.0.2	aarch64	amazonlinux
+krb5-libs	1.21.3-8.amzn2023.0.1	aarch64	amazonlinux
+libacl	2.4.0-1.amzn2023.0.1	aarch64	amazonlinux
+libarchive	3.7.4-2.amzn2023.0.4	aarch64	amazonlinux
+libblkid	2.37.4-1.amzn2023.0.6	aarch64	amazonlinux
+libcap	2.73-1.amzn2023.0.7	aarch64	amazonlinux
+libcomps	0.1.20-1.amzn2023	aarch64	amazonlinux
+libcurl-minimal	8.21.0-5.amzn2023.0.1	aarch64	amazonlinux
+libdnf	0.69.0-8.amzn2023.0.8	aarch64	amazonlinux
+libgcc	14.2.1-7.amzn2023.0.2	aarch64	amazonlinux
+libgcrypt	1.10.2-1.amzn2023.0.3	aarch64	amazonlinux
+libgomp	14.2.1-7.amzn2023.0.2	aarch64	amazonlinux
+libmount	2.37.4-1.amzn2023.0.6	aarch64	amazonlinux
+libnghttp2	1.59.0-3.amzn2023.0.2	aarch64	amazonlinux
+librepo	1.14.5-2.amzn2023.0.2	aarch64	amazonlinux
+libsmartcols	2.37.4-1.amzn2023.0.6	aarch64	amazonlinux
+libsolv	0.7.22-1.amzn2023.0.4	aarch64	amazonlinux
+libstdc++	14.2.1-7.amzn2023.0.2	aarch64	amazonlinux
+libtasn1	4.19.0-1.amzn2023.0.6	aarch64	amazonlinux
+libuuid	2.37.4-1.amzn2023.0.6	aarch64	amazonlinux
+libxml2	2.10.4-1.amzn2023.0.20	aarch64	amazonlinux
+lz4-libs	1.9.4-1.amzn2023.0.3	aarch64	amazonlinux
+ncurses-base	6.6-1.amzn2023.0.1	noarch	amazonlinux
+ncurses-libs	6.6-1.amzn2023.0.1	aarch64	amazonlinux
+openssl-libs	1:3.5.8-1.amzn2023.0.1	aarch64	amazonlinux
+python3	3.9.25-1.amzn2023.0.9	aarch64	amazonlinux
+python3-dnf	4.14.0-1.amzn2023.0.7	noarch	amazonlinux
+python3-gpg	1.23.2-182.amzn2023.0.1	aarch64	amazonlinux
+python3-hawkey	0.69.0-8.amzn2023.0.8	aarch64	amazonlinux
+python3-libcomps	0.1.20-1.amzn2023	aarch64	amazonlinux
+python3-libdnf	0.69.0-8.amzn2023.0.8	aarch64	amazonlinux
+python3-libs	3.9.25-1.amzn2023.0.9	aarch64	amazonlinux
+python3-pip-wheel	21.3.1-2.amzn2023.0.21	noarch	amazonlinux
+python3-rpm	4.16.1.3-29.amzn2023.0.7	aarch64	amazonlinux
+python3-setuptools-wheel	59.6.0-2.amzn2023.0.6	noarch	amazonlinux
+rpm	4.16.1.3-29.amzn2023.0.7	aarch64	amazonlinux
+rpm-build-libs	4.16.1.3-29.amzn2023.0.7	aarch64	amazonlinux
+rpm-libs	4.16.1.3-29.amzn2023.0.7	aarch64	amazonlinux
+rpm-sign-libs	4.16.1.3-29.amzn2023.0.7	aarch64	amazonlinux
+sqlite-libs	3.40.0-1.amzn2023.0.8	aarch64	amazonlinux
+system-release	2023.12.20260918-0.amzn2023	noarch	amazonlinux
+tzdata	2026c-1.amzn2023.0.1	noarch	amazonlinux
+yum	4.14.0-1.amzn2023.0.7	noarch	amazonlinux
+zlib	1.2.11-33.amzn2023.0.6	aarch64	amazonlinux
+===CHECK_UPDATE===
+
+amazon-linux-repo-cdn.noarch      2023.12.20260918-0.amzn2023        amazonlinux
+audit-libs.aarch64                3.1.5-1.amzn2023.0.2               amazonlinux
+ca-certificates.noarch            2025.2.76-1.0.amzn2023.0.3         amazonlinux
+coreutils-single.aarch64          8.32-30.amzn2023.0.5               amazonlinux
+crypto-policies.noarch            20260224-1.gitea0f072.amzn2023.0.6 amazonlinux
+curl-minimal.aarch64              8.21.0-5.amzn2023.0.1              amazonlinux
+dnf.noarch                        4.14.0-1.amzn2023.0.7              amazonlinux
+dnf-data.noarch                   4.14.0-1.amzn2023.0.7              amazonlinux
+elfutils-default-yama-scope.noarch
+                                  0.188-3.amzn2023.0.3               amazonlinux
+elfutils-libelf.aarch64           0.188-3.amzn2023.0.3               amazonlinux
+elfutils-libs.aarch64             0.188-3.amzn2023.0.3               amazonlinux
+expat.aarch64                     2.8.3-1.amzn2023.0.1               amazonlinux
+gawk.aarch64                      5.1.0-3.amzn2023.0.4               amazonlinux
+glib2.aarch64                     2.82.2-771.amzn2023                amazonlinux
+glibc.aarch64                     2.34-231.amzn2023.0.5              amazonlinux
+glibc-common.aarch64              2.34-231.amzn2023.0.5              amazonlinux
+glibc-minimal-langpack.aarch64    2.34-231.amzn2023.0.5              amazonlinux
+gnupg2-minimal.aarch64            2.3.7-1.amzn2023.0.9               amazonlinux
+gpgme.aarch64                     1.23.2-182.amzn2023.0.1            amazonlinux
+keyutils-libs.aarch64             1.6.3-1.amzn2023.0.2               amazonlinux
+krb5-libs.aarch64                 1.21.3-8.amzn2023.0.1              amazonlinux
+libacl.aarch64                    2.4.0-1.amzn2023.0.1               amazonlinux
+libarchive.aarch64                3.7.4-2.amzn2023.0.4               amazonlinux
+libblkid.aarch64                  2.37.4-1.amzn2023.0.6              amazonlinux
+libcap.aarch64                    2.73-1.amzn2023.0.7                amazonlinux
+libcomps.aarch64                  0.1.20-1.amzn2023                  amazonlinux
+libcurl-minimal.aarch64           8.21.0-5.amzn2023.0.1              amazonlinux
+libdnf.aarch64                    0.69.0-8.amzn2023.0.8              amazonlinux
+libgcc.aarch64                    14.2.1-7.amzn2023.0.2              amazonlinux
+libgcrypt.aarch64                 1.10.2-1.amzn2023.0.3              amazonlinux
+libgomp.aarch64                   14.2.1-7.amzn2023.0.2              amazonlinux
+libmount.aarch64                  2.37.4-1.amzn2023.0.6              amazonlinux
+libnghttp2.aarch64                1.59.0-3.amzn2023.0.2              amazonlinux
+librepo.aarch64                   1.14.5-2.amzn2023.0.2              amazonlinux
+libsmartcols.aarch64              2.37.4-1.amzn2023.0.6              amazonlinux
+libsolv.aarch64                   0.7.22-1.amzn2023.0.4              amazonlinux
+libstdc++.aarch64                 14.2.1-7.amzn2023.0.2              amazonlinux
+libtasn1.aarch64                  4.19.0-1.amzn2023.0.6              amazonlinux
+libuuid.aarch64                   2.37.4-1.amzn2023.0.6              amazonlinux
+libxml2.aarch64                   2.10.4-1.amzn2023.0.20             amazonlinux
+lz4-libs.aarch64                  1.9.4-1.amzn2023.0.3               amazonlinux
+ncurses-base.noarch               6.6-1.amzn2023.0.1                 amazonlinux
+ncurses-libs.aarch64              6.6-1.amzn2023.0.1                 amazonlinux
+openssl-libs.aarch64              1:3.5.8-1.amzn2023.0.1             amazonlinux
+python3.aarch64                   3.9.25-1.amzn2023.0.9              amazonlinux
+python3-dnf.noarch                4.14.0-1.amzn2023.0.7              amazonlinux
+python3-gpg.aarch64               1.23.2-182.amzn2023.0.1            amazonlinux
+python3-hawkey.aarch64            0.69.0-8.amzn2023.0.8              amazonlinux
+python3-libcomps.aarch64          0.1.20-1.amzn2023                  amazonlinux
+python3-libdnf.aarch64            0.69.0-8.amzn2023.0.8              amazonlinux
+python3-libs.aarch64              3.9.25-1.amzn2023.0.9              amazonlinux
+python3-pip-wheel.noarch          21.3.1-2.amzn2023.0.21             amazonlinux
+python3-rpm.aarch64               4.16.1.3-29.amzn2023.0.7           amazonlinux
+python3-setuptools-wheel.noarch   59.6.0-2.amzn2023.0.6              amazonlinux
+rpm.aarch64                       4.16.1.3-29.amzn2023.0.7           amazonlinux
+rpm-build-libs.aarch64            4.16.1.3-29.amzn2023.0.7           amazonlinux
+rpm-libs.aarch64                  4.16.1.3-29.amzn2023.0.7           amazonlinux
+rpm-sign-libs.aarch64             4.16.1.3-29.amzn2023.0.7           amazonlinux
+sqlite-libs.aarch64               3.40.0-1.amzn2023.0.8              amazonlinux
+system-release.noarch             2023.12.20260918-0.amzn2023        amazonlinux
+tzdata.noarch                     2026c-1.amzn2023.0.1               amazonlinux
+yum.noarch                        4.14.0-1.amzn2023.0.7              amazonlinux
+zlib.aarch64                      1.2.11-33.amzn2023.0.6             amazonlinux
+===UPDATEINFO===
+ALAS2023-2024-682  Low/Sec.       ca-certificates-2023.2.68-1.0.amzn2023.0.1.noarch
+ALAS2023-2025-1194 Medium/Sec.    coreutils-single-8.32-30.amzn2023.0.4.aarch64
+ALAS2023-2025-1043 Medium/Sec.    curl-minimal-8.11.1-4.amzn2023.0.1.aarch64
+ALAS2023-2025-1317 Medium/Sec.    curl-minimal-8.11.1-4.amzn2023.0.3.aarch64
+ALAS2023-2025-1351 Medium/Sec.    curl-minimal-8.15.0-4.amzn2023.0.1.aarch64
+ALAS2023-2026-1375 Medium/Sec.    curl-minimal-8.17.0-1.amzn2023.0.1.aarch64
+ALAS2023-2026-1699 Medium/Sec.    curl-minimal-8.17.0-1.amzn2023.0.3.aarch64
+ALAS2023-2026-2132 Medium/Sec.    curl-minimal-8.21.0-5.amzn2023.0.1.aarch64
+ALAS2023-2024-558  Low/Sec.       curl-minimal-8.5.0-1.amzn2023.0.2.aarch64
+ALAS2023-2024-606  Medium/Sec.    curl-minimal-8.5.0-1.amzn2023.0.2.aarch64
+ALAS2023-2024-581  Low/Sec.       curl-minimal-8.5.0-1.amzn2023.0.3.aarch64
+ALAS2023-2024-596  Medium/Sec.    curl-minimal-8.5.0-1.amzn2023.0.4.aarch64
+ALAS2023-2025-969  Medium/Sec.    elfutils-default-yama-scope-0.188-3.amzn2023.0.3.noarch
+ALAS2023-2025-969  Medium/Sec.    elfutils-libelf-0.188-3.amzn2023.0.3.aarch64
+ALAS2023-2025-969  Medium/Sec.    elfutils-libs-0.188-3.amzn2023.0.3.aarch64
+ALAS2023-2024-576  Important/Sec. expat-2.5.0-1.amzn2023.0.4.aarch64
+ALAS2023-2024-759  Important/Sec. expat-2.6.3-1.amzn2023.0.1.aarch64
+ALAS2023-2025-793  Medium/Sec.    expat-2.6.3-1.amzn2023.0.2.aarch64
+ALAS2023-2025-1196 Important/Sec. expat-2.6.3-1.amzn2023.0.3.aarch64
+ALAS2023-2026-1425 Medium/Sec.    expat-2.6.3-1.amzn2023.0.4.aarch64
+ALAS2023-2026-1900 Important/Sec. expat-2.6.3-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1913 Important/Sec. expat-2.6.3-1.amzn2023.0.6.aarch64
+ALAS2023-2026-2157 Important/Sec. expat-2.8.3-1.amzn2023.0.1.aarch64
+ALAS2023-2026-2035 Important/Sec. gawk-5.1.0-3.amzn2023.0.4.aarch64
+ALAS2023-2025-1069 Important/Sec. glib2-2.82.2-766.amzn2023.aarch64
+ALAS2023-2025-1311 Important/Sec. glib2-2.82.2-767.amzn2023.aarch64
+ALAS2023-2025-1349 Important/Sec. glib2-2.82.2-769.amzn2023.aarch64
+ALAS2023-2026-1942 Important/Sec. glib2-2.82.2-770.amzn2023.aarch64
+ALAS2023-2026-2028 Important/Sec. glib2-2.82.2-771.amzn2023.aarch64
+ALAS2023-2025-988  Medium/Sec.    glibc-2.34-181.amzn2023.0.1.aarch64
+ALAS2023-2025-1001 Important/Sec. glibc-2.34-196.amzn2023.0.1.aarch64
+ALAS2023-2025-1179 Medium/Sec.    glibc-2.34-231.amzn2023.0.1.aarch64
+ALAS2023-2026-1622 Important/Sec. glibc-2.34-231.amzn2023.0.4.aarch64
+ALAS2023-2024-589  Important/Sec. glibc-2.34-52.amzn2023.0.10.aarch64
+ALAS2023-2025-988  Medium/Sec.    glibc-common-2.34-181.amzn2023.0.1.aarch64
+ALAS2023-2025-1001 Important/Sec. glibc-common-2.34-196.amzn2023.0.1.aarch64
+ALAS2023-2025-1179 Medium/Sec.    glibc-common-2.34-231.amzn2023.0.1.aarch64
+ALAS2023-2026-1622 Important/Sec. glibc-common-2.34-231.amzn2023.0.4.aarch64
+ALAS2023-2024-589  Important/Sec. glibc-common-2.34-52.amzn2023.0.10.aarch64
+ALAS2023-2025-988  Medium/Sec.    glibc-minimal-langpack-2.34-181.amzn2023.0.1.aarch64
+ALAS2023-2025-1001 Important/Sec. glibc-minimal-langpack-2.34-196.amzn2023.0.1.aarch64
+ALAS2023-2025-1179 Medium/Sec.    glibc-minimal-langpack-2.34-231.amzn2023.0.1.aarch64
+ALAS2023-2026-1622 Important/Sec. glibc-minimal-langpack-2.34-231.amzn2023.0.4.aarch64
+ALAS2023-2024-589  Important/Sec. glibc-minimal-langpack-2.34-52.amzn2023.0.10.aarch64
+ALAS2023-2025-1107 Low/Sec.       gnupg2-minimal-2.3.7-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1380 Important/Sec. gnupg2-minimal-2.3.7-1.amzn2023.0.6.aarch64
+ALAS2023-2026-1427 Important/Sec. gnupg2-minimal-2.3.7-1.amzn2023.0.7.aarch64
+ALAS2023-2026-1912 Low/Sec.       gnupg2-minimal-2.3.7-1.amzn2023.0.9.aarch64
+ALAS2023-2024-586  Medium/Sec.    krb5-libs-1.21-3.amzn2023.0.4.aarch64
+ALAS2023-2024-688  Medium/Sec.    krb5-libs-1.21.3-1.amzn2023.0.1.aarch64
+ALAS2023-2025-1173 Medium/Sec.    krb5-libs-1.21.3-6.amzn2023.0.1.aarch64
+ALAS2023-2026-1680 Medium/Sec.    krb5-libs-1.21.3-7.amzn2023.0.1.aarch64
+ALAS2023-2026-1939 Medium/Sec.    krb5-libs-1.21.3-8.amzn2023.0.1.aarch64
+ALAS2023-2026-1986 Important/Sec. libacl-2.4.0-1.amzn2023.0.1.aarch64
+ALAS2023-2024-742  Important/Sec. libarchive-3.7.4-2.amzn2023.0.2.aarch64
+ALAS2023-2025-1022 Important/Sec. libarchive-3.7.4-2.amzn2023.0.3.aarch64
+ALAS2023-2025-1091 Medium/Sec.    libarchive-3.7.4-2.amzn2023.0.4.aarch64
+ALAS2023-2026-1916 Important/Sec. libblkid-2.37.4-1.amzn2023.0.5.aarch64
+ALAS2023-2025-897  Important/Sec. libcap-2.48-2.amzn2023.0.4.aarch64
+ALAS2023-2025-1141 Medium/Sec.    libcap-2.73-1.amzn2023.0.3.aarch64
+ALAS2023-2025-1279 Important/Sec. libcap-2.73-1.amzn2023.0.4.aarch64
+ALAS2023-2025-1322 Medium/Sec.    libcap-2.73-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1389 Medium/Sec.    libcap-2.73-1.amzn2023.0.6.aarch64
+ALAS2023-2026-1721 Important/Sec. libcap-2.73-1.amzn2023.0.7.aarch64
+ALAS2023-2025-1043 Medium/Sec.    libcurl-minimal-8.11.1-4.amzn2023.0.1.aarch64
+ALAS2023-2025-1317 Medium/Sec.    libcurl-minimal-8.11.1-4.amzn2023.0.3.aarch64
+ALAS2023-2025-1351 Medium/Sec.    libcurl-minimal-8.15.0-4.amzn2023.0.1.aarch64
+ALAS2023-2026-1375 Medium/Sec.    libcurl-minimal-8.17.0-1.amzn2023.0.1.aarch64
+ALAS2023-2026-1699 Medium/Sec.    libcurl-minimal-8.17.0-1.amzn2023.0.3.aarch64
+ALAS2023-2026-2132 Medium/Sec.    libcurl-minimal-8.21.0-5.amzn2023.0.1.aarch64
+ALAS2023-2024-558  Low/Sec.       libcurl-minimal-8.5.0-1.amzn2023.0.2.aarch64
+ALAS2023-2024-606  Medium/Sec.    libcurl-minimal-8.5.0-1.amzn2023.0.2.aarch64
+ALAS2023-2024-581  Low/Sec.       libcurl-minimal-8.5.0-1.amzn2023.0.3.aarch64
+ALAS2023-2024-596  Medium/Sec.    libcurl-minimal-8.5.0-1.amzn2023.0.4.aarch64
+ALAS2023-2024-736  Medium/Sec.    libgcrypt-1.10.2-1.amzn2023.0.2.aarch64
+ALAS2023-2026-1705 Medium/Sec.    libgcrypt-1.10.2-1.amzn2023.0.3.aarch64
+ALAS2023-2026-1916 Important/Sec. libmount-2.37.4-1.amzn2023.0.5.aarch64
+ALAS2023-2024-592  Important/Sec. libnghttp2-1.59.0-3.amzn2023.0.1.aarch64
+ALAS2023-2026-1542 Important/Sec. libnghttp2-1.59.0-3.amzn2023.0.2.aarch64
+ALAS2023-2026-1916 Important/Sec. libsmartcols-2.37.4-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1798 Important/Sec. libsolv-0.7.22-1.amzn2023.0.4.aarch64
+ALAS2023-2025-989  Medium/Sec.    libtasn1-4.19.0-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1395 Important/Sec. libtasn1-4.19.0-1.amzn2023.0.6.aarch64
+ALAS2023-2026-1916 Important/Sec. libuuid-2.37.4-1.amzn2023.0.5.aarch64
+ALAS2023-2025-963  Medium/Sec.    libxml2-2.10.4-1.amzn2023.0.10.aarch64
+ALAS2023-2025-1019 Important/Sec. libxml2-2.10.4-1.amzn2023.0.11.aarch64
+ALAS2023-2025-1103 Important/Sec. libxml2-2.10.4-1.amzn2023.0.12.aarch64
+ALAS2023-2025-1154 Important/Sec. libxml2-2.10.4-1.amzn2023.0.13.aarch64
+ALAS2023-2026-1360 Low/Sec.       libxml2-2.10.4-1.amzn2023.0.15.aarch64
+ALAS2023-2026-1396 Medium/Sec.    libxml2-2.10.4-1.amzn2023.0.16.aarch64
+ALAS2023-2026-1397 Low/Sec.       libxml2-2.10.4-1.amzn2023.0.17.aarch64
+ALAS2023-2026-1446 Low/Sec.       libxml2-2.10.4-1.amzn2023.0.18.aarch64
+ALAS2023-2026-1911 Medium/Sec.    libxml2-2.10.4-1.amzn2023.0.19.aarch64
+ALAS2023-2026-1992 Medium/Sec.    libxml2-2.10.4-1.amzn2023.0.20.aarch64
+ALAS2023-2024-783  Medium/Sec.    libxml2-2.10.4-1.amzn2023.0.7.aarch64
+ALAS2023-2025-862  Important/Sec. libxml2-2.10.4-1.amzn2023.0.8.aarch64
+ALAS2023-2025-896  Important/Sec. libxml2-2.10.4-1.amzn2023.0.9.aarch64
+ALAS2023-2025-1266 Low/Sec.       lz4-libs-1.9.4-1.amzn2023.0.3.aarch64
+ALAS2023-2024-554  Medium/Sec.    ncurses-base-6.2-4.20200222.amzn2023.0.6.noarch
+ALAS2023-2024-554  Medium/Sec.    ncurses-libs-6.2-4.20200222.amzn2023.0.6.aarch64
+ALAS2023-2024-640  Medium/Sec.    openssl-libs-1:3.0.8-1.amzn2023.0.12.aarch64
+ALAS2023-2024-677  Medium/Sec.    openssl-libs-1:3.0.8-1.amzn2023.0.14.aarch64
+ALAS2023-2024-721  Medium/Sec.    openssl-libs-1:3.0.8-1.amzn2023.0.15.aarch64
+ALAS2023-2024-727  Medium/Sec.    openssl-libs-1:3.0.8-1.amzn2023.0.16.aarch64
+ALAS2023-2025-882  Medium/Sec.    openssl-libs-1:3.0.8-1.amzn2023.0.19.aarch64
+ALAS2023-2025-1225 Medium/Sec.    openssl-libs-1:3.2.2-1.amzn2023.0.2.aarch64
+ALAS2023-2026-1406 Important/Sec. openssl-libs-1:3.2.2-1.amzn2023.0.4.aarch64
+ALAS2023-2026-1434 Important/Sec. openssl-libs-1:3.2.2-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1522 Low/Sec.       openssl-libs-1:3.5.5-1.amzn2023.0.3.aarch64
+ALAS2023-2026-1586 Important/Sec. openssl-libs-1:3.5.5-1.amzn2023.0.4.aarch64
+ALAS2023-2026-1853 Important/Sec. openssl-libs-1:3.5.5-1.amzn2023.0.5.aarch64
+ALAS2023-2026-2088 Important/Sec. openssl-libs-1:3.5.7-2.amzn2023.0.2.aarch64
+ALAS2023-2026-2136 Important/Sec. openssl-libs-1:3.5.8-1.amzn2023.0.1.aarch64
+ALAS2023-2024-605  Medium/Sec.    python3-3.9.16-1.amzn2023.0.7.aarch64
+ALAS2023-2024-616  Important/Sec. python3-3.9.16-1.amzn2023.0.8.aarch64
+ALAS2023-2024-699  Medium/Sec.    python3-3.9.16-1.amzn2023.0.9.aarch64
+ALAS2023-2024-790  Important/Sec. python3-3.9.20-1.amzn2023.0.2.aarch64
+ALAS2023-2025-900  Medium/Sec.    python3-3.9.21-1.amzn2023.0.1.aarch64
+ALAS2023-2025-898  Medium/Sec.    python3-3.9.21-1.amzn2023.0.2.aarch64
+ALAS2023-2025-917  Low/Sec.       python3-3.9.21-1.amzn2023.0.3.aarch64
+ALAS2023-2025-1033 Medium/Sec.    python3-3.9.22-1.amzn2023.0.2.aarch64
+ALAS2023-2025-1046 Important/Sec. python3-3.9.23-1.amzn2023.0.1.aarch64
+ALAS2023-2025-1090 Medium/Sec.    python3-3.9.23-1.amzn2023.0.2.aarch64
+ALAS2023-2025-1146 Important/Sec. python3-3.9.23-1.amzn2023.0.3.aarch64
+ALAS2023-2025-1237 Medium/Sec.    python3-3.9.24-1.amzn2023.0.3.aarch64
+ALAS2023-2025-1293 Low/Sec.       python3-3.9.25-1.amzn2023.0.1.aarch64
+ALAS2023-2025-1325 Medium/Sec.    python3-3.9.25-1.amzn2023.0.2.aarch64
+ALAS2023-2026-1583 Important/Sec. python3-3.9.25-1.amzn2023.0.4.aarch64
+ALAS2023-2026-1618 Important/Sec. python3-3.9.25-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1785 Medium/Sec.    python3-3.9.25-1.amzn2023.0.6.aarch64
+ALAS2023-2026-1933 Medium/Sec.    python3-3.9.25-1.amzn2023.0.7.aarch64
+ALAS2023-2026-1963 Important/Sec. python3-3.9.25-1.amzn2023.0.8.aarch64
+ALAS2023-2026-1995 Important/Sec. python3-3.9.25-1.amzn2023.0.9.aarch64
+ALAS2023-2024-605  Medium/Sec.    python3-libs-3.9.16-1.amzn2023.0.7.aarch64
+ALAS2023-2024-616  Important/Sec. python3-libs-3.9.16-1.amzn2023.0.8.aarch64
+ALAS2023-2024-699  Medium/Sec.    python3-libs-3.9.16-1.amzn2023.0.9.aarch64
+ALAS2023-2024-790  Important/Sec. python3-libs-3.9.20-1.amzn2023.0.2.aarch64
+ALAS2023-2025-900  Medium/Sec.    python3-libs-3.9.21-1.amzn2023.0.1.aarch64
+ALAS2023-2025-898  Medium/Sec.    python3-libs-3.9.21-1.amzn2023.0.2.aarch64
+ALAS2023-2025-917  Low/Sec.       python3-libs-3.9.21-1.amzn2023.0.3.aarch64
+ALAS2023-2025-1033 Medium/Sec.    python3-libs-3.9.22-1.amzn2023.0.2.aarch64
+ALAS2023-2025-1046 Important/Sec. python3-libs-3.9.23-1.amzn2023.0.1.aarch64
+ALAS2023-2025-1090 Medium/Sec.    python3-libs-3.9.23-1.amzn2023.0.2.aarch64
+ALAS2023-2025-1146 Important/Sec. python3-libs-3.9.23-1.amzn2023.0.3.aarch64
+ALAS2023-2025-1237 Medium/Sec.    python3-libs-3.9.24-1.amzn2023.0.3.aarch64
+ALAS2023-2025-1293 Low/Sec.       python3-libs-3.9.25-1.amzn2023.0.1.aarch64
+ALAS2023-2025-1325 Medium/Sec.    python3-libs-3.9.25-1.amzn2023.0.2.aarch64
+ALAS2023-2026-1583 Important/Sec. python3-libs-3.9.25-1.amzn2023.0.4.aarch64
+ALAS2023-2026-1618 Important/Sec. python3-libs-3.9.25-1.amzn2023.0.5.aarch64
+ALAS2023-2026-1785 Medium/Sec.    python3-libs-3.9.25-1.amzn2023.0.6.aarch64
+ALAS2023-2026-1933 Medium/Sec.    python3-libs-3.9.25-1.amzn2023.0.7.aarch64
+ALAS2023-2026-1963 Important/Sec. python3-libs-3.9.25-1.amzn2023.0.8.aarch64
+ALAS2023-2026-1995 Important/Sec. python3-libs-3.9.25-1.amzn2023.0.9.aarch64
+ALAS2023-2024-781  Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.10.noarch
+ALAS2023-2025-923  Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.11.noarch
+ALAS2023-2025-1058 Low/Sec.       python3-pip-wheel-21.3.1-2.amzn2023.0.12.noarch
+ALAS2023-2025-1095 Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.13.noarch
+ALAS2023-2025-1216 Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.14.noarch
+ALAS2023-2026-1366 Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.15.noarch
+ALAS2023-2026-1416 Important/Sec. python3-pip-wheel-21.3.1-2.amzn2023.0.16.noarch
+ALAS2023-2026-1589 Low/Sec.       python3-pip-wheel-21.3.1-2.amzn2023.0.17.noarch
+ALAS2023-2026-1689 Important/Sec. python3-pip-wheel-21.3.1-2.amzn2023.0.19.noarch
+ALAS2023-2026-1837 Important/Sec. python3-pip-wheel-21.3.1-2.amzn2023.0.20.noarch
+ALAS2023-2026-2092 Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.21.noarch
+ALAS2023-2024-730  Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.8.noarch
+ALAS2023-2024-764  Medium/Sec.    python3-pip-wheel-21.3.1-2.amzn2023.0.9.noarch
+ALAS2023-2024-573  Medium/Sec.    python3-rpm-4.16.1.3-29.amzn2023.0.6.aarch64
+ALAS2023-2026-1991 Important/Sec. python3-rpm-4.16.1.3-29.amzn2023.0.7.aarch64
+ALAS2023-2024-676  Important/Sec. python3-setuptools-wheel-59.6.0-2.amzn2023.0.5.noarch
+ALAS2023-2025-1005 Important/Sec. python3-setuptools-wheel-59.6.0-2.amzn2023.0.6.noarch
+ALAS2023-2024-573  Medium/Sec.    rpm-4.16.1.3-29.amzn2023.0.6.aarch64
+ALAS2023-2026-1991 Important/Sec. rpm-4.16.1.3-29.amzn2023.0.7.aarch64
+ALAS2023-2024-573  Medium/Sec.    rpm-build-libs-4.16.1.3-29.amzn2023.0.6.aarch64
+ALAS2023-2026-1991 Important/Sec. rpm-build-libs-4.16.1.3-29.amzn2023.0.7.aarch64
+ALAS2023-2024-573  Medium/Sec.    rpm-libs-4.16.1.3-29.amzn2023.0.6.aarch64
+ALAS2023-2026-1991 Important/Sec. rpm-libs-4.16.1.3-29.amzn2023.0.7.aarch64
+ALAS2023-2024-573  Medium/Sec.    rpm-sign-libs-4.16.1.3-29.amzn2023.0.6.aarch64
+ALAS2023-2026-1991 Important/Sec. rpm-sign-libs-4.16.1.3-29.amzn2023.0.7.aarch64
+ALAS2023-2025-971  Important/Sec. sqlite-libs-3.40.0-1.amzn2023.0.5.aarch64
+ALAS2023-2025-1151 Medium/Sec.    sqlite-libs-3.40.0-1.amzn2023.0.6.aarch64
+ALAS2023-2026-1903 Important/Sec. sqlite-libs-3.40.0-1.amzn2023.0.8.aarch64
+===REPOLIST===
+DNF version: 4.12.0
+cachedir: /var/cache/dnf
+User-Agent: constructed: 'libdnf (Amazon Linux 2023; generic; Linux.aarch64)'
+repo: using cache for: amazonlinux
+amazonlinux: using metadata from Thu Sep 17 16:41:51 2026.
+Last metadata expiration check: 0:00:10 ago on Mon Sep 21 19:14:59 2026.
+Repo-id            : amazonlinux
+Repo-name          : Amazon Linux 2023 repository
+Repo-status        : enabled
+Repo-revision      : 1789663311
+Repo-updated       : Thu Sep 17 16:41:51 2026
+Repo-pkgs          : 37319
+Repo-available-pkgs: 37319
+Repo-size          : 160 G
+Repo-mirrors       : https://cdn.amazonlinux.com/al2023/core/mirrors/latest/aarch64/mirror.list
+Repo-baseurl       : https://cdn.amazonlinux.com/al2023/core/guids/e2ad65cc2659f83c707304b5ab189ed04b5458f4744c2331760b10f79058452b/aarch64/ (0 more)
+Repo-expire        : 172800 second(s) (last: Mon Sep 21 19:14:59 2026)
+Repo-filename      : /etc/yum.repos.d/amazonlinux.repo
+
+Repo-id            : amazonlinux-debuginfo
+Repo-name          : Amazon Linux 2023 repository - Debug
+Repo-status        : disabled
+Repo-mirrors       : https://cdn.amazonlinux.com/al2023/core/mirrors/latest/debuginfo/aarch64/mirror.list
+Repo-expire        : 21600 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/amazonlinux.repo
+
+Repo-id            : amazonlinux-source
+Repo-name          : Amazon Linux 2023 repository - Source packages
+Repo-status        : disabled
+Repo-mirrors       : https://cdn.amazonlinux.com/al2023/core/mirrors/latest/SRPMS/mirror.list
+Repo-expire        : 21600 second(s) (last: unknown)
+Repo-filename      : /etc/yum.repos.d/amazonlinux.repo
+Total packages: 37319
+===HOLDS===
+zlib-0:1.2.11-33.amzn2023.0.5.*
+tar-2:1.34-1.amzn2023.0.2.*
+tar-2:1.34-1.amzn2023.0.3.*
+tar-2:1.34-1.amzn2023.0.4.*

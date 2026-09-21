@@ -90,6 +90,19 @@ impl PackageBackend for AptBackend {
         Ok(parse_holds(&out))
     }
 
+    async fn security_updates(
+        &self,
+        updates: &[AvailableUpdate],
+    ) -> Result<std::collections::BTreeSet<String>> {
+        // Already answered by the collection that produced `updates`: apt names
+        // the pocket a candidate comes from, and `-security` is the whole signal.
+        Ok(updates
+            .iter()
+            .filter(|u| u.repo.as_deref().is_some_and(is_security_archive))
+            .map(|u| u.name.clone())
+            .collect())
+    }
+
     async fn apply(&self, _plan: &ApplyPlan, _log: &dyn LogSink) -> Result<ApplyOutcome> {
         // Deliberately still a stub. Applying updates is the mutating half and
         // belongs with job execution and its permission checks (DAWG-38); DAWG-34
