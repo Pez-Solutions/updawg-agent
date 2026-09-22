@@ -295,6 +295,9 @@ fn build_checkin(
         // different problem with its own security story (DAWG-38). Until then
         // the agent says so loudly rather than dropping them silently.
         Arc::new(UnhandledJobs),
+        // What this file permits, reported on every check-in so the server can
+        // narrow against it rather than guess (DAWG-223).
+        config.local_policy(),
     )))
 }
 

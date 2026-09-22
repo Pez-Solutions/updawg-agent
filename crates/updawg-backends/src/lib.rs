@@ -21,7 +21,7 @@ pub mod dnf;
 
 use async_trait::async_trait;
 use std::collections::BTreeSet;
-use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, Repository};
+use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, PendingRemoval, Repository};
 
 /// Anything that can go wrong talking to a package manager.
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +64,21 @@ pub struct ApplyOutcome {
     pub reboot_required: bool,
 }
 
+/// What the package manager would do if asked to upgrade everything.
+///
+/// Two lists rather than one, because an obsoletion is a removal and an install
+/// rather than a version moving, and [`AvailableUpdate`] has one name and two
+/// versions. Squeezing a replacement into that shape produces a row that reads
+/// like an upgrade, names the wrong package, and would be believed (DAWG-232).
+#[derive(Debug, Clone, Default)]
+pub struct PendingChanges {
+    pub updates: Vec<AvailableUpdate>,
+    /// Packages an upgrade would **remove**. Empty is the normal answer and the
+    /// interesting one is never empty: a host with an obsoleted package
+    /// installed is a host where applying updates takes something away.
+    pub removals: Vec<PendingRemoval>,
+}
+
 /// Somewhere to stream log lines as a job runs.
 pub trait LogSink: Send + Sync {
     fn line(&self, line: &str);
@@ -75,7 +90,15 @@ pub trait PackageBackend: Send + Sync {
     async fn installed(&self) -> Result<Vec<InstalledPackage>>;
     /// `apt-get update` / `dnf makecache`.
     async fn refresh_metadata(&self) -> Result<()>;
-    async fn available_updates(&self) -> Result<Vec<AvailableUpdate>>;
+    /// Everything one look at the upgrade path found.
+    ///
+    /// Updates and removals together, in one call, because on apt they come out
+    /// of one command: `apt-get -s dist-upgrade` prints `Inst` and `Remv` lines
+    /// in the same simulation, and it is the expensive call in a collection
+    /// pass. Splitting the trait in two would double it for the shape of the
+    /// answer rather than for the answer. dnf needs two commands either way and
+    /// says so in its own implementation.
+    async fn pending_changes(&self) -> Result<PendingChanges>;
     async fn repositories(&self) -> Result<Vec<Repository>>;
     /// Packages pinned or held locally, which will not be upgraded whatever a
     /// proposal says.
@@ -105,9 +128,12 @@ pub trait PackageBackend: Send + Sync {
     /// the fleet**, which is the shape of wrongness this product exists to
     /// prevent.
     ///
-    /// Takes the updates rather than collecting them again, because on apt the
-    /// answer is already in them and re-running `apt-get -s dist-upgrade` to
-    /// re-derive it would double the cost of a collection pass.
+    /// Takes the updates rather than collecting them again, because on both
+    /// families the answer is already in them: apt puts the pocket on
+    /// [`AvailableUpdate::repo`] and dnf fills
+    /// [`AvailableUpdate::advisories`] from `updateinfo` during
+    /// [`PackageBackend::pending_changes`]. Collecting again would re-run
+    /// `apt-get -s dist-upgrade`, which is most of the cost of a pass.
     async fn security_updates(&self, updates: &[AvailableUpdate]) -> Result<BTreeSet<String>>;
 
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;

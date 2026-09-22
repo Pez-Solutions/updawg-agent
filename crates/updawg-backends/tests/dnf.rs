@@ -19,6 +19,15 @@
 //! patched. `amazonlinux2023-latest` is the same distribution after
 //! `--releasever=latest`, which is how such a host actually moves, and is where
 //! the ALAS advisories and the wrapped `check-update` line come from.
+//!
+//! # And why there is a fifth fixture
+//!
+//! `rocky9-obsoletes` is a Rocky 9 container with three obsoleting packages
+//! built with `rpmbuild` into a local repository, because **no stock image has
+//! an obsoletion in it** — I checked Rocky 8, Rocky 9 and Amazon Linux 2023 and
+//! none of them do. The packages are synthetic; the `dnf` output is not, and it
+//! is the only way to have captured output for a state that matters (DAWG-232)
+//! and that no official image reaches. `tests/dnf_live.rs` rebuilds it.
 
 // clippy.toml allows unwrap and expect in `#[cfg(test)]` modules, but that does
 // not reach an integration test in `tests/` — the whole file is the test. In here
@@ -32,8 +41,8 @@
 
 use std::collections::BTreeSet;
 use updawg_backends::dnf::{
-    AdvisoryKind, distro_name, parse_holds, parse_installed, parse_repositories, parse_updateinfo,
-    parse_upgrades, repo_is_distro, security_packages,
+    AdvisoryKind, attach_advisories, distro_name, parse_holds, parse_installed, parse_obsoletes,
+    parse_repositories, parse_updateinfo, parse_upgrades, repo_is_distro, security_packages,
 };
 
 /// The four fixtures, the `NAME` each one's `/etc/os-release` carries, and
@@ -597,4 +606,254 @@ fn nothing_in_the_lock_file_that_is_not_a_lock_becomes_one() {
         "\n# Added lock on Mon Sep 21 19:05:31 2026\nzlib-0:1.2.11-40.el9.*\n\nkernel*\n",
     );
     assert_eq!(holds, vec!["zlib".to_string(), "kernel".to_string()]);
+}
+
+/* ------------------------------ obsoletions and hints (DAWG-231, DAWG-232) */
+
+#[test]
+fn a_stock_host_has_no_obsoletions() {
+    // The normal answer, and worth asserting: `parse_obsoletes` reads a table
+    // that on most hosts does not contain the section it is looking for, and
+    // "found nothing" must not be reachable by finding the wrong thing.
+    for (distro, _, _) in DISTROS {
+        let f = fixture(distro);
+        let installed = parse_installed(&section(&f, "RPM_QA"));
+        assert!(
+            parse_obsoletes(&section(&f, "CHECK_UPDATE"), &installed).is_empty(),
+            "{distro} reported an obsoletion"
+        );
+    }
+}
+
+#[test]
+fn an_obsoleted_package_is_reported_with_what_replaces_it() {
+    let f = fixture("rocky9-obsoletes");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let removals = parse_obsoletes(&section(&f, "CHECK_UPDATE_OBSOLETES"), &installed);
+
+    let named: Vec<(&str, Option<&str>)> = removals
+        .iter()
+        .map(|r| {
+            (
+                r.name.as_str(),
+                r.replaced_by.as_ref().map(|p| p.name.as_str()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            ("gonepkg", Some("keeper")),
+            ("oldthing", Some("newthing")),
+            (
+                "keeper-legacy",
+                Some("updawg-replacement-with-a-very-long-package-name")
+            ),
+        ]
+    );
+
+    let gone = &removals[0];
+    assert_eq!(gone.arch, "noarch");
+    assert_eq!(gone.installed, "1.0-1.el9");
+    let by = gone.replaced_by.as_ref().unwrap();
+    assert_eq!(by.version, "2.0-1.el9");
+    assert_eq!(by.repo.as_deref(), Some("local"));
+}
+
+#[test]
+fn an_obsoleter_that_is_also_an_upgrade_appears_on_both_lists() {
+    // `keeper` 2.0 upgrades `keeper` 1.0 *and* obsoletes `gonepkg`. Both are
+    // true and they are different statements: one moves a version, the other
+    // takes a package away.
+    let f = fixture("rocky9-obsoletes");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let updates = parse_upgrades(&section(&f, "UPGRADES"), &installed);
+    let removals = parse_obsoletes(&section(&f, "CHECK_UPDATE_OBSOLETES"), &installed);
+
+    assert!(updates.iter().any(|u| u.name == "keeper"));
+    assert!(removals.iter().any(|r| r.name == "gonepkg"));
+    // And the package that only obsoletes is on neither list as an update:
+    // `repoquery --upgrades` does not report it, which is the whole reason
+    // `check-update` is read at all.
+    assert!(!updates.iter().any(|u| u.name == "newthing"));
+}
+
+#[test]
+fn a_wrapped_obsoleting_table_is_read_the_same_way() {
+    // The same entries as the fixture, re-flowed the way `check-update` wraps a
+    // name too wide for its column — the `CHECK_UPDATE` section of
+    // `amazonlinux2023-latest.txt` is the real thing. Reading this as lines
+    // loses entries; reading it as a token stream cannot.
+    let wrapped = "Obsoleting Packages
+keeper.noarch
+                                  2.0-1.el9      local
+    gonepkg.noarch                1.0-1.el9      @System
+updawg-replacement-with-a-very-long-package-name.noarch
+                                  2.0-1.el9      local
+    keeper-legacy.noarch
+                                  1.0-1.el9      @System
+";
+    let f = fixture("rocky9-obsoletes");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let removals = parse_obsoletes(wrapped, &installed);
+    assert_eq!(
+        removals
+            .iter()
+            .map(|r| (
+                r.name.as_str(),
+                r.replaced_by.as_ref().unwrap().name.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("gonepkg", "keeper"),
+            (
+                "keeper-legacy",
+                "updawg-replacement-with-a-very-long-package-name"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_table_that_stops_making_sense_ends_the_section_rather_than_shifting() {
+    // A field lost mid-table would put every following entry one column out and
+    // produce a list of confident nonsense. Stopping under-reports, which is the
+    // direction somebody can notice.
+    let f = fixture("rocky9-obsoletes");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let truncated = "Obsoleting Packages
+keeper.noarch 2.0-1.el9 local
+    gonepkg.noarch 1.0-1.el9 @System
+newthing.noarch
+";
+    let removals = parse_obsoletes(truncated, &installed);
+    assert_eq!(removals.len(), 1);
+    assert_eq!(removals[0].name, "gonepkg");
+}
+
+#[test]
+fn an_obsoletion_of_something_this_host_does_not_have_is_dropped() {
+    let table = "Obsoleting Packages
+keeper.noarch 2.0-1.el9 local
+    nothing-here.noarch 1.0-1.el9 @System
+";
+    assert!(parse_obsoletes(table, &[]).is_empty());
+}
+
+#[test]
+fn an_update_carries_the_advisory_its_package_manager_named() {
+    let f = fixture("rocky9");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let mut updates = parse_upgrades(&section(&f, "UPGRADES"), &installed);
+    attach_advisories(&mut updates, &parse_updateinfo(&section(&f, "UPDATEINFO")));
+
+    let openssl = updates
+        .iter()
+        .find(|u| u.name == "openssl")
+        .expect("openssl is upgradable on the rocky9 fixture");
+    let hint = openssl
+        .advisories
+        .iter()
+        .find(|a| a.kind == "security")
+        .expect("openssl's update is a security fix on this host");
+    assert!(hint.id.starts_with("RLSA-"), "{}", hint.id);
+    assert!(hint.severity.is_some());
+    assert!(hint.fixed_in.is_some());
+}
+
+#[test]
+fn a_severity_word_reaches_the_wire_exactly_as_the_vendor_wrote_it() {
+    // Rocky says `Moderate` where Amazon Linux says `Medium` for the same band.
+    // Both survive the trip; deciding they are the same is the server's job.
+    let mut words = BTreeSet::new();
+    for distro in ["rocky9", "amazonlinux2023-latest"] {
+        let f = fixture(distro);
+        let installed = parse_installed(&section(&f, "RPM_QA"));
+        let mut updates = parse_upgrades(&section(&f, "UPGRADES"), &installed);
+        attach_advisories(&mut updates, &parse_updateinfo(&section(&f, "UPDATEINFO")));
+        words.extend(
+            updates
+                .iter()
+                .flat_map(|u| &u.advisories)
+                .filter_map(|a| a.severity.clone()),
+        );
+    }
+    assert!(words.contains("Moderate"), "{words:?}");
+    assert!(words.contains("Medium"), "{words:?}");
+}
+
+#[test]
+fn a_bugfix_advisory_reaches_the_wire_without_a_severity() {
+    let f = fixture("rocky9");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let mut updates = parse_upgrades(&section(&f, "UPGRADES"), &installed);
+    attach_advisories(&mut updates, &parse_updateinfo(&section(&f, "UPDATEINFO")));
+
+    let non_security: Vec<_> = updates
+        .iter()
+        .flat_map(|u| &u.advisories)
+        .filter(|a| a.kind != "security")
+        .collect();
+    assert!(
+        !non_security.is_empty(),
+        "the rocky9 fixture has bugfix advisories in it"
+    );
+    for hint in non_security {
+        assert!(
+            hint.severity.is_none(),
+            "{} is a {} and carries a severity",
+            hint.id,
+            hint.kind
+        );
+    }
+}
+
+#[test]
+fn every_attached_advisory_is_about_a_package_that_has_an_update() {
+    let f = fixture("rocky9");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let mut updates = parse_upgrades(&section(&f, "UPGRADES"), &installed);
+    attach_advisories(&mut updates, &parse_updateinfo(&section(&f, "UPDATEINFO")));
+
+    let upgradable: BTreeSet<&str> = updates.iter().map(|u| u.name.as_str()).collect();
+    // And the reverse: every security row about something upgradable found a
+    // home, so the count on the heartbeat and the list on the upload agree.
+    let security: BTreeSet<String> = security_packages(&section(&f, "UPDATEINFO"))
+        .into_iter()
+        .filter(|p| upgradable.contains(p.as_str()))
+        .collect();
+    let attached: BTreeSet<String> = updates
+        .iter()
+        .filter(|u| u.advisories.iter().any(|a| a.kind == "security"))
+        .map(|u| u.name.clone())
+        .collect();
+    assert!(!security.is_empty());
+    assert_eq!(security, attached);
+}
+
+#[test]
+fn attaching_advisories_twice_changes_nothing() {
+    // A join that appended would grow the list on every pass and change the
+    // upload every time without anything on the host changing.
+    let f = fixture("rocky9");
+    let installed = parse_installed(&section(&f, "RPM_QA"));
+    let mut once = parse_upgrades(&section(&f, "UPGRADES"), &installed);
+    let rows = parse_updateinfo(&section(&f, "UPDATEINFO"));
+    attach_advisories(&mut once, &rows);
+    let mut twice = once.clone();
+    attach_advisories(&mut twice, &rows);
+    assert_eq!(once, twice);
+}
+
+#[test]
+fn the_kind_of_an_advisory_is_lowercase_and_verbatim() {
+    let rows = parse_updateinfo(&section(&fixture("rocky9"), "UPDATEINFO"));
+    assert!(!rows.is_empty());
+    for row in &rows {
+        let spelled = row.kind.as_str();
+        assert_eq!(spelled, spelled.to_ascii_lowercase(), "{spelled}");
+        if let AdvisoryKind::Other(other) = &row.kind {
+            assert_eq!(spelled, other);
+        }
+    }
 }

@@ -51,6 +51,7 @@ fn update(name: &str, repo: Option<&str>) -> AvailableUpdate {
         installed: "1".into(),
         candidate: "2".into(),
         repo: repo.map(Into::into),
+        advisories: vec![],
     }
 }
 
@@ -59,6 +60,7 @@ fn collected(packages: Vec<InstalledPackage>) -> Collected {
         facts: facts(),
         packages,
         updates: vec![],
+        removals: vec![],
         security: std::collections::BTreeSet::new(),
         repositories: vec![],
         held: vec![],

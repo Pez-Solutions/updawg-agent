@@ -2,7 +2,8 @@
 //!
 //! Installed packages come from `rpm -qa` with a format string, candidates from
 //! `dnf repoquery --upgrades`, repository origin from `dnf repolist -v`, advisory
-//! hints from `dnf updateinfo`, and holds from `dnf versionlock list`.
+//! hints from `dnf updateinfo`, obsoletions from `dnf check-update --obsoletes`,
+//! and holds from `dnf versionlock list`.
 //!
 //! Shelling out rather than linking `libdnf` is what keeps the binary statically
 //! linked against musl, so one build per architecture runs on every supported
@@ -46,15 +47,17 @@
 //! way and makes the problem invisible; the duplicates only appear once the
 //! version is in the format string.
 //!
-//! # What this backend cannot see
+//! # The one thing `check-update` is still needed for
 //!
-//! `repoquery --upgrades` does not report **obsoletes**. When a package is
-//! replaced by a differently-named one, `dnf upgrade` installs the replacement
-//! and `check-update` lists it under `Obsoleting Packages`. [`AvailableUpdate`]
-//! has one name, an installed version and a candidate version, so it cannot
-//! express "replaced by something else" whatever the query — this is a gap in
-//! the protocol rather than in the parser, and it is filed rather than papered
-//! over.
+//! `repoquery --upgrades` does not report **obsoletes** — an obsoletion is not
+//! an upgrade — and no `--qf` names both sides of one. `check-update
+//! --obsoletes` does, under an `Obsoleting Packages` heading, so that is where
+//! [`parse_obsoletes`] reads them from despite everything above. It survives the
+//! wrapping by not reading lines at all: see that function.
+//!
+//! ⚠️ **`dnf check-update` exits 100 when there are updates.** Treating a
+//! non-zero status as a failure means it never answers on a host that has
+//! anything to do, which is every host worth asking. [`run_ok`] is why.
 //!
 //! # What the agent does not decide
 //!
@@ -66,10 +69,15 @@
 //! `baseos`, so [`AvailableUpdate::repo`] carries no signal at all and
 //! `updateinfo` is the only thing that does.
 
-use crate::{ApplyOutcome, ApplyPlan, BackendError, LogSink, PackageBackend, Result};
+use crate::{
+    ApplyOutcome, ApplyPlan, BackendError, LogSink, PackageBackend, PendingChanges, Result,
+};
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
-use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, Repository};
+use updawg_protocol::{
+    AdvisoryHint, AvailableUpdate, Ecosystem, InstalledPackage, PendingRemoval, Replacement,
+    Repository,
+};
 
 #[derive(Debug, Default, Clone)]
 pub struct DnfBackend {
@@ -103,7 +111,7 @@ impl PackageBackend for DnfBackend {
         run("dnf", &["-q", "makecache"]).await.map(|_| ())
     }
 
-    async fn available_updates(&self) -> Result<Vec<AvailableUpdate>> {
+    async fn pending_changes(&self) -> Result<PendingChanges> {
         // `repoquery` reports the candidate and the repository it comes from but
         // not what is installed, so the installed set is read again here rather
         // than threaded through the trait. `rpm -qa` is local and reads the same
@@ -122,7 +130,31 @@ impl PackageBackend for DnfBackend {
             ],
         )
         .await?;
-        Ok(parse_upgrades(&out, &installed))
+        let mut updates = parse_upgrades(&out, &installed);
+
+        // Three commands, because dnf keeps the three answers in three places:
+        // the candidate in `repoquery`, the advisory in `updateinfo`, and the
+        // obsoletion in `check-update`. Skipped entirely when there is nothing
+        // to upgrade, which is the common steady state and the one where an
+        // Amazon Linux host pinned to a snapshot sits for ever (DAWG-233).
+        if !updates.is_empty() {
+            let out = run("dnf", &["-q", "updateinfo", "list", "--available"]).await?;
+            attach_advisories(&mut updates, &parse_updateinfo(&out));
+        }
+
+        let out = run_ok(
+            "dnf",
+            &["-q", "check-update", "--obsoletes"],
+            // 100 is `check-update` saying there are updates, which is the
+            // interesting case and not an error. Reading it as one is how this
+            // returns nothing on every host that has anything to do.
+            &[100],
+        )
+        .await?;
+        Ok(PendingChanges {
+            removals: parse_obsoletes(&out, &installed),
+            updates,
+        })
     }
 
     async fn repositories(&self) -> Result<Vec<Repository>> {
@@ -148,14 +180,16 @@ impl PackageBackend for DnfBackend {
     }
 
     async fn security_updates(&self, updates: &[AvailableUpdate]) -> Result<BTreeSet<String>> {
-        if updates.is_empty() {
-            return Ok(BTreeSet::new());
-        }
-        let out = run("dnf", &["-q", "updateinfo", "list", "--available"]).await?;
-        let named: BTreeSet<&str> = updates.iter().map(|u| u.name.as_str()).collect();
-        Ok(security_packages(&out)
-            .into_iter()
-            .filter(|p| named.contains(p.as_str()))
+        // Answered from the updates rather than by asking `updateinfo` again:
+        // `pending_changes` already attached what it said (DAWG-231), and a
+        // second call could only disagree with the first. That disagreement
+        // would be a repository that published between the two commands, and
+        // resolving it in favour of the newer half would make the count on the
+        // heartbeat describe a different set of updates from the one uploaded.
+        Ok(updates
+            .iter()
+            .filter(|u| u.advisories.iter().any(|a| a.kind == SECURITY))
+            .map(|u| u.name.clone())
             .collect())
     }
 
@@ -261,6 +295,11 @@ pub fn parse_upgrades(out: &str, installed: &[InstalledPackage]) -> Vec<Availabl
                 // because the server wants to know which repository an update
                 // came from, not because it means anything about urgency.
                 repo: (!repo.is_empty()).then(|| repo.to_owned()),
+                // Filled in by `attach_advisories` from `dnf updateinfo`, which
+                // is a separate command and a separate parse. Empty here rather
+                // than absent from the type, so the one place that joins them is
+                // the one place that can get it wrong.
+                advisories: Vec::new(),
             })
         })
         .collect()
@@ -268,13 +307,17 @@ pub fn parse_upgrades(out: &str, installed: &[InstalledPackage]) -> Vec<Availabl
 
 /// One row of `dnf updateinfo list`.
 ///
+/// Not [`updawg_protocol::AdvisoryHint`], which is what goes on the wire: this
+/// carries the package and architecture the row named, and the wire type hangs
+/// off the update those identify. [`attach_advisories`] is the join.
+///
 /// The severity is the vendor's word — `Critical`, `Important`, `Moderate`, `Low`
 /// on Red Hat and its rebuilds, and `Critical`, `Important`, `Medium`, `Low` on
 /// Amazon Linux, which uses `Medium` where Red Hat uses `Moderate`. Normalising
 /// those onto one scale is the server's job (DAWG-65); the agent reports the word
 /// it was given.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdvisoryHint {
+pub struct UpdateinfoRow {
     pub advisory: String,
     pub severity: Option<String>,
     pub kind: AdvisoryKind,
@@ -292,6 +335,27 @@ pub enum AdvisoryKind {
     /// folded into one of them. A type nobody has seen before is worth reporting
     /// as itself.
     Other(String),
+}
+
+/// What [`AdvisoryKind::as_str`] returns for a security advisory, and the only
+/// value any of this code compares against.
+pub const SECURITY: &str = "security";
+
+impl AdvisoryKind {
+    /// How this type is spelled on the wire.
+    ///
+    /// Lowercase and verbatim, matching what `updateinfo` printed. The server
+    /// decides what the word means; normalising it here would be a guess made
+    /// on the host, and a guess made on the host cannot be corrected later.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Security => SECURITY,
+            Self::Bugfix => "bugfix",
+            Self::Enhancement => "enhancement",
+            Self::Other(other) => other,
+        }
+    }
 }
 
 /// `dnf updateinfo list --available` output.
@@ -313,7 +377,7 @@ pub enum AdvisoryKind {
 /// between the installed one and the candidate. That is dnf being complete rather
 /// than repetitive, and [`security_packages`] collapses it.
 #[must_use]
-pub fn parse_updateinfo(out: &str) -> Vec<AdvisoryHint> {
+pub fn parse_updateinfo(out: &str) -> Vec<UpdateinfoRow> {
     out.lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
@@ -339,7 +403,7 @@ pub fn parse_updateinfo(out: &str) -> Vec<AdvisoryHint> {
                 ),
             };
 
-            Some(AdvisoryHint {
+            Some(UpdateinfoRow {
                 advisory: advisory.to_owned(),
                 severity,
                 kind,
@@ -364,6 +428,135 @@ pub fn security_packages(out: &str) -> BTreeSet<String> {
         .map(|h| h.package)
         .collect()
 }
+
+/// Hang each `updateinfo` row on the update it is about (DAWG-231).
+///
+/// Keyed on **name and architecture together**, as everything else here is: a
+/// multilib host has `glibc.i686` and `glibc.x86_64` installed at once, they
+/// upgrade independently, and an advisory names one of them.
+///
+/// A row for a package with no pending update is dropped. `updateinfo` answers
+/// about the repositories rather than about this host, so it can name a package
+/// that is not installed or is already current — and an advisory hung on
+/// nothing would be a claim the host cannot act on.
+pub fn attach_advisories(updates: &mut [AvailableUpdate], rows: &[UpdateinfoRow]) {
+    let mut by_package: BTreeMap<(&str, &str), Vec<AdvisoryHint>> = BTreeMap::new();
+    for row in rows {
+        by_package
+            .entry((row.package.as_str(), row.arch.as_str()))
+            .or_default()
+            .push(AdvisoryHint {
+                id: row.advisory.clone(),
+                severity: row.severity.clone(),
+                kind: row.kind.as_str().to_owned(),
+                fixed_in: Some(row.version.clone()),
+            });
+    }
+
+    for update in updates {
+        let Some(hints) = by_package.get(&(update.name.as_str(), update.arch.as_str())) else {
+            continue;
+        };
+        update.advisories.clone_from(hints);
+        // dnf prints one row per advisory per version and its order is its own.
+        // Sorting makes the upload stable, which matters because the server
+        // stores it and a list that reshuffles every six hours looks like a
+        // change every six hours.
+        update
+            .advisories
+            .sort_by(|a, b| (&a.id, &a.fixed_in, &a.kind).cmp(&(&b.id, &b.fixed_in, &b.kind)));
+        update.advisories.dedup();
+    }
+}
+
+/// The `Obsoleting Packages` section of `dnf check-update --obsoletes`
+/// (DAWG-232).
+///
+/// ```text
+/// Obsoleting Packages
+/// newthing.noarch                        2.0-1.el9      local
+///     oldthing.noarch                    1.0-1.el9      @System
+/// ```
+///
+/// **This is the one place `check-update` is the right command**, against the
+/// rule at the top of this file, because `repoquery --upgrades` does not report
+/// obsoletes at all — an obsoletion is not an upgrade — and no `--qf` names
+/// both sides of one. Verified against a real Rocky 9 container with two
+/// obsoleting packages built into a local repository; `repoquery --upgrades`
+/// listed neither.
+///
+/// The table still wraps, and the answer to that is to **stop reading it as
+/// lines**. Every entry is exactly three whitespace-separated fields and none of
+/// them can contain a space, so the section is one token stream and wrapping is
+/// invisible to it. An indented line is not a reliable marker of anything — a
+/// wrapped continuation is indented too — but the repository is: dnf prints an
+/// installed package's repository with an `@` prefix, so `@` is what tells the
+/// obsoleted package from the thing obsoleting it.
+///
+/// A triple that is not shaped like one ends the section rather than being
+/// skipped, because skipping it would shift every following entry by a field
+/// and produce a list of confident nonsense.
+#[must_use]
+pub fn parse_obsoletes(out: &str, installed: &[InstalledPackage]) -> Vec<PendingRemoval> {
+    let have: BTreeMap<(&str, &str), &str> = installed
+        .iter()
+        .map(|p| ((p.name.as_str(), p.arch.as_str()), p.version.as_str()))
+        .collect();
+
+    let tokens: Vec<&str> = out
+        .lines()
+        .skip_while(|l| l.trim() != OBSOLETING)
+        .skip(1)
+        .flat_map(str::split_whitespace)
+        .collect();
+
+    let mut removals: Vec<PendingRemoval> = Vec::new();
+    let mut obsoleter: Option<Replacement> = None;
+
+    for entry in tokens.chunks(3) {
+        let [name_arch, evr, repo] = entry else { break };
+        let Some((name, arch)) = name_arch.rsplit_once('.') else {
+            break;
+        };
+        // An EVR always carries a release, so a middle field with no hyphen in
+        // it means the columns are not where this parser thinks they are.
+        if name.is_empty() || arch.is_empty() || !evr.contains('-') || repo.is_empty() {
+            break;
+        }
+
+        match repo.strip_prefix('@') {
+            // Installed, so this is the package being obsoleted.
+            Some(_) => {
+                // Reported with rpm's own version rather than the table's, so
+                // the removal names the same string the inventory reported as
+                // installed. A package the host does not actually have is
+                // dropped, as an upgrade for one is in `parse_upgrades`.
+                let Some(version) = have.get(&(name, arch)) else {
+                    continue;
+                };
+                removals.push(PendingRemoval {
+                    name: name.to_owned(),
+                    arch: arch.to_owned(),
+                    installed: (*version).to_owned(),
+                    replaced_by: obsoleter.clone(),
+                });
+            }
+            None => {
+                obsoleter = Some(Replacement {
+                    name: name.to_owned(),
+                    arch: arch.to_owned(),
+                    version: (*evr).to_owned(),
+                    repo: Some((*repo).to_owned()),
+                });
+            }
+        }
+    }
+
+    removals
+}
+
+/// The heading `dnf check-update` prints above the obsoletions, under `LC_ALL=C`.
+const OBSOLETING: &str = "Obsoleting Packages";
 
 /// Split `name-version-release.arch` into its name, its `version-release` and its
 /// architecture.
@@ -560,6 +753,15 @@ fn hold_name(entry: &str) -> Option<String> {
 /* ------------------------------------------------------------- the shelling */
 
 async fn run(tool: &'static str, args: &[&str]) -> Result<String> {
+    run_ok(tool, args, &[]).await
+}
+
+/// As [`run`], but treating some non-zero exit codes as success.
+///
+/// `dnf check-update` exits **100** when there are updates — the useful case,
+/// and the one where reading a non-zero status as a failure means the command
+/// never answers on any host that has anything to do.
+async fn run_ok(tool: &'static str, args: &[&str], also_ok: &[i32]) -> Result<String> {
     let output = tokio::process::Command::new(tool)
         .args(args)
         // Parsing depends on the exact words dnf prints — `enabled`, `bugfix`,
@@ -579,7 +781,12 @@ async fn run(tool: &'static str, args: &[&str]) -> Result<String> {
         })?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
+    let accepted = output.status.success()
+        || output
+            .status
+            .code()
+            .is_some_and(|code| also_ok.contains(&code));
+    if !accepted {
         // Another transaction holds the rpm database. Waiting and retrying is the
         // only safe answer: forcing it corrupts the database, and the caller
         // decides when to come back.

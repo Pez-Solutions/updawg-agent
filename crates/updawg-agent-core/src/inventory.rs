@@ -31,7 +31,8 @@ use std::{collections::BTreeSet, sync::Arc};
 use updawg_backends::PackageBackend;
 use updawg_collectors::FactCollector;
 use updawg_protocol::{
-    InstalledPackage, InventoryKind, InventoryUpload, PackageDelta, RemovedPackage, SystemFacts,
+    InstalledPackage, InventoryKind, InventoryUpload, PackageDelta, PendingRemoval, RemovedPackage,
+    SystemFacts,
 };
 
 /// Everything one collection pass gathered.
@@ -40,6 +41,12 @@ pub struct Collected {
     pub facts: SystemFacts,
     pub packages: Vec<InstalledPackage>,
     pub updates: Vec<updawg_protocol::AvailableUpdate>,
+    /// Packages an upgrade would remove rather than upgrade (DAWG-232).
+    ///
+    /// Almost always empty, and the times it is not are the times it matters:
+    /// this is the difference between a proposal that installs something and
+    /// one that takes something away.
+    pub removals: Vec<PendingRemoval>,
     pub repositories: Vec<updawg_protocol::Repository>,
     pub held: Vec<String>,
     /// The packages the host's own package manager calls a security fix.
@@ -68,14 +75,15 @@ impl Collected {
         facts: &dyn FactCollector,
     ) -> anyhow::Result<Self> {
         // The updates first: which of them the package manager calls security is
-        // a question about that list, and on apt it is answered from the list
-        // rather than by asking again.
-        let updates = backend.available_updates().await?;
-        let security = backend.security_updates(&updates).await?;
+        // a question about that list, and on both families it is answered from
+        // the list rather than by asking again.
+        let changes = backend.pending_changes().await?;
+        let security = backend.security_updates(&changes.updates).await?;
         Ok(Self {
             facts: facts.facts().await?,
             packages: backend.installed().await?,
-            updates,
+            updates: changes.updates,
+            removals: changes.removals,
             security,
             repositories: backend.repositories().await?,
             held: backend.held_packages().await?,
@@ -176,6 +184,10 @@ impl Collected {
             updates: self.updates.clone(),
             repositories: self.repositories.clone(),
             held_packages: self.held.clone(),
+            // Current state, like the updates, and sent on a delta as well: it
+            // describes what the package manager would do now rather than what
+            // changed since the last pass.
+            removals: self.removals.clone(),
         }
     }
 }

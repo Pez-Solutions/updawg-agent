@@ -55,6 +55,7 @@ async fn harness(replies: Vec<Reply>) -> Harness {
         host.state.clone(),
         collector,
         sink.clone() as Arc<dyn JobSink>,
+        updawg_protocol::LocalPolicy::default(),
     );
 
     Harness {
@@ -202,6 +203,7 @@ async fn a_gateway_that_fails_immediately_is_still_a_failure() {
         host.state.clone(),
         SystemState::new(fake.root()).unwrap(),
         Arc::new(UnhandledJobs),
+        updawg_protocol::LocalPolicy::default(),
     );
 
     let err = checkin.check_in().await.unwrap_err();
@@ -253,6 +255,7 @@ async fn a_host_that_cannot_read_its_state_still_checks_in() {
         host.state.clone(),
         SystemState::new(bare.root()).unwrap(),
         Arc::new(UnhandledJobs),
+        updawg_protocol::LocalPolicy::default(),
     );
 
     checkin

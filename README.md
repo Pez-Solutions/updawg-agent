@@ -88,6 +88,23 @@ the backend rather than a filter the caller applies: the filter that is right
 for apt returns **zero on every RHEL host, for ever**, and nothing anywhere
 would look wrong.
 
+The advisory dnf names now travels too, on `AvailableUpdate::advisories`
+(DAWG-231): the id, the vendor's severity word unnormalised, and the type. It is
+a hint and stays one — Rocky says `Moderate` where Amazon Linux says `Medium`
+for the same band, and deciding they are the same is the server's call against a
+feed it can re-read. A guess made on the host cannot be corrected later.
+
+### An upgrade that removes something says so
+
+`dnf upgrade` sometimes installs a differently-named package and removes the
+original, and `apt` does the same through `Conflicts` and `Replaces`. An
+`AvailableUpdate` has one name and two versions, so it can describe an upgrade
+and not a replacement — squeezing one in would be a lie with a name and a
+version in it. They travel as their own list instead
+(`InventoryUpload::removals`, DAWG-232). dnf names what replaces the package;
+**apt does not**, which is why the replacement is optional, and which was
+settled by building the case in a container rather than by reading the manual.
+
 ### Amazon Linux 2023 reports nothing, correctly
 
 AL2023 does deterministic upgrades: `$releasever` is pinned to a dated snapshot,
@@ -298,9 +315,32 @@ that never completes — and that still counts as a failure.
 What the agent deliberately does **not** do is shorten its own timeout to fit.
 That was the first thing tried here and it is wrong: the gateway decides how
 long it holds, and an agent that gives up earlier just abandons polls the
-gateway was about to answer. Making the hold negotiable needs a field in
-`CheckinRequest` and a gateway that honours it. Until then the agent records
-what it observed and says so once, which is the part an operator can act on.
+gateway was about to answer. It spirals — once the timeout is below the hold,
+every poll ends in its own timeout, which reads as another trim and shortens it
+again.
+
+So it **asks** instead (DAWG-205). Once something has actually trimmed a poll,
+`CheckinRequest::max_hold_s` carries two thirds of the limit the agent observed,
+and the gateway clamps that and honours it. The agent's own request timeout
+stays at the gateway's full hold whatever it asked for, because a gateway too
+old to know about the field holds for its own default and answers perfectly
+well — and an agent whose timeout had followed its request would abandon every
+one of those. A host on a network that never trims anything asks for nothing.
+
+### What the server is told the agent may do
+
+`/etc/updawg/agent.toml` is the ceiling and the server may only ever narrow it,
+which means the server has to know where the ceiling is. Every check-in carries
+the agent's mode and the job kinds the file permits (DAWG-223), so the product
+can say a host will refuse `dist_upgrade` *before* somebody approves a proposal
+that targets it rather than one refused job at a time.
+
+What travels is the answer, not the rules: the allow and deny lists, and the
+fact that `snapshot` covers two job kinds, stay here. A second implementation of
+those rules somewhere that cannot be audited is exactly what this design is
+trying not to have. The mode travels separately from the permissions, so a host
+in observe mode with `apply_patch` written down reads as exactly that — the
+operator has not deleted the permission, they have switched the mode off.
 
 ### Fleet-scale behaviour
 

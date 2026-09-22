@@ -302,6 +302,7 @@ fn inventory_upload() -> updawg_protocol::InventoryUpload {
         hash: "sha256:aaa".into(),
         collected_at: chrono::Utc::now(),
         facts: None,
+        removals: vec![],
         packages: updawg_protocol::PackageDelta {
             // Repetitive on purpose: a real package list is hundreds of similar
             // lines, which is the case zstd is best at, and a body that did not

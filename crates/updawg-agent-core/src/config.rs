@@ -15,15 +15,13 @@ use std::{collections::BTreeSet, time::Duration};
 use updawg_protocol::JobKind;
 
 /// How much the agent is allowed to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// Report only. Never change anything, whatever the server sends.
-    #[default]
-    Observe,
-    /// Execute signed jobs, subject to `[permissions]`.
-    Managed,
-}
+///
+/// The protocol's own type rather than a second one that happens to agree: the
+/// mode is reported to the server on every check-in (DAWG-223), and a file, a
+/// wire format and a database column that each spell it their own way is three
+/// chances for one of them to be wrong. `observe` and `managed` are what
+/// `/etc/updawg/agent.toml` has always said, so nothing on disk changes.
+pub use updawg_protocol::AgentMode as Mode;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Permissions {
@@ -213,6 +211,31 @@ impl AgentConfig {
             path: path.display().to_string(),
             source,
         })
+    }
+
+    /// What this file permits, in the shape the server is told about it
+    /// (DAWG-223).
+    ///
+    /// Derived from `[permissions]` rather than sent as the allow and deny
+    /// lists themselves. The server has no business knowing that `snapshot`
+    /// covers two job kinds or that deny beats allow — those are the agent's
+    /// rules, they are enforced here, and shipping them would invite a second
+    /// implementation of them somewhere that cannot be audited. What travels is
+    /// the answer: the kinds this host would accept.
+    ///
+    /// The mode travels **separately** and is not folded in, so a host in
+    /// observe mode with `apply_patch` written down reads as exactly that. An
+    /// operator who has switched the mode off has not deleted the permission,
+    /// and the two facts are worth telling apart on a dashboard.
+    #[must_use]
+    pub fn local_policy(&self) -> updawg_protocol::LocalPolicy {
+        updawg_protocol::LocalPolicy {
+            mode: self.mode,
+            permitted_job_kinds: JobKind::ALL
+                .into_iter()
+                .filter(|kind| self.permissions.permits(*kind))
+                .collect(),
+        }
     }
 
     /// Final answer on whether a job may run on this host.
@@ -438,5 +461,91 @@ inventory_interval = "6 hours"
         let cfg = AgentConfig::from_toml(r#"server = "https://agents.updawg.net""#)
             .expect("minimal config should parse");
         assert_eq!(cfg.mode, Mode::Observe);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    fn config(mode: Mode, allow: &[&str]) -> AgentConfig {
+        AgentConfig {
+            server: "https://agents.updawg.net".into(),
+            mode,
+            permissions: Permissions {
+                allow: allow.iter().map(|s| (*s).to_string()).collect(),
+                deny: BTreeSet::default(),
+            },
+            schedule: Schedule::default(),
+            snapshots: Snapshots::default(),
+            health_checks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_reported_policy_is_what_the_file_permits() {
+        let policy = config(Mode::Managed, &["refresh", "apply_patch"]).local_policy();
+        assert_eq!(
+            policy.permitted_job_kinds,
+            vec![JobKind::RefreshInventory, JobKind::ApplyUpdates]
+        );
+        assert_eq!(policy.mode, Mode::Managed);
+    }
+
+    #[test]
+    fn one_permission_covering_two_kinds_reports_both() {
+        // `snapshot` gates Snapshot and Rollback. The server is told about job
+        // kinds, not about the agent's permission names, so both appear.
+        let policy = config(Mode::Managed, &["snapshot"]).local_policy();
+        assert_eq!(
+            policy.permitted_job_kinds,
+            vec![JobKind::Snapshot, JobKind::Rollback]
+        );
+    }
+
+    #[test]
+    fn a_denied_permission_never_reaches_the_server_as_permitted() {
+        let mut cfg = config(Mode::Managed, &["refresh", "reboot"]);
+        cfg.permissions.deny.insert("reboot".into());
+        assert_eq!(
+            cfg.local_policy().permitted_job_kinds,
+            vec![JobKind::RefreshInventory]
+        );
+    }
+
+    #[test]
+    fn observe_mode_reports_the_mode_without_erasing_the_permissions() {
+        // The two facts stay apart: the operator wrote the permission down and
+        // switched the mode off, which is not the same as never writing it.
+        let policy = config(Mode::Observe, &["apply_patch"]).local_policy();
+        assert_eq!(policy.mode, Mode::Observe);
+        assert_eq!(policy.permitted_job_kinds, vec![JobKind::ApplyUpdates]);
+        // And the server reading it back reaches the same answer the agent does.
+        assert!(!policy.permits(JobKind::ApplyUpdates));
+    }
+
+    #[test]
+    fn the_reported_policy_agrees_with_admits_for_every_kind() {
+        // The property that makes this worth sending at all: what the server is
+        // told and what the agent will actually do are the same answer. Anything
+        // else and the portal promises something the host refuses.
+        for allow in [
+            vec![],
+            vec!["refresh"],
+            vec!["refresh", "apply_patch", "reboot", "dist_upgrade"],
+            vec!["snapshot", "self_update", "preflight"],
+        ] {
+            for mode in [Mode::Observe, Mode::Managed] {
+                let cfg = config(mode, &allow);
+                let policy = cfg.local_policy();
+                for kind in JobKind::ALL {
+                    assert_eq!(
+                        policy.permits(kind),
+                        cfg.admits(kind, None),
+                        "{mode:?} {allow:?} {kind:?}"
+                    );
+                }
+            }
+        }
     }
 }

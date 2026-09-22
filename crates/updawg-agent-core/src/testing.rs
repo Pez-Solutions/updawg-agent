@@ -382,6 +382,8 @@ pub(crate) fn checkin_request() -> CheckinRequest {
             root_free_bytes: 1_000_000,
         },
         running_job_ids: vec![],
+        max_hold_s: None,
+        local_policy: None,
     }
 }
 

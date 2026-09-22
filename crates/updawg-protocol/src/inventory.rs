@@ -70,6 +70,97 @@ pub struct AvailableUpdate {
     pub candidate: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// What the host's own package manager says this update fixes (DAWG-231).
+    ///
+    /// A **hint**, in the strict sense: it is what the vendor's metadata on
+    /// this host happens to say, and the authoritative classification stays the
+    /// server's, against advisory feeds. The server must not start reading this
+    /// instead — a host's own metadata is exactly as incomplete as its vendor
+    /// chose to make it, and a hint that became the answer would make the
+    /// product's coverage depend on which mirror a customer happens to use.
+    ///
+    /// It is here because on the RHEL family there is nothing else. Debian and
+    /// Ubuntu publish security fixes to a `-security` pocket, which [`repo`]
+    /// already carries; Red Hat and its rebuilds publish a fix and a routine
+    /// rebuild to the same `baseos`, so `repo` carries no signal at all and
+    /// `dnf updateinfo` is the only local thing that does.
+    ///
+    /// A list rather than one, because a package can be behind several
+    /// advisories at once — `dnf updateinfo` lists one per version, including
+    /// versions between the installed one and the candidate, and all of them
+    /// are fixed by taking the candidate.
+    ///
+    /// [`repo`]: AvailableUpdate::repo
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisories: Vec<AdvisoryHint>,
+}
+
+/// One advisory the host's package manager attributes to an update.
+///
+/// Every field is **verbatim**. Normalising here would be a guess made on the
+/// host, and a guess made on the host cannot be corrected later: Red Hat's
+/// rebuilds say `Moderate` where Amazon Linux says `Medium` for the same band,
+/// and deciding they are the same is the server's call against a feed it can
+/// re-read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisoryHint {
+    /// The vendor's advisory id: `RLSA-2026:60226`, `ALAS2023-2025-1194`.
+    pub id: String,
+    /// The vendor's severity word, unnormalised, and absent when there is none.
+    ///
+    /// **A bugfix has no severity at all.** Inventing one puts every routine
+    /// rebuild on the same scale as a remote code execution, which is the exact
+    /// noise that makes an operator stop reading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    /// `security`, `bugfix`, `enhancement`, or whatever else the package
+    /// manager printed. A type nobody has seen before is worth reporting as
+    /// itself rather than folded into one of the three.
+    pub kind: String,
+    /// The version this advisory fixes the package at, when the package manager
+    /// names one. It may be **below** the candidate: several advisories can sit
+    /// between what is installed and what would be installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_in: Option<String>,
+}
+
+/// A package an upgrade would **remove** rather than move to a new version
+/// (DAWG-232).
+///
+/// Its own list, not a shape of [`AvailableUpdate`], because an update has one
+/// name and two versions and this is a removal and possibly an install. Folding
+/// it into an update would put a name and two versions on a row that describes
+/// neither, and it would be believed.
+///
+/// The invisible state is the dangerous one. A host with an obsoleted package
+/// installed is a host where applying updates will take something away, and the
+/// proposal carrying it should say so before anybody approves it rather than
+/// after the job has run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRemoval {
+    pub name: String,
+    pub arch: String,
+    /// The version installed now, which is what would go away.
+    pub installed: String,
+    /// What takes its place, **when the package manager names one**.
+    ///
+    /// dnf does: `check-update` prints the obsoleting package above the one it
+    /// obsoletes. apt does not — a simulated `dist-upgrade` prints
+    /// `Remv barpkg [1.0]` and nothing about what caused it, which is why this
+    /// is an `Option` and not two more required fields. Captured from both
+    /// families rather than assumed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<Replacement>,
+}
+
+/// The package that would be installed in place of a removed one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replacement {
+    pub name: String,
+    pub arch: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +215,13 @@ pub struct InventoryUpload {
     pub repositories: Vec<Repository>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_packages: Vec<String>,
+    /// Packages an upgrade would remove rather than upgrade (DAWG-232).
+    ///
+    /// Current state, like [`updates`](InventoryUpload::updates), and sent in
+    /// full on a delta as well as on a full inventory: it describes what the
+    /// package manager would do now, not what changed since last time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removals: Vec<PendingRemoval>,
 }
 
 impl InventoryUpload {
@@ -155,6 +253,7 @@ mod tests {
             updates: vec![],
             repositories: vec![],
             held_packages: vec![],
+            removals: vec![],
         }
     }
 
@@ -174,5 +273,97 @@ mod tests {
     fn the_type_field_is_named_type_on_the_wire() {
         let json = serde_json::to_value(upload(InventoryKind::Delta, Some("x"))).unwrap();
         assert_eq!(json["type"], "delta");
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    fn update() -> AvailableUpdate {
+        AvailableUpdate {
+            name: "attr".into(),
+            arch: "aarch64".into(),
+            installed: "2.5.1-3.el9".into(),
+            candidate: "2.6.0-1.el9_8".into(),
+            repo: Some("baseos".into()),
+            advisories: vec![],
+        }
+    }
+
+    #[test]
+    fn an_update_with_no_advisory_hint_is_the_same_five_fields_as_before() {
+        let json = serde_json::to_string(&update()).unwrap();
+        assert!(!json.contains("advisories"), "{json}");
+    }
+
+    #[test]
+    fn an_older_agent_sending_no_hints_parses_as_none_rather_than_failing() {
+        let json = r#"{"name":"less","arch":"amd64","installed":"1","candidate":"2"}"#;
+        let update: AvailableUpdate = serde_json::from_str(json).unwrap();
+        assert!(update.advisories.is_empty());
+        assert!(update.repo.is_none());
+    }
+
+    #[test]
+    fn a_bugfix_carries_no_severity() {
+        let hint = AdvisoryHint {
+            id: "RLBA-2026:12345".into(),
+            severity: None,
+            kind: "bugfix".into(),
+            fixed_in: Some("590-5.el9".into()),
+        };
+        let json = serde_json::to_string(&hint).unwrap();
+        assert!(!json.contains("severity"), "{json}");
+    }
+
+    #[test]
+    fn a_severity_word_is_not_normalised_on_the_way_past() {
+        // Red Hat's rebuilds say Moderate where Amazon Linux says Medium for the
+        // same band. Deciding they are the same is the server's job, against a
+        // feed it can re-read; a guess made on the host cannot be corrected.
+        for word in ["Moderate", "Medium", "Important", "Critical"] {
+            let hint = AdvisoryHint {
+                id: "X".into(),
+                severity: Some(word.into()),
+                kind: "security".into(),
+                fixed_in: None,
+            };
+            let back: AdvisoryHint =
+                serde_json::from_str(&serde_json::to_string(&hint).unwrap()).unwrap();
+            assert_eq!(back.severity.as_deref(), Some(word));
+        }
+    }
+
+    #[test]
+    fn a_removal_can_name_no_replacement_because_apt_names_none() {
+        let removal = PendingRemoval {
+            name: "barpkg".into(),
+            arch: "all".into(),
+            installed: "1.0".into(),
+            replaced_by: None,
+        };
+        let json = serde_json::to_string(&removal).unwrap();
+        assert!(!json.contains("replaced_by"), "{json}");
+        let back: PendingRemoval = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, removal);
+    }
+
+    #[test]
+    fn a_removal_round_trips_with_its_replacement() {
+        let removal = PendingRemoval {
+            name: "oldthing".into(),
+            arch: "noarch".into(),
+            installed: "1.0-1.el9".into(),
+            replaced_by: Some(Replacement {
+                name: "newthing".into(),
+                arch: "noarch".into(),
+                version: "2.0-1.el9".into(),
+                repo: Some("local".into()),
+            }),
+        };
+        let back: PendingRemoval =
+            serde_json::from_str(&serde_json::to_string(&removal).unwrap()).unwrap();
+        assert_eq!(back, removal);
     }
 }

@@ -9,6 +9,16 @@
 //! The five are the ones DAWG-34 names: Ubuntu 20.04, 22.04 and 24.04 (apt 2.0,
 //! 2.4 and 2.8), and Debian 11 and 12. `tests/apt_live.rs` re-captures them from
 //! live containers and is the canary for the format drifting.
+//!
+//! # And why there is a sixth fixture
+//!
+//! `debian12-removals` is a Debian 12 container with three packages built by
+//! `dpkg-deb` into a local repository, one of which `Replaces` and `Conflicts`
+//! the other two, because **no stock image has an upgrade that removes
+//! something** and that is the state DAWG-232 exists for. The packages are
+//! synthetic; the `apt` output is not, and it is what settled the shape of
+//! `PendingRemoval`: apt says a package will be removed and never what
+//! replaced it. `tests/apt_live.rs` rebuilds it.
 
 // clippy.toml allows unwrap and expect in `#[cfg(test)]` modules, but that does
 // not reach an integration test in `tests/` — the whole file is the test. In here
@@ -21,8 +31,8 @@
 )]
 
 use updawg_backends::apt::{
-    distro_origin, is_security_archive, parse_holds, parse_installed, parse_repositories,
-    parse_updates,
+    distro_origin, is_security_archive, parse_holds, parse_installed, parse_removals,
+    parse_repositories, parse_updates,
 };
 
 /// The five distributions, and the origin each one's own repositories carry.
@@ -460,4 +470,81 @@ fn os_release_id_is_not_confused_with_id_like() {
     // repositories read as Debian's and every one of them third-party.
     let os_release = "PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nID_LIKE=debian\nID=ubuntu\n";
     assert_eq!(distro_origin(os_release).as_deref(), Some("Ubuntu"));
+}
+
+/* ------------------------------------------- packages an upgrade removes */
+
+#[test]
+fn a_stock_upgrade_removes_nothing() {
+    // The normal answer on every official image, and the reason the fixture
+    // below had to be built: a removal is rare, and rare is exactly what gets
+    // shipped untested.
+    for (distro, _) in DISTROS {
+        let f = fixture(distro);
+        let installed = parse_installed(&section(&f, "DPKG_QUERY"));
+        assert!(
+            parse_removals(&section(&f, "DIST_UPGRADE"), &installed).is_empty(),
+            "{distro} reported a removal"
+        );
+    }
+}
+
+#[test]
+fn a_package_an_upgrade_would_remove_is_reported() {
+    let f = fixture("debian12-removals");
+    let installed = parse_installed(&section(&f, "DPKG_QUERY"));
+    let removals = parse_removals(&section(&f, "DIST_UPGRADE"), &installed);
+
+    assert_eq!(
+        removals
+            .iter()
+            .map(|r| (r.name.as_str(), r.installed.as_str(), r.arch.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("barpkg", "1.0", "all"), ("quxpkg", "1.0", "all")]
+    );
+}
+
+#[test]
+fn apt_never_says_what_replaced_the_package_it_removes() {
+    // The fact that decided the wire shape. `Remv barpkg [1.0]` carries a name
+    // and a version and nothing else — the `Inst foopkg` line that caused it is
+    // in the same output with nothing linking the two. dnf names the obsoleting
+    // package; apt does not, and inventing one here would be a lie with a name
+    // and a version in it.
+    let f = fixture("debian12-removals");
+    let installed = parse_installed(&section(&f, "DPKG_QUERY"));
+    for removal in parse_removals(&section(&f, "DIST_UPGRADE"), &installed) {
+        assert!(removal.replaced_by.is_none(), "{}", removal.name);
+    }
+}
+
+#[test]
+fn the_package_causing_the_removal_is_still_an_ordinary_update() {
+    let f = fixture("debian12-removals");
+    let updates = parse_updates(&section(&f, "DIST_UPGRADE"));
+    let foopkg = updates
+        .iter()
+        .find(|u| u.name == "foopkg")
+        .expect("foopkg is the upgrade that removes the other two");
+    assert_eq!(foopkg.installed, "1.0");
+    assert_eq!(foopkg.candidate, "2.0");
+    // And nothing it removed is reported as an update, which is the lie the
+    // separate list exists to avoid.
+    assert!(!updates.iter().any(|u| u.name == "barpkg"));
+}
+
+#[test]
+fn a_removal_of_something_this_host_does_not_have_is_dropped() {
+    // apt should never propose removing one, and an entry whose architecture
+    // had to be invented would be indistinguishable from a real one downstream.
+    assert!(parse_removals("Remv ghost [1.0]\n", &[]).is_empty());
+}
+
+#[test]
+fn a_foreign_architecture_removal_keeps_one_name() {
+    let installed = parse_installed("libc6\t2.36-9\tarmhf\tinstalled\n");
+    let removals = parse_removals("Remv libc6:armhf [2.36-9]\n", &installed);
+    assert_eq!(removals.len(), 1);
+    assert_eq!(removals[0].name, "libc6");
+    assert_eq!(removals[0].arch, "armhf");
 }

@@ -1,8 +1,9 @@
 //! Debian-family backend (DAWG-34).
 //!
 //! Installed packages come from `dpkg-query -W` with a tab-separated format
-//! string, candidates from a simulated `apt-get -s dist-upgrade`, repository
-//! origin from `apt-cache policy`, and holds from `apt-mark showhold`.
+//! string, candidates and pending removals from one simulated
+//! `apt-get -s dist-upgrade`, repository origin from `apt-cache policy`, and
+//! holds from `apt-mark showhold`.
 //!
 //! Shelling out rather than linking `libapt` is what keeps the binary statically
 //! linked against musl, so one build per architecture runs on every supported
@@ -25,9 +26,11 @@
 //! is the server's, against advisory data, because the distribution's own
 //! metadata is incomplete and inconsistent between families.
 
-use crate::{ApplyOutcome, ApplyPlan, BackendError, LogSink, PackageBackend, Result};
+use crate::{
+    ApplyOutcome, ApplyPlan, BackendError, LogSink, PackageBackend, PendingChanges, Result,
+};
 use async_trait::async_trait;
-use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, Repository};
+use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, PendingRemoval, Repository};
 
 #[derive(Debug, Default, Clone)]
 pub struct AptBackend {
@@ -71,13 +74,20 @@ impl PackageBackend for AptBackend {
         run("apt-get", &["update", "-qq"]).await.map(|_| ())
     }
 
-    async fn available_updates(&self) -> Result<Vec<AvailableUpdate>> {
+    async fn pending_changes(&self) -> Result<PendingChanges> {
         // Simulated, so it takes no locks and changes nothing. `-s` implies
         // Debug::NoLocking, which is what lets this run while unattended-upgrades
         // holds the real lock — an agent that could only report when nothing else
         // was working would be silent exactly when it mattered.
+        //
+        // One simulation answers both halves: apt prints `Inst` and `Remv` lines
+        // from the same run, and this is the expensive call in a collection pass.
+        let installed = self.installed().await?;
         let out = run("apt-get", &["-s", "dist-upgrade"]).await?;
-        Ok(parse_updates(&out))
+        Ok(PendingChanges {
+            updates: parse_updates(&out),
+            removals: parse_removals(&out, &installed),
+        })
     }
 
     async fn repositories(&self) -> Result<Vec<Repository>> {
@@ -194,6 +204,49 @@ pub fn parse_updates(out: &str) -> Vec<AvailableUpdate> {
                 installed: installed.to_owned(),
                 candidate: candidate.to_owned(),
                 repo: pocket(origins),
+                // apt has no `updateinfo`. The pocket on `repo` is the whole of
+                // what it says about an update, and it is already there.
+                advisories: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// The `Remv` lines of `apt-get -s dist-upgrade` (DAWG-232).
+///
+/// ```text
+/// Remv barpkg [1.0]
+/// Inst foopkg [1.0] (2.0 localhost [all])
+/// ```
+///
+/// **apt says that a package will be removed and never what replaces it.**
+/// Captured from a Debian 12 container with a package built to `Replaces` and
+/// `Conflicts` another: the `Remv` line carries a name and the installed
+/// version, and nothing links it to the `Inst` line that caused it. That is why
+/// [`PendingRemoval::replaced_by`] is an `Option` — dnf names the obsoleting
+/// package and apt does not, and inventing one here would be a lie with a name
+/// and a version in it.
+///
+/// The architecture comes from the installed set rather than from the line, for
+/// the same reason `parse_updates` strips `:armhf` from a name: apt writes
+/// `name:arch` only for a foreign architecture, and dpkg keeps the architecture
+/// in its own field. A package the host does not have is dropped, which is the
+/// same guard as everywhere else here — apt should never propose removing one,
+/// and an entry with an invented architecture would be indistinguishable from a
+/// real one downstream.
+#[must_use]
+pub fn parse_removals(out: &str, installed: &[InstalledPackage]) -> Vec<PendingRemoval> {
+    out.lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("Remv ")?;
+            let (name, _) = rest.split_once(' ').unwrap_or((rest, ""));
+            let name = name.split(':').next().unwrap_or(name);
+            let package = installed.iter().find(|p| p.name == name)?;
+            Some(PendingRemoval {
+                name: package.name.clone(),
+                arch: package.arch.clone(),
+                installed: package.version.clone(),
+                replaced_by: None,
             })
         })
         .collect()

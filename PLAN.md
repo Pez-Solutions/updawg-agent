@@ -126,14 +126,25 @@ test matrix. Nothing else in the agent should need to change.
 machine-readable modes:
 
 - **apt:** installed from `dpkg-query -W` with a tab-separated format string;
-  candidates from a simulated `apt-get -s dist-upgrade`; repository origin (e.g.
-  the `-security` pocket) from `apt-cache policy`.
+  candidates *and pending removals* from one simulated `apt-get -s dist-upgrade`;
+  repository origin (e.g. the `-security` pocket) from `apt-cache policy`.
 - **dnf:** installed from `rpm -qa --qf`; candidates from `dnf repoquery
   --upgrades --latest-limit=1 --qf`, **not** `dnf check-update`, whose output is
   a terminal table that wraps a long package name onto two lines; repositories
   from `dnf repolist --all -v`, whose plain form truncates a name to the terminal
   width; advisories from `dnf updateinfo list`; holds from `dnf versionlock
   list`.
+
+**The one exception, and it is a real one.** Obsoletions come from `dnf
+check-update --obsoletes` (DAWG-232), because `repoquery --upgrades` does not
+report them — an obsoletion is not an upgrade — and no `--qf` names both sides
+of one. The wrapping problem is answered by not reading the section as lines:
+every entry is three whitespace-separated fields and none can contain a space,
+so it is one token stream, and an installed package's repository is printed with
+an `@` prefix, which is what tells the obsoleted package from the one obsoleting
+it. ⚠️ `check-update` also exits **100** when there are updates, so a runner that
+reads a non-zero status as failure never gets an answer from a host that has
+anything to do.
 
 Security classification is *refined server-side* by matching versions against
 advisory data — the agent reports what it sees, the server decides what it means.
@@ -152,7 +163,9 @@ every RHEL host in the fleet.
 | Identity | machine-id, hostname, FQDN, cloud instance ID and region | Enrollment, then on change |
 | Platform | distro, version, codename, kernel, architecture, virtualization | Every inventory |
 | Packages | name, version, architecture, source repository | Full every 6h, and after every job |
-| Updates | candidate versions, repository, origin | Every inventory, plus after `refresh` jobs |
+| Updates | candidate versions, repository, origin, the advisory the package manager names for it | Every inventory, plus after `refresh` jobs |
+| Removals | packages an upgrade would remove rather than upgrade, and what replaces them where the package manager says | Every inventory |
+| Local policy | the agent's mode and the job kinds `agent.toml` permits | Every check-in (small) |
 | Repositories | configured apt sources and yum repos, including third-party | Every inventory |
 | State | reboot required, services needing restart, held packages | Every check-in (small) |
 | Health | uptime, load, memory, root disk free space | Every check-in |

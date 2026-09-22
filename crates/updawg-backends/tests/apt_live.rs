@@ -26,7 +26,9 @@
     unreachable_pub
 )]
 
-use updawg_backends::apt::{parse_holds, parse_installed, parse_repositories, parse_updates};
+use updawg_backends::apt::{
+    parse_holds, parse_installed, parse_removals, parse_repositories, parse_updates,
+};
 
 const IMAGES: &[(&str, &str)] = &[
     ("ubuntu:20.04", "Ubuntu"),
@@ -56,6 +58,44 @@ echo "===INSTALL_SIM==="
 apt-get -s install --no-install-recommends curl 2>&1
 "#;
 
+/// Builds the state `tests/fixtures/apt/debian12-removals.txt` was captured
+/// from, because no official image has an upgrade that removes something.
+///
+/// Three packages built with `dpkg-deb`, one of which `Replaces` and
+/// `Conflicts` the other two and is then offered as an upgrade. The packages
+/// are made up; what `apt` prints about them is not, and what it prints is a
+/// `Remv` line that does not name the package that caused it.
+const REMOVALS_CAPTURE: &str = r#"
+set -u
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq dpkg-dev >/dev/null 2>&1
+mk() {
+  d=/tmp/build/$1-$2
+  rm -rf "$d"; mkdir -p "$d/DEBIAN"
+  { echo "Package: $1"; echo "Version: $2"; echo "Architecture: all"
+    echo "Maintainer: t <t@example.com>"; echo "Description: t"
+    shift 2; for l in "$@"; do echo "$l"; done
+  } > "$d/DEBIAN/control"
+  dpkg-deb -b "$d" /tmp/repo/$(basename $d).deb >/dev/null
+}
+mkdir -p /tmp/repo /tmp/build
+mk barpkg 1.0
+mk quxpkg 1.0
+mk foopkg 1.0
+mk foopkg 2.0 "Replaces: barpkg, quxpkg" "Conflicts: barpkg, quxpkg" "Provides: barpkg, quxpkg"
+dpkg -i /tmp/repo/barpkg-1.0.deb /tmp/repo/quxpkg-1.0.deb /tmp/repo/foopkg-1.0.deb >/dev/null 2>&1
+cd /tmp/repo
+rm -f barpkg-1.0.deb quxpkg-1.0.deb foopkg-1.0.deb
+dpkg-scanpackages . /dev/null > Packages 2>/dev/null
+echo "deb [trusted=yes] file:/tmp/repo ./" > /etc/apt/sources.list.d/local.list
+apt-get update -qq >/dev/null 2>&1
+echo "===DPKG_QUERY==="
+dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n' 2>/dev/null
+echo "===DIST_UPGRADE==="
+apt-get -s dist-upgrade 2>&1
+"#;
+
 fn docker_available() -> bool {
     std::process::Command::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -64,6 +104,10 @@ fn docker_available() -> bool {
 }
 
 fn capture(image: &str) -> String {
+    capture_with(image, CAPTURE)
+}
+
+fn capture_with(image: &str, script: &str) -> String {
     let mut child = std::process::Command::new("docker")
         .args(["run", "--rm", "-i", image, "bash", "-s"])
         .stdin(std::process::Stdio::piped())
@@ -77,7 +121,7 @@ fn capture(image: &str) -> String {
             .stdin
             .as_mut()
             .expect("stdin")
-            .write_all(CAPTURE.as_bytes())
+            .write_all(script.as_bytes())
             .expect("write the capture script");
     }
     let out = child.wait_with_output().expect("run docker");
@@ -163,6 +207,10 @@ fn the_parsers_still_understand_what_apt_prints_today() {
         );
 
         let updates = parse_updates(&section(&out, "DIST_UPGRADE"));
+        assert!(
+            parse_removals(&section(&out, "DIST_UPGRADE"), &installed).is_empty(),
+            "{image}: a stock image's upgrade would remove a package"
+        );
         for u in &updates {
             assert_ne!(
                 u.installed, u.candidate,
@@ -191,4 +239,50 @@ fn the_parsers_still_understand_what_apt_prints_today() {
             holds.len(),
         );
     }
+}
+
+#[test]
+#[ignore = "needs Docker, and builds three .debs inside the container"]
+fn an_upgrade_that_removes_a_package_still_says_so_the_same_way() {
+    if !docker_available() {
+        assert!(
+            std::env::var("UPDAWG_REQUIRE_DOCKER").is_err(),
+            "UPDAWG_REQUIRE_DOCKER is set but Docker is not usable"
+        );
+        eprintln!("skipping: no Docker");
+        return;
+    }
+
+    let out = capture_with("debian:12", REMOVALS_CAPTURE);
+    assert!(
+        out.contains("===DPKG_QUERY==="),
+        "captured nothing — is dpkg-dev still installable?"
+    );
+
+    let installed = parse_installed(&section(&out, "DPKG_QUERY"));
+    let sim = section(&out, "DIST_UPGRADE");
+    let removals = parse_removals(&sim, &installed);
+    assert_eq!(
+        removals
+            .iter()
+            .map(|r| (r.name.as_str(), r.installed.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("barpkg", "1.0"), ("quxpkg", "1.0")],
+        "apt's Remv line has moved"
+    );
+
+    // The fact the wire shape rests on: apt still names nothing that replaced
+    // them. If this ever fails, `PendingRemoval::replaced_by` can be filled in
+    // on this family too.
+    assert!(
+        removals.iter().all(|r| r.replaced_by.is_none()),
+        "apt now names the replacement; parse_removals can report it"
+    );
+
+    // And a removal is never also reported as an update.
+    let updates = parse_updates(&sim);
+    assert!(updates.iter().any(|u| u.name == "foopkg"));
+    assert!(!updates.iter().any(|u| u.name == "barpkg"));
+
+    eprintln!("debian12 synthetic: {} removals", removals.len());
 }

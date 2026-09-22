@@ -12,7 +12,7 @@ agent and the server — depend on one definition rather than two that drift.
 
 ```toml
 [dependencies]
-updawg-protocol = "0.1"
+updawg-protocol = "0.2"
 ```
 
 ## The property this crate exists to preserve
@@ -76,11 +76,66 @@ port, so it works behind NAT and strict egress firewalls.
 | `GET /config` | `ServerConfig` |
 | `GET /releases/{channel}` | `ReleaseManifest` |
 
+## What local configuration permits
+
+`/etc/updawg/agent.toml` is the ceiling on what an agent will do, and the server
+may only ever narrow it. `CheckinRequest::local_policy` is how the server finds
+out where that ceiling is — a mode and the job kinds the file permits, reported
+on every check-in rather than at enrollment, because the file changes without
+one. An agent too old to report it sends nothing, and nothing means *unknown*
+rather than *nothing permitted*.
+
+## Advisory hints, and what they are not
+
+`AvailableUpdate::advisories` carries what the host's own package manager said
+about an update: the vendor's advisory id, its severity word unnormalised, and
+the type. It exists because the RHEL family has no security pocket — a fix and a
+routine rebuild are both published to `baseos` — so on those hosts it is the
+only local signal there is.
+
+It is a **hint**. The authoritative classification is the server's, against
+advisory feeds, because a host's own metadata is exactly as incomplete as its
+vendor chose to make it.
+
 ## Stability
 
 Pre-1.0. The wire format is versioned independently of this crate through the
 `Updawg-Protocol` header (currently `1`), and the gateway accepts the current
-and previous protocol version.
+and previous protocol version. Adding an optional field does not move that
+header: `0.2.0` added four, and a `0.1` peer and a `0.2` peer understand each
+other exactly as well as two `0.1` peers did.
+
+## Changes
+
+### 0.2.0
+
+- `CheckinRequest::max_hold_s` — the check-in hold the agent would like, clamped
+  and honoured by the gateway through `CheckinRequest::hold_seconds`, for
+  networks that trim idle connections before a long poll completes.
+- `CheckinRequest::local_policy` — `LocalPolicy` and `AgentMode`: what
+  `/etc/updawg/agent.toml` permits.
+- `AvailableUpdate::advisories` — `AdvisoryHint`: what the host's package
+  manager says an update fixes.
+- `InventoryUpload::removals` — `PendingRemoval` and `Replacement`: packages an
+  upgrade would remove rather than upgrade.
+- `JobKind::ALL`, for callers that have to enumerate the kinds.
+
+Every field is optional in both directions, so nothing older breaks.
+
+### 0.1.2
+
+The crate's own MSRV, rather than the agent workspace's. `0.1.1` inherited
+`rust-version = 1.88` and could not be resolved by consumers on 1.85.
+
+### 0.1.1
+
+The wire structs stopped being `#[non_exhaustive]`, which had made them
+unconstructable outside this crate — and both ends of a wire format are outside
+this crate. Superseded by `0.1.2`; use that.
+
+### 0.1.0
+
+First release. Unusable, for the reason above.
 
 ## License
 

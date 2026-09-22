@@ -27,6 +27,19 @@
 //! minor version bump, and new optional fields carry `#[serde(default)]` so an
 //! older peer keeps parsing.
 //!
+//! It also means adding one is a **breaking change to every struct literal**,
+//! which is the price of the property above and is paid at compile time in two
+//! repositories rather than at runtime in a customer's fleet.
+//!
+//! [`PROTOCOL_VERSION`] does **not** move for a field. It names the shape of
+//! the conversation — the endpoints, the mTLS identity, what a 409 means — and
+//! 0.2.0 adds four optional fields to it: a shorter check-in hold the agent may
+//! ask for (DAWG-205), what the local config permits (DAWG-223), the advisory
+//! its package manager attributes to an update (DAWG-231), and the packages an
+//! upgrade would remove rather than upgrade (DAWG-232). Every one of them is
+//! absent-means-unknown in both directions, so a 0.1 agent and a 0.2 gateway
+//! understand each other exactly as well as they did before.
+//!
 //! # Transport
 //!
 //! Mutual TLS. The agent generates a key pair locally at enrollment, sends a
@@ -41,7 +54,7 @@
 //! places; the three-letter form is what the implementation uses throughout the
 //! agent, the server and the portal, and it is what this crate defines.
 
-#![doc(html_root_url = "https://docs.rs/updawg-protocol/0.1.2")]
+#![doc(html_root_url = "https://docs.rs/updawg-protocol/0.2.0")]
 #![forbid(unsafe_code)]
 
 pub mod cert;
@@ -57,15 +70,15 @@ pub mod releases;
 
 pub use cert::{CertRenewRequest, CertRenewResponse};
 pub use checkin::{CheckinRequest, CheckinResponse, HostMetrics, HostStateReport};
-pub use config::ServerConfig;
+pub use config::{AgentMode, LocalPolicy, ServerConfig};
 pub use enroll::{
     CloudFacts, EnrollRequest, EnrollResponse, HostFacts, OrgSigningKey, SigningKeyStatus,
 };
 pub use error::ApiError;
 pub use ids::{HostId, JobId, OrgId, SigningKeyId};
 pub use inventory::{
-    AvailableUpdate, Ecosystem, InstalledPackage, InventoryKind, InventoryUpload, PackageDelta,
-    RemovedPackage, Repository, SystemFacts,
+    AdvisoryHint, AvailableUpdate, Ecosystem, InstalledPackage, InventoryKind, InventoryUpload,
+    PackageDelta, PendingRemoval, RemovedPackage, Replacement, Repository, SystemFacts,
 };
 pub use job::{
     ApplyUpdates, DistUpgrade, HealthCheckReport, Job, JobAck, JobComplete, JobKind, JobSpec,
@@ -86,6 +99,13 @@ pub const PROTOCOL_HEADER: &str = "Updawg-Protocol";
 
 /// Longest a check-in is held open before the gateway replies with no jobs.
 pub const CHECKIN_LONG_POLL_SECONDS: u64 = 55;
+
+/// Shortest a check-in is held open, whatever the agent asks for.
+///
+/// The floor on [`CheckinRequest::hold_seconds`]. An agent that asked for zero
+/// and was given zero would reconnect as fast as the network allows, for ever,
+/// and the graph would look like a busy fleet rather than a bug.
+pub const CHECKIN_MIN_HOLD_SECONDS: u64 = 5;
 
 /// Lifetime of an issued client certificate.
 pub const CLIENT_CERT_DAYS: u32 = 30;

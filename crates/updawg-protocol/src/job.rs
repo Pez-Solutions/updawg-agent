@@ -29,6 +29,24 @@ pub enum JobKind {
 }
 
 impl JobKind {
+    /// Every kind there is.
+    ///
+    /// For the callers that have to enumerate them — the agent turning its
+    /// `[permissions]` table into the list it reports (DAWG-223), and the
+    /// server deciding what it may ask of a host. **Adding a variant means
+    /// adding it here**, and a variant missing from this array is a permission
+    /// the agent silently never reports.
+    pub const ALL: [Self; 8] = [
+        Self::RefreshInventory,
+        Self::RunPreflight,
+        Self::ApplyUpdates,
+        Self::DistUpgrade,
+        Self::Reboot,
+        Self::Snapshot,
+        Self::Rollback,
+        Self::SelfUpdate,
+    ];
+
     /// Whether this job changes the host. Observe mode refuses all of these.
     #[must_use]
     pub const fn is_mutating(self) -> bool {
@@ -392,6 +410,36 @@ mod tests {
 
     /// A payload naming a shell command must not deserialise into anything.
     /// This is the closed-set property, asserted rather than assumed.
+    #[test]
+    fn all_holds_every_kind_exactly_once() {
+        let distinct: std::collections::BTreeSet<&str> =
+            JobKind::ALL.iter().map(|k| k.permission()).collect();
+        // Snapshot and Rollback share a permission, so the permissions are one
+        // fewer than the kinds. Counted rather than assumed, because the number
+        // is what catches a variant pasted in twice.
+        assert_eq!(JobKind::ALL.len(), 8);
+        assert_eq!(distinct.len(), 7);
+        for kind in JobKind::ALL {
+            // Exhaustive: a new variant does not compile until it is named
+            // here, which is the nudge to put it in `ALL` as well.
+            let named = match kind {
+                JobKind::RefreshInventory => "refresh_inventory",
+                JobKind::RunPreflight => "run_preflight",
+                JobKind::ApplyUpdates => "apply_updates",
+                JobKind::DistUpgrade => "dist_upgrade",
+                JobKind::Reboot => "reboot",
+                JobKind::Snapshot => "snapshot",
+                JobKind::Rollback => "rollback",
+                JobKind::SelfUpdate => "self_update",
+            };
+            // And the same words serde uses, so a rename shows up here too.
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{named}\"")
+            );
+        }
+    }
+
     #[test]
     fn there_is_no_variant_that_carries_a_command() {
         let attempt =

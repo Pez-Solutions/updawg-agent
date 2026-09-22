@@ -24,9 +24,16 @@
 //! fit. That was the first thing I tried and it is wrong — the gateway decides
 //! how long it holds, and an agent that gives up earlier simply abandons polls
 //! the gateway was about to answer, turning a working system into one that
-//! misses jobs. Making the hold negotiable means a field in `CheckinRequest`
-//! and a gateway that honours it; until then the agent records what it
-//! observed and says so, which is the part an operator can act on.
+//! misses jobs. It spirals: once the agent's timeout is below the gateway's
+//! hold, every poll ends in its own timeout, which reads as another trim and
+//! shortens it again.
+//!
+//! So the agent **asks** instead (DAWG-205). `CheckinRequest::max_hold_s`
+//! carries the hold it would like, the gateway clamps it and honours it, and
+//! the request timeout stays at the gateway's full hold whatever was asked —
+//! because a gateway too old to know about the field holds for its own default
+//! and answers perfectly well, and an agent that had shortened its timeout to
+//! match its request would abandon every one of those.
 
 use crate::{
     scheduler::{CheckIn, CheckinOutcome},
@@ -39,7 +46,7 @@ use std::{
     time::{Duration, Instant},
 };
 use updawg_collectors::{RebootRequired, StateCollector, SystemState};
-use updawg_protocol::{CheckinRequest, HostStateReport, Job};
+use updawg_protocol::{CheckinRequest, HostStateReport, Job, LocalPolicy};
 
 /// A poll that survived at least this long was doing its job.
 ///
@@ -48,6 +55,15 @@ use updawg_protocol::{CheckinRequest, HostStateReport, Job};
 /// before dying was connected and idle, which is the signature of something in
 /// the middle tidying up.
 const SETTLED: Duration = Duration::from_secs(5);
+
+/// How much of an observed idle limit to ask to be held for.
+///
+/// Two thirds, so a proxy that trims at thirty seconds is asked for twenty. The
+/// margin is deliberately generous: the observed limit is the shortest poll
+/// that *survived* before being cut, which is an upper bound on a number that
+/// may itself vary, and asking for almost all of it would spend the saving on
+/// being trimmed anyway.
+const HOLD_FRACTION: u32 = 3;
 
 /// Where jobs go once a check-in returns them.
 ///
@@ -79,6 +95,13 @@ pub struct GatewayCheckIn {
     state: LocalState,
     collector: SystemState,
     jobs: Arc<dyn JobSink>,
+    /// What `/etc/updawg/agent.toml` permits, as the server is told it.
+    ///
+    /// Read once at startup, like the rest of the configuration: the agent is
+    /// restarted when the file changes, and a check-in that re-read a file from
+    /// disk nine hundred times a second across a fleet would be a strange thing
+    /// to build.
+    policy: LocalPolicy,
     /// The shortest a poll has survived before being cut off, if it ever has.
     ///
     /// Recorded rather than acted on: see the module docs. It is what turns
@@ -103,21 +126,45 @@ impl GatewayCheckIn {
         state: LocalState,
         collector: SystemState,
         jobs: Arc<dyn JobSink>,
+        policy: LocalPolicy,
     ) -> Self {
         Self {
             transport,
             state,
             collector,
             jobs,
+            policy,
             observed_idle_limit: RwLock::new(None),
         }
     }
 
-    /// How long one poll is allowed to run. The gateway's hold, from the
-    /// protocol — not something the agent gets to choose.
+    /// How long one poll is allowed to run.
+    ///
+    /// The gateway's full hold, **whatever [`Self::requested_hold`] asked for**.
+    /// A gateway too old for DAWG-205 ignores the request and answers at its own
+    /// timeout; an agent whose client timeout had followed its request would
+    /// abandon every one of those polls a moment before they were answered.
     #[must_use]
     pub fn hold(&self) -> Duration {
         Duration::from_secs(updawg_protocol::CHECKIN_LONG_POLL_SECONDS)
+    }
+
+    /// The hold to ask the gateway for, if this host has reason to ask for one
+    /// (DAWG-205).
+    ///
+    /// `None` until something has actually trimmed a poll. Asking for less than
+    /// the default on a network that never trims anything would cost a
+    /// reconnection every twenty seconds to solve a problem the host does not
+    /// have.
+    #[must_use]
+    pub fn requested_hold(&self) -> Option<u64> {
+        let observed = self.observed_idle_limit()?.as_secs();
+        let asked = (observed * u64::from(HOLD_FRACTION - 1) / u64::from(HOLD_FRACTION))
+            .max(updawg_protocol::CHECKIN_MIN_HOLD_SECONDS);
+        // An idle limit longer than the gateway's own hold is not a problem to
+        // work around, and asking for the default is the same as asking for
+        // nothing.
+        (asked < updawg_protocol::CHECKIN_LONG_POLL_SECONDS).then_some(asked)
     }
 
     /// The shortest a poll has survived before being cut off, if ever.
@@ -199,6 +246,12 @@ impl GatewayCheckIn {
             // Reported by whatever is executing jobs, once anything is
             // (DAWG-38). An empty list is correct today: nothing is running.
             running_job_ids: Vec::new(),
+            max_hold_s: self.requested_hold(),
+            // Every check-in, not once at enrollment: the local file changes
+            // without one, and a host whose operator narrowed it this morning
+            // should not read as last week's configuration until it is
+            // re-enrolled (DAWG-223).
+            local_policy: Some(self.policy.clone()),
         }
     }
 }
