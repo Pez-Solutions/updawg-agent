@@ -10,7 +10,7 @@
 //! whole reason rotation is not simply "the server says use this key now".
 //!
 //! Scope note: DAWG-19 defines the surface. DAWG-30 implements key generation,
-//! CSRs and pinning, DAWG-31 the certificate lifecycle; DAWG-68 implements
+//! CSRs and pinning, DAWG-31 the certificate lifecycle; DAWG-99 implements
 //! rotation following.
 
 pub mod cert;

@@ -355,7 +355,7 @@ impl MtlsTransport {
 /// Adding a key is a rotation in progress and is adopted. *Dropping* one this
 /// host still relies on is refused and left alone: following that blindly would
 /// undo the pinning done at enrollment, and a renewal is not a moment an
-/// operator is watching. Properly following an endorsed rotation is DAWG-68.
+/// operator is watching. Properly following an endorsed rotation is DAWG-99.
 fn merge_org_keys(
     identity: &Identity,
     response: &CertRenewResponse,
@@ -385,7 +385,7 @@ fn merge_org_keys(
         dropped = ?dropped,
         "the renewal dropped an organization signing key this host relies on; keeping the \
          pinned set. If the organization really rotated its key, re-enroll with \
-         --accept-new-org-key (DAWG-68)"
+         --accept-new-org-key (DAWG-99)"
     );
     Ok(identity.org_signing_keys.clone())
 }
