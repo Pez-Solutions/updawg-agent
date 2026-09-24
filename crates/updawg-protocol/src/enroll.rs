@@ -9,6 +9,7 @@
 
 use crate::{
     config::ServerConfig,
+    endorsement::Endorsement,
     ids::{HostId, SigningKeyId},
 };
 use serde::{Deserialize, Serialize};
@@ -58,10 +59,22 @@ pub struct OrgSigningKey {
     /// `ed25519:` followed by the base64 SPKI encoding.
     pub public_key: String,
     pub status: SigningKeyStatus,
-    /// Signature by the previous key attesting to this one. Absent for the
-    /// first key an organization ever has.
+    /// The outgoing key's statement about this one, and the signature over it.
+    ///
+    /// ⚠️ **Absent means trust-on-first-use, and nothing else.** An agent that
+    /// has pinned no keys accepts an unendorsed key — that is enrollment,
+    /// anchored by the enrollment token. An agent that has pinned keys already
+    /// requires an endorsement for any key it does not hold, because otherwise
+    /// a rotation is the agent believing whatever the server sends, which is
+    /// exactly what the design says it does not do.
+    ///
+    /// ⚠️ **In 0.2 this was an `Option<String>` holding a bare signature.**
+    /// Nothing produced one and nothing read one. A bare signature is
+    /// unverifiable: the statement it covers names an `issued_at` the agent
+    /// cannot derive, and a rebuilt statement is not a byte-identical statement.
+    /// See [`Endorsement`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endorsement: Option<String>,
+    pub endorsement: Option<Endorsement>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -434,3 +434,184 @@ async fn a_rejected_certificate_is_reported_as_such_on_upload_too() {
         "{error}"
     );
 }
+
+// ---- Following a rotation at renewal (DAWG-99) ----
+
+/// A throwaway organization key that keeps its private half, so these can
+/// endorse rather than assert against a fixture.
+struct RotationKey {
+    pair: aws_lc_rs::signature::Ed25519KeyPair,
+    wire: String,
+}
+
+impl RotationKey {
+    fn new() -> Self {
+        use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
+        use base64::Engine as _;
+
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        let doc = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let pair = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
+        let mut der = updawg_crypto::ED25519_SPKI_PREFIX.to_vec();
+        der.extend_from_slice(pair.public_key().as_ref());
+        Self {
+            pair,
+            wire: format!(
+                "ed25519:{}",
+                base64::engine::general_purpose::STANDARD.encode(der)
+            ),
+        }
+    }
+
+    fn offered(
+        &self,
+        id: &str,
+        status: updawg_protocol::SigningKeyStatus,
+    ) -> updawg_protocol::OrgSigningKey {
+        updawg_protocol::OrgSigningKey {
+            key_id: updawg_protocol::SigningKeyId::new(id),
+            public_key: self.wire.clone(),
+            status,
+            endorsement: None,
+        }
+    }
+
+    fn endorse(
+        &self,
+        my_id: &str,
+        new_id: &str,
+        new: &RotationKey,
+    ) -> updawg_protocol::Endorsement {
+        use base64::Engine as _;
+        let statement = updawg_protocol::EndorsementStatement {
+            org_id: updawg_protocol::OrgId::new("org_test"),
+            issued_at: "2026-09-24T11:00:00Z".parse().unwrap(),
+            previous_key: updawg_protocol::EndorsedKey {
+                key_id: updawg_protocol::SigningKeyId::new(my_id),
+                public_key: self.wire.clone(),
+            },
+            new_key: updawg_protocol::EndorsedKey {
+                key_id: updawg_protocol::SigningKeyId::new(new_id),
+                public_key: new.wire.clone(),
+            },
+        };
+        let signature = self.pair.sign(&statement.signing_bytes().unwrap());
+        updawg_protocol::Endorsement::new(
+            &statement,
+            base64::engine::general_purpose::STANDARD.encode(signature.as_ref()),
+        )
+        .unwrap()
+    }
+}
+
+fn identity_with(keys: Vec<updawg_protocol::OrgSigningKey>) -> Identity {
+    Identity {
+        host_id: updawg_protocol::HostId::new("hst_01J9ZC6Q"),
+        certificate: String::new(),
+        ca_chain: Vec::new(),
+        org_signing_keys: keys,
+        enrolled_at: "2026-09-01T00:00:00Z".into(),
+    }
+}
+
+fn renewal_offering(keys: Vec<updawg_protocol::OrgSigningKey>) -> CertRenewResponse {
+    CertRenewResponse {
+        certificate: String::new(),
+        ca_chain: Vec::new(),
+        org_signing_keys: keys,
+    }
+}
+
+fn key_ids(keys: &[updawg_protocol::OrgSigningKey]) -> Vec<&str> {
+    keys.iter().map(|k| k.key_id.as_str()).collect()
+}
+
+#[test]
+fn a_renewal_that_offers_an_endorsed_key_rotates_the_host() {
+    use updawg_protocol::SigningKeyStatus;
+    let old = RotationKey::new();
+    let new = RotationKey::new();
+
+    let mut new_wire = new.offered("sk_new", SigningKeyStatus::Active);
+    new_wire.endorsement = Some(old.endorse("sk_old", "sk_new", &new));
+
+    let identity = identity_with(vec![old.offered("sk_old", SigningKeyStatus::Active)]);
+    let merged = merge_org_keys(
+        &identity,
+        &renewal_offering(vec![
+            old.offered("sk_old", SigningKeyStatus::Retiring),
+            new_wire,
+        ]),
+    )
+    .unwrap();
+
+    assert_eq!(key_ids(&merged), vec!["sk_old", "sk_new"]);
+}
+
+/// ⚠️ The renewal path was the widest way to change a fleet's trusted keys
+/// without anybody agreeing to it: no operator is present, and until DAWG-99
+/// this adopted whatever arrived.
+#[test]
+fn a_renewal_that_offers_an_unendorsed_key_keeps_the_pinned_set() {
+    use updawg_protocol::SigningKeyStatus;
+    let old = RotationKey::new();
+    let impostor = RotationKey::new();
+
+    let identity = identity_with(vec![old.offered("sk_old", SigningKeyStatus::Active)]);
+    let merged = merge_org_keys(
+        &identity,
+        &renewal_offering(vec![
+            old.offered("sk_old", SigningKeyStatus::Retiring),
+            impostor.offered("sk_impostor", SigningKeyStatus::Active),
+        ]),
+    )
+    .unwrap();
+
+    assert_eq!(
+        key_ids(&merged),
+        vec!["sk_old"],
+        "an unendorsed key must not be pinned by a renewal"
+    );
+}
+
+/// The renewal itself still succeeds. A certificate that cannot be renewed
+/// takes the host off the air; a key set that was not adopted costs nothing
+/// until somebody rotates for real.
+#[test]
+fn a_refused_key_set_does_not_fail_the_renewal() {
+    use updawg_protocol::SigningKeyStatus;
+    let old = RotationKey::new();
+    let impostor = RotationKey::new();
+    let identity = identity_with(vec![old.offered("sk_old", SigningKeyStatus::Active)]);
+
+    assert!(
+        merge_org_keys(
+            &identity,
+            &renewal_offering(vec![
+                old.offered("sk_old", SigningKeyStatus::Active),
+                impostor.offered("sk_impostor", SigningKeyStatus::Active),
+            ]),
+        )
+        .is_ok()
+    );
+}
+
+/// The other half, unchanged by DAWG-99 and worth keeping asserted beside it:
+/// a renewal that drops a key this host relies on is refused too.
+#[test]
+fn a_renewal_that_drops_a_relied_on_key_keeps_the_pinned_set() {
+    use updawg_protocol::SigningKeyStatus;
+    let old = RotationKey::new();
+    let replacement = RotationKey::new();
+    let identity = identity_with(vec![old.offered("sk_old", SigningKeyStatus::Active)]);
+
+    let merged = merge_org_keys(
+        &identity,
+        &renewal_offering(vec![
+            replacement.offered("sk_replacement", SigningKeyStatus::Active),
+        ]),
+    )
+    .unwrap();
+
+    assert_eq!(key_ids(&merged), vec!["sk_old"]);
+}

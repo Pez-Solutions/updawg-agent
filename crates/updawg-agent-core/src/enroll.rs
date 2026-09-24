@@ -67,6 +67,15 @@ pub enum EnrollError {
     OrgKeyChanged { pinned: String, offered: String },
 
     #[error(
+        "the server offered an organization signing key this host cannot follow: {detail}\n\
+         A key this host has not pinned has to be endorsed by one it already trusts, which is \
+         what makes a rotation something other than the server saying `use this key now`. If \
+         the chain really is broken — a signer rebuilt from nothing, say — re-enroll with \
+         --accept-new-org-key, which pins this set on your word instead."
+    )]
+    OrgKeyNotEndorsed { detail: String },
+
+    #[error(
         "the enrollment token was rejected. Tokens expire, have a limited number of uses, and \
          are shown only once — generate a fresh one in the portal."
     )]
@@ -209,6 +218,7 @@ impl<'a> Enroller<'a> {
 
         if let Some(current) = &existing {
             check_key_continuity(current, &pinned, options)?;
+            check_key_endorsements(current, &response.org_signing_keys, options)?;
         }
 
         // Written in this order on purpose: without the key the identity is
@@ -274,6 +284,39 @@ fn check_key_continuity(
         pinned: missing.join(", "),
         offered: offered.describe().join(", "),
     })
+}
+
+/// Refuse a re-enrollment that adds a key nothing this host trusts vouched for.
+///
+/// The opposite half of [`check_key_continuity`], and the half that was missing
+/// until DAWG-99: that one stops a key being taken *away*, this one stops one
+/// being *added* on the server's say-so. Without it, "an agent never has to
+/// take the server's word for a new key" was a sentence in the design and
+/// nothing in the code.
+///
+/// The rules live in [`PinnedKeys::adopt`]; this is where the operator's
+/// override is applied, and it is loud, because the override is somebody
+/// asserting by hand the thing the mechanism exists to establish.
+fn check_key_endorsements(
+    current: &Identity,
+    offered: &[updawg_protocol::OrgSigningKey],
+    options: EnrollOptions,
+) -> Result<()> {
+    let pinned = PinnedKeys::from_wire(&current.org_signing_keys)?;
+    match pinned.adopt(offered) {
+        Ok(_) => Ok(()),
+        Err(e) if options.accept_new_org_key => {
+            tracing::warn!(
+                reason = %e,
+                "pinning an organization signing key whose endorsement chain does not hold, at \
+                 the operator's explicit instruction"
+            );
+            Ok(())
+        }
+        Err(e) => Err(EnrollError::OrgKeyNotEndorsed {
+            detail: e.to_string(),
+        }),
+    }
 }
 
 fn build_request(
@@ -555,26 +598,74 @@ mod tests {
         }
     }
 
-    fn org_key(id: &str, status: SigningKeyStatus) -> OrgSigningKey {
-        use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
-        use base64::Engine as _;
+    /// A throwaway organization key that keeps its private half, so a test can
+    /// endorse with it rather than asserting against a fixture.
+    struct TestOrgKey {
+        pair: aws_lc_rs::signature::Ed25519KeyPair,
+        wire: String,
+    }
 
-        let rng = aws_lc_rs::rand::SystemRandom::new();
-        let doc = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
-        let pair = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
+    impl TestOrgKey {
+        fn new() -> Self {
+            use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
+            use base64::Engine as _;
 
-        let mut der = updawg_crypto::ED25519_SPKI_PREFIX.to_vec();
-        der.extend_from_slice(pair.public_key().as_ref());
+            let rng = aws_lc_rs::rand::SystemRandom::new();
+            let doc = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+            let pair = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
 
-        OrgSigningKey {
-            key_id: SigningKeyId::new(id),
-            public_key: format!(
-                "ed25519:{}",
-                base64::engine::general_purpose::STANDARD.encode(der)
-            ),
-            status,
-            endorsement: None,
+            let mut der = updawg_crypto::ED25519_SPKI_PREFIX.to_vec();
+            der.extend_from_slice(pair.public_key().as_ref());
+            Self {
+                pair,
+                wire: format!(
+                    "ed25519:{}",
+                    base64::engine::general_purpose::STANDARD.encode(der)
+                ),
+            }
         }
+
+        fn offered(&self, id: &str, status: SigningKeyStatus) -> OrgSigningKey {
+            OrgSigningKey {
+                key_id: SigningKeyId::new(id),
+                public_key: self.wire.clone(),
+                status,
+                endorsement: None,
+            }
+        }
+
+        fn endorse(
+            &self,
+            my_id: &str,
+            new_id: &str,
+            new_key: &TestOrgKey,
+        ) -> updawg_protocol::Endorsement {
+            use aws_lc_rs::signature::KeyPair as _;
+            use base64::Engine as _;
+            let _ = self.pair.public_key();
+            let statement = updawg_protocol::EndorsementStatement {
+                org_id: updawg_protocol::OrgId::new("org_test"),
+                issued_at: "2026-09-24T11:00:00Z".parse().unwrap(),
+                previous_key: updawg_protocol::EndorsedKey {
+                    key_id: SigningKeyId::new(my_id),
+                    public_key: self.wire.clone(),
+                },
+                new_key: updawg_protocol::EndorsedKey {
+                    key_id: SigningKeyId::new(new_id),
+                    public_key: new_key.wire.clone(),
+                },
+            };
+            let signature = self.pair.sign(&statement.signing_bytes().unwrap());
+            updawg_protocol::Endorsement::new(
+                &statement,
+                base64::engine::general_purpose::STANDARD.encode(signature.as_ref()),
+            )
+            .unwrap()
+        }
+    }
+
+    fn org_key(id: &str, status: SigningKeyStatus) -> OrgSigningKey {
+        TestOrgKey::new().offered(id, status)
     }
 
     fn response_with(host_id: &str, keys: Vec<OrgSigningKey>) -> EnrollResponse {
@@ -807,21 +898,26 @@ mod tests {
     }
 
     /// Adding a key is a rotation, not a substitution: the key that has been
-    /// signing this host's jobs is still there.
+    /// signing this host's jobs is still there, and it vouched for the new one.
     #[tokio::test]
-    async fn gaining_an_additional_org_key_is_allowed() {
+    async fn gaining_an_endorsed_org_key_is_allowed() {
         let fx = Fixture::new();
-        let original = org_key("sk_original", SigningKeyStatus::Active);
+        let original = TestOrgKey::new();
+        let next = TestOrgKey::new();
+
+        let mut next_wire = next.offered("sk_next", SigningKeyStatus::Active);
+        next_wire.endorsement = Some(original.endorse("sk_original", "sk_next", &next));
+
         let gateway = FakeGateway::answering(vec![
-            Ok(response_with("hst_first", vec![original.clone()])),
+            Ok(response_with(
+                "hst_first",
+                vec![original.offered("sk_original", SigningKeyStatus::Active)],
+            )),
             Ok(response_with(
                 "hst_first",
                 vec![
-                    OrgSigningKey {
-                        status: SigningKeyStatus::Retiring,
-                        ..original
-                    },
-                    org_key("sk_next", SigningKeyStatus::Active),
+                    original.offered("sk_original", SigningKeyStatus::Retiring),
+                    next_wire,
                 ],
             )),
         ]);
@@ -843,6 +939,94 @@ mod tests {
 
         let identity = fx.state.identity().unwrap().unwrap();
         assert_eq!(identity.org_signing_keys.len(), 2);
+    }
+
+    /// ⚠️ The half of pinning that did not exist until DAWG-99. Continuity
+    /// stopped a key being taken away; nothing stopped one being **added** on
+    /// the server's word, which is the rotation the design says an agent never
+    /// has to take on trust.
+    #[tokio::test]
+    async fn gaining_an_unendorsed_org_key_is_refused() {
+        let fx = Fixture::new();
+        let original = TestOrgKey::new();
+        let gateway = FakeGateway::answering(vec![
+            Ok(response_with(
+                "hst_first",
+                vec![original.offered("sk_original", SigningKeyStatus::Active)],
+            )),
+            Ok(response_with(
+                "hst_first",
+                vec![
+                    original.offered("sk_original", SigningKeyStatus::Retiring),
+                    org_key("sk_unvouched", SigningKeyStatus::Active),
+                ],
+            )),
+        ]);
+
+        fx.enroller(&gateway)
+            .enroll("t", EnrollOptions::default())
+            .await
+            .unwrap();
+        let err = fx
+            .enroller(&gateway)
+            .enroll(
+                "t",
+                EnrollOptions {
+                    force: true,
+                    ..EnrollOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, EnrollError::OrgKeyNotEndorsed { .. }));
+        assert!(err.to_string().contains("sk_unvouched"), "unhelpful: {err}");
+        assert!(
+            err.to_string().contains("--accept-new-org-key"),
+            "the operator has to be told what the escape hatch is: {err}"
+        );
+
+        let identity = fx.state.identity().unwrap().unwrap();
+        assert_eq!(
+            identity.org_signing_keys.len(),
+            1,
+            "a refused set must leave the pinned one alone"
+        );
+    }
+
+    /// The escape hatch means "I know the chain is broken, pin this anyway" —
+    /// a signer rebuilt from nothing is the case it exists for.
+    #[tokio::test]
+    async fn accept_new_org_key_pins_an_unendorsed_set_on_the_operators_word() {
+        let fx = Fixture::new();
+        let gateway = FakeGateway::answering(vec![
+            Ok(response_with(
+                "hst_first",
+                vec![org_key("sk_original", SigningKeyStatus::Active)],
+            )),
+            Ok(response_with(
+                "hst_first",
+                vec![org_key("sk_rebuilt", SigningKeyStatus::Active)],
+            )),
+        ]);
+
+        fx.enroller(&gateway)
+            .enroll("t", EnrollOptions::default())
+            .await
+            .unwrap();
+        fx.enroller(&gateway)
+            .enroll(
+                "t",
+                EnrollOptions {
+                    force: true,
+                    accept_new_org_key: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let identity = fx.state.identity().unwrap().unwrap();
+        assert_eq!(identity.org_signing_keys[0].key_id.as_str(), "sk_rebuilt");
     }
 
     #[tokio::test]

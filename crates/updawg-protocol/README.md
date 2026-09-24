@@ -12,7 +12,7 @@ agent and the server — depend on one definition rather than two that drift.
 
 ```toml
 [dependencies]
-updawg-protocol = "0.2"
+updawg-protocol = "0.3"
 ```
 
 ## The property this crate exists to preserve
@@ -48,9 +48,42 @@ Adding a variant to either enum is a security decision, not a routine change.
 ## Signing
 
 Jobs are signed with the organization's Ed25519 key and verified by the agent
-against a key pinned at enrollment. `Job::signing_bytes` produces the exact
-bytes a signature covers — this job's JSON with `signature` removed — so the
-signer and the agent cannot disagree about what was signed.
+against a key pinned at enrollment. `Job::document` produces the canonical
+document — this job's JSON with `signature` removed — and `Job::signing_bytes`
+produces the exact bytes a signature covers, so the signer and the agent cannot
+disagree about what was signed.
+
+An organization key signs two different things, so every signature says which:
+
+```text
+label || 0x00 || message
+
+updawg-job-v1
+updawg-endorsement-v1
+```
+
+The labels are ASCII and contain no NUL, which is what makes the prefix
+unambiguous rather than merely present — no message under one label can be read
+as a message under another, whatever either encoding becomes later. Before 0.3
+the two were told apart only by a job document happening to start with `{`.
+
+## Key rotation
+
+Rotating an organization's key changes the material every agent in the fleet has
+pinned, and the design's claim is that **an agent never has to take the server's
+word for a new key**. The outgoing key signs an `EndorsementStatement` naming the
+organization, the two keys by material as well as by id, and when it was issued;
+the agent follows the chain from a key it already holds.
+
+The statement travels as the exact string that was signed, beside the signature,
+rather than being rebuilt at the far end — an agent cannot derive `issued_at`,
+and a rebuilt document is not a byte-identical document.
+
+⚠️ **0.3 is a breaking change to what is signed.** A 0.2 signature over a job
+does not verify under 0.3, and `OrgSigningKey::endorsement` is now an
+`Endorsement` rather than a bare, unverifiable signature string. Both halves
+fail loudly at a mismatched peer rather than quietly. See
+[ADR 0002](https://github.com/Pez-Solutions/updawg-docs/blob/main/decisions/0002-signing-key-rotation-endorsements.md).
 
 ## Transport
 

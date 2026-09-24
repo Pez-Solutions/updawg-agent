@@ -8,7 +8,10 @@
 //!
 //! Adding a variant here is a security decision.
 
-use crate::ids::{HostId, JobId, SigningKeyId};
+use crate::{
+    ids::{HostId, JobId, SigningKeyId},
+    sign::SignaturePurpose,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -230,19 +233,34 @@ impl Job {
         self.spec.kind()
     }
 
-    /// The exact bytes a signature covers: this job's JSON with `signature`
-    /// removed.
+    /// The canonical document: this job's JSON with `signature` removed.
     ///
+    /// This is the thing the server stores and delivers verbatim (DAWG-209).
     /// Both sides must agree byte-for-byte or nothing verifies, so the rule
     /// lives here rather than being reimplemented in the signer and the agent.
     /// `serde_json` orders object keys deterministically, which is what makes
     /// this canonical.
-    pub fn signing_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+    pub fn document(&self) -> Result<Vec<u8>, serde_json::Error> {
         let mut value = serde_json::to_value(self)?;
         if let Some(obj) = value.as_object_mut() {
             obj.remove("signature");
         }
         serde_json::to_vec(&value)
+    }
+
+    /// The exact bytes a signature covers: the document under
+    /// [`SignaturePurpose::Job`].
+    ///
+    /// ⚠️ **Changed in 0.3, and the change is silent at the type level.** Before
+    /// 0.3 this returned the document alone, and job signatures were told apart
+    /// from endorsements only by the fact that a job document starts with `{`.
+    /// The label is now part of what is signed; see [`SignaturePurpose`].
+    ///
+    /// Signing and verifying both go through here, so neither side can forget
+    /// the label. Reach for [`Job::document`] only when you want the bytes to
+    /// store or to compare, never to sign or to verify.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        Ok(SignaturePurpose::Job.bytes_to_sign(&self.document()?))
     }
 }
 
@@ -347,9 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn signing_bytes_exclude_the_signature_and_nothing_else() {
+    fn the_document_excludes_the_signature_and_nothing_else() {
         let job = sample_job();
-        let bytes = job.signing_bytes().unwrap();
+        let bytes = job.document().unwrap();
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(
             value.get("signature").is_none(),
@@ -358,6 +376,32 @@ mod tests {
         assert_eq!(value["id"], "job_01J9ZD");
         assert_eq!(value["kind"], "apply_updates");
         assert_eq!(value["expires_at"], "2026-09-22T04:00:00Z");
+    }
+
+    /// The 0.3 change, asserted on the bytes rather than on the call: what is
+    /// signed is the document behind the job label, and the document itself is
+    /// still what gets stored and delivered.
+    #[test]
+    fn signing_bytes_are_the_document_under_the_job_label() {
+        let job = sample_job();
+        assert_eq!(
+            job.signing_bytes().unwrap(),
+            SignaturePurpose::Job.bytes_to_sign(&job.document().unwrap())
+        );
+        assert!(job.signing_bytes().unwrap().starts_with(b"updawg-job-v1\0"));
+    }
+
+    /// ⚠️ The whole point of the label. A job document, offered as an
+    /// endorsement, must not produce the same bytes — otherwise a signature
+    /// over one is a signature over the other.
+    #[test]
+    fn a_job_cannot_be_presented_as_an_endorsement() {
+        let job = sample_job();
+        let document = job.document().unwrap();
+        assert_ne!(
+            job.signing_bytes().unwrap(),
+            SignaturePurpose::Endorsement.bytes_to_sign(&document)
+        );
     }
 
     #[test]

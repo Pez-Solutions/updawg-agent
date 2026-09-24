@@ -352,10 +352,22 @@ impl MtlsTransport {
 
 /// Take organization signing keys offered at renewal, conservatively.
 ///
-/// Adding a key is a rotation in progress and is adopted. *Dropping* one this
-/// host still relies on is refused and left alone: following that blindly would
-/// undo the pinning done at enrollment, and a renewal is not a moment an
-/// operator is watching. Properly following an endorsed rotation is DAWG-99.
+/// Two ways a renewal can change what this host trusts, and both are refused
+/// unless they are the safe direction:
+///
+/// - **A key goes missing.** Following that blindly would undo the pinning done
+///   at enrollment. Kept.
+/// - **A key appears.** Adopted only if it is endorsed by one this host already
+///   holds — [`PinnedKeys::adopt`]. That is DAWG-99, and until it existed this
+///   function adopted whatever arrived, which made the renewal path the widest
+///   way to change a fleet's trusted keys without anybody agreeing to it.
+///
+/// ⚠️ **A renewal is not a moment an operator is watching**, which is why this
+/// never fails the renewal and never asks. It keeps the working set and logs at
+/// `error`. A certificate that cannot be renewed takes the host off the air; a
+/// key set that was not adopted costs nothing until somebody rotates for real,
+/// and there is no `--accept-new-org-key` here because there is no operator
+/// present to mean it.
 fn merge_org_keys(
     identity: &Identity,
     response: &CertRenewResponse,
@@ -373,21 +385,31 @@ fn merge_org_keys(
         .map(|(id, key)| format!("{id} {}", key.fingerprint()))
         .collect();
 
-    if dropped.is_empty() {
-        tracing::info!(
-            keys = ?offered.describe(),
-            "adopted organization signing keys offered at renewal"
+    if !dropped.is_empty() {
+        tracing::error!(
+            dropped = ?dropped,
+            "the renewal dropped an organization signing key this host relies on; keeping the \
+             pinned set. If the organization really rotated its key, re-enroll with \
+             --accept-new-org-key (DAWG-99)"
         );
-        return Ok(response.org_signing_keys.clone());
+        return Ok(identity.org_signing_keys.clone());
     }
 
-    tracing::error!(
-        dropped = ?dropped,
-        "the renewal dropped an organization signing key this host relies on; keeping the \
-         pinned set. If the organization really rotated its key, re-enroll with \
-         --accept-new-org-key (DAWG-99)"
+    if let Err(e) = pinned.adopt(&response.org_signing_keys) {
+        tracing::error!(
+            reason = %e,
+            "the renewal offered an organization signing key this host cannot follow; keeping \
+             the pinned set. A new key has to be endorsed by one this host already trusts. If \
+             the chain really is broken, re-enroll with --accept-new-org-key (DAWG-99)"
+        );
+        return Ok(identity.org_signing_keys.clone());
+    }
+
+    tracing::info!(
+        keys = ?offered.describe(),
+        "adopted organization signing keys offered at renewal"
     );
-    Ok(identity.org_signing_keys.clone())
+    Ok(response.org_signing_keys.clone())
 }
 
 impl MtlsTransport {
