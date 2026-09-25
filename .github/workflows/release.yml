@@ -1,0 +1,64 @@
+name: Release
+
+# Every commit on main produces the agent as it is served from get.updawg.net
+# (DAWG-44): static binaries, the unit, install.sh and a SHA256SUMS covering all
+# of them. updawg-infra publishes the artifact; this only builds it.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  agent:
+    name: x86_64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # musl, so one static binary runs on every supported distribution — CI
+      # checks that it compiles; this is the only place it is linked.
+      - name: Install Rust and musl
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-musl
+
+      - name: build
+        run: |
+          cargo build --release --target x86_64-unknown-linux-musl \
+            --bin updawgd --bin updawgctl
+
+      - name: collect
+        run: |
+          mkdir -p dist
+          for b in updawgd updawgctl; do
+            cp "target/x86_64-unknown-linux-musl/release/$b" "dist/$b"
+            strip "dist/$b"
+          done
+          cp packaging/install.sh dist/install.sh
+          cp packaging/systemd/updawgd.service dist/updawgd.service
+          git rev-parse HEAD > dist/REVISION
+          # ⚠️ Bare file names, computed inside dist/. install.sh checks the
+          # download with `sha256sum --check` in the directory it downloaded to,
+          # and a `dist/updawgd` line would match nothing there.
+          (cd dist && sha256sum updawgd updawgctl updawgd.service install.sh > SHA256SUMS)
+          cat dist/SHA256SUMS
+          # Static, or it is not the thing install.sh promises.
+          file dist/updawgd | tee /dev/stderr | grep -Eq 'statically linked|static-pie linked'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updawg-agent-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30

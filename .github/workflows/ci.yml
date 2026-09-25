@@ -69,3 +69,29 @@ jobs:
 
   # DAWG-22 extends this with cargo audit and cargo deny as a shared workflow
   # used by both Rust repositories.
+
+  # install.sh is piped into a root shell on somebody else's machine (DAWG-44).
+  # Lint it, and prove the refusals refuse — before anything is downloaded or
+  # changed — on the platforms it must turn away.
+  install-sh:
+    name: install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -s sh packaging/install.sh
+      - name: short enough to read before running
+        run: test "$(wc -l < packaging/install.sh)" -lt 150
+      - name: refuses what it does not support, and changes nothing
+        run: |
+          refuse() {
+            image=$1; want=$2
+            out=$(docker run --rm -v "$PWD/packaging:/p:ro" "$image" sh /p/install.sh 2>&1) && {
+              echo "FAIL: $image was not refused"; exit 1; }
+            echo "$image: $out"
+            case "$out" in *"$want"*) ;; *) echo "FAIL: expected '$want'"; exit 1 ;; esac
+            case "$out" in *"Nothing was changed"*|*"run as root"*) ;; *) echo "FAIL: no promise"; exit 1 ;; esac
+          }
+          refuse alpine:3 "is not supported"
+          # Debian with no systemd in the container: refused before download.
+          refuse debian:13 "no systemctl"
