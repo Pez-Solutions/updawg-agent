@@ -103,4 +103,4 @@ systemctl daemon-reload
 systemctl enable updawgd.service >/dev/null 2>&1
 # restart, not start: on a re-run it picks up the binary just installed.
 systemctl restart updawgd.service
-say "updawgd is running. Check it with: updawgctl status"
+say "updawgd is running. Check it with: sudo updawgctl status"
