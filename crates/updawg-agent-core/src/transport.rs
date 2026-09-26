@@ -412,7 +412,78 @@ fn merge_org_keys(
     Ok(response.org_signing_keys.clone())
 }
 
+/// How long an answer about a job may take. Short: it is a row update.
+const JOB_ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What the gateway said to an answer about a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobAnswer {
+    Recorded,
+    /// `409 job_out_of_order`: the job had already moved on — this answer, or
+    /// a later one, arrived before. Not worth retrying, and not a failure.
+    AlreadyMoved,
+}
+
 impl MtlsTransport {
+    /// `POST /agent/v1/jobs/{id}/ack` (DAWG-100).
+    ///
+    /// # Errors
+    /// Transport failures, and any refusal other than "already moved".
+    pub async fn ack_job(
+        &self,
+        id: &updawg_protocol::JobId,
+        ack: &updawg_protocol::JobAck,
+    ) -> Result<JobAnswer> {
+        self.answer(&format!("/jobs/{}/ack", id.as_str()), ack)
+            .await
+    }
+
+    /// `POST /agent/v1/jobs/{id}/complete` (DAWG-100, DAWG-105).
+    ///
+    /// # Errors
+    /// Transport failures, and any refusal other than "already moved".
+    pub async fn complete_job(
+        &self,
+        id: &updawg_protocol::JobId,
+        done: &updawg_protocol::JobComplete,
+    ) -> Result<JobAnswer> {
+        self.answer(&format!("/jobs/{}/complete", id.as_str()), done)
+            .await
+    }
+
+    /// A `POST` the gateway answers with `204` and no body.
+    async fn answer<B: Serialize + Sync>(&self, path: &str, body: &B) -> Result<JobAnswer> {
+        let url = self.url(path);
+        let response = self
+            .client()
+            .post(&url)
+            .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
+            .timeout(JOB_ANSWER_TIMEOUT)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| self.connection_error(&url, &e))?;
+        let status = response.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(self.certificate_rejected());
+        }
+        if status.as_u16() == 409 {
+            return Ok(JobAnswer::AlreadyMoved);
+        }
+        if !status.is_success() {
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "no response body".into());
+            return Err(TransportError::Server {
+                url,
+                status: status.as_u16(),
+                detail: crate::enroll::problem_detail(&detail),
+            });
+        }
+        Ok(JobAnswer::Recorded)
+    }
+
     async fn post<B: Serialize + Sync, R: DeserializeOwned>(
         &self,
         path: &str,

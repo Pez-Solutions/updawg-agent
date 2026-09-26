@@ -40,11 +40,27 @@ pub enum BackendError {
     /// forcing it, because forcing it corrupts the package database.
     #[error("package manager is locked by another process")]
     Locked,
+    /// The plan cannot be carried out **as approved**, so nothing was done:
+    /// the installed version moved, the approved one is no longer available,
+    /// or applying it would remove or add a package nobody reviewed. The
+    /// safety property of DAWG-102, and a refusal rather than a failure —
+    /// nothing on the host changed.
+    #[error("{0}")]
+    Refused(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, BackendError>;
+
+/// One package, from exactly one version to exactly another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pin {
+    pub name: String,
+    pub arch: String,
+    pub from: String,
+    pub to: String,
+}
 
 /// An exact set of package versions to install.
 ///
@@ -53,14 +69,23 @@ pub type Result<T> = std::result::Result<T, BackendError>;
 /// nobody reviewed.
 #[derive(Debug, Clone, Default)]
 pub struct ApplyPlan {
-    pub packages: Vec<(String, String)>,
+    pub packages: Vec<Pin>,
     pub allow_reboot: bool,
+}
+
+/// One package that changed: name, arch, from, to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub name: String,
+    pub arch: String,
+    pub from: String,
+    pub to: String,
 }
 
 /// What actually changed after an apply.
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOutcome {
-    pub changed: Vec<(String, String, String)>,
+    pub changed: Vec<Change>,
     pub reboot_required: bool,
 }
 

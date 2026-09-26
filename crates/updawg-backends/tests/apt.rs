@@ -548,3 +548,163 @@ fn a_foreign_architecture_removal_keeps_one_name() {
     assert_eq!(removals[0].name, "libc6");
     assert_eq!(removals[0].arch, "armhf");
 }
+
+/* ---------------------------------------------- applying exactly (DAWG-102) */
+
+mod apply {
+    use std::collections::BTreeMap;
+    use updawg_backends::{
+        BackendError, Pin,
+        apt::{
+            Ran, changes, check_simulation, install_args, parse_versions, simulate_args,
+            still_to_do,
+        },
+    };
+
+    fn pin(name: &str, from: &str, to: &str) -> Pin {
+        Pin {
+            name: name.into(),
+            arch: "amd64".into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    fn installed(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(n, v)| (format!("{n}:amd64"), (*v).to_owned()))
+            .collect()
+    }
+
+    #[track_caller]
+    fn refused<T: std::fmt::Debug>(r: Result<T, BackendError>) -> String {
+        match r {
+            Err(BackendError::Refused(why)) => why,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pin_at_its_from_is_to_do_and_one_at_its_to_is_done() {
+        let pins = [
+            pin("openssl", "3.5.1-1", "3.5.1-2"),
+            pin("curl", "8.14-1", "8.14-2"),
+        ];
+        let todo = still_to_do(
+            &pins,
+            &installed(&[("openssl", "3.5.1-1"), ("curl", "8.14-2")]),
+        )
+        .unwrap();
+        assert_eq!(
+            todo.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["openssl"]
+        );
+    }
+
+    /// ⚠️ The host moved since the approval — somebody upgraded by hand, or
+    /// downgraded. Installing now would be a change nobody reviewed.
+    #[test]
+    fn a_pin_at_neither_end_is_refused() {
+        let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
+        let why = refused(still_to_do(&pins, &installed(&[("openssl", "3.5.0-9")])));
+        assert!(why.contains("3.5.0-9"), "{why}");
+        let why = refused(still_to_do(&pins, &installed(&[])));
+        assert!(why.contains("not installed"), "{why}");
+    }
+
+    #[test]
+    fn the_command_line_names_exact_versions_and_keeps_local_config() {
+        let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
+        let todo: Vec<&Pin> = pins.iter().collect();
+        let args = install_args(&todo);
+        assert_eq!(args[0], "install");
+        assert!(
+            args.contains(&"openssl:amd64=3.5.1-2".to_owned()),
+            "{args:?}"
+        );
+        assert!(args.contains(&"--only-upgrade".to_owned()));
+        assert!(args.contains(&"Dpkg::Options::=--force-confold".to_owned()));
+        assert!(args.contains(&"DPkg::Lock::Timeout=600".to_owned()));
+        assert_eq!(simulate_args(&todo)[1], "-s");
+        // An architecture-independent package is named bare.
+        let all = [Pin {
+            arch: "all".into(),
+            ..pin("tzdata", "2025a-1", "2025b-1")
+        }];
+        let todo: Vec<&Pin> = all.iter().collect();
+        assert!(install_args(&todo).contains(&"tzdata=2025b-1".to_owned()));
+    }
+
+    fn sim(stdout: &str) -> Ran {
+        Ran {
+            code: 0,
+            stdout: stdout.into(),
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_simulation_doing_exactly_the_plan_passes() {
+        let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
+        let todo: Vec<&Pin> = pins.iter().collect();
+        let out = "Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])\nConf openssl (3.5.1-2 Debian-Security:13/stable-security [amd64])\n";
+        check_simulation(&todo, &sim(out)).unwrap();
+    }
+
+    /// Each of these is a change nobody approved, and refused before anything
+    /// is touched.
+    #[test]
+    fn a_simulation_doing_anything_else_is_refused() {
+        let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
+        let todo: Vec<&Pin> = pins.iter().collect();
+        let ok = "Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])\n";
+
+        let why = refused(check_simulation(
+            &todo,
+            &sim(&format!("Remv libfoo [1.0]\n{ok}")),
+        ));
+        assert!(why.contains("remove libfoo"), "{why}");
+        let why = refused(check_simulation(
+            &todo,
+            &sim(&format!("{ok}Inst libnew (2.0 Debian:13/stable [amd64])\n")),
+        ));
+        assert!(why.contains("also install libnew"), "{why}");
+        let why = refused(check_simulation(
+            &todo,
+            &sim("Inst openssl [3.5.1-1] (3.5.1-3 Debian:13/stable [amd64])\n"),
+        ));
+        assert!(why.contains("3.5.1-3"), "{why}");
+        let why = refused(check_simulation(&todo, &sim("")));
+        assert!(why.contains("held"), "{why}");
+        // The archive moved on and the approved version is gone.
+        let gone = Ran {
+            code: 100,
+            stdout: String::new(),
+            stderr: "E: Version '3.5.1-2' for 'openssl' was not found\n".into(),
+        };
+        let why = refused(check_simulation(&todo, &gone));
+        assert!(why.contains("was not found"), "{why}");
+    }
+
+    #[test]
+    fn changes_are_what_dpkg_says_and_a_pin_left_behind_is_a_failure() {
+        let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
+        let todo: Vec<&Pin> = pins.iter().collect();
+        let changed = changes(&todo, &installed(&[("openssl", "3.5.1-2")])).unwrap();
+        assert_eq!(changed[0].to, "3.5.1-2");
+        assert!(matches!(
+            changes(&todo, &installed(&[("openssl", "3.5.1-1")])),
+            Err(BackendError::CommandFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn dpkg_query_output_is_keyed_like_the_command_line() {
+        let out = "openssl:amd64\t3.5.1-2\tinstalled\ntzdata:all\t2025b-1\tinstalled\nold:amd64\t1.0\tconfig-files\n";
+        let v = parse_versions(out);
+        assert_eq!(v.get("openssl:amd64").map(String::as_str), Some("3.5.1-2"));
+        assert_eq!(v.get("tzdata").map(String::as_str), Some("2025b-1"));
+        assert!(!v.contains_key("old:amd64"));
+    }
+}

@@ -42,6 +42,8 @@ const ED25519_KEY_LEN: usize = 32;
 pub enum CryptoError {
     #[error("signature does not verify against the pinned organization key")]
     BadSignature,
+    #[error("the job says {claimed} signed it, and it verifies under {signed_by}")]
+    WrongKey { claimed: String, signed_by: String },
     #[error("no organization key is pinned; the host is not enrolled")]
     NotPinned,
     #[error(
@@ -394,6 +396,32 @@ impl PinnedKeys {
         Ok(Self { keys: trusted })
     }
 
+    /// Verify a job: its signature, over [`updawg_protocol::Job::signing_bytes`],
+    /// under a pinned key that may still sign — **and** that key is the one the
+    /// job names. A job naming one key and verifying under another is a job
+    /// somebody has edited, and is refused as one.
+    ///
+    /// # Errors
+    /// [`CryptoError::BadSignature`] if nothing pinned verifies it (including a
+    /// signature that is not base64), [`CryptoError::KeyRetired`] if a retired
+    /// key did, and [`CryptoError::WrongKey`] if it verified under a key other
+    /// than the one it names.
+    pub fn verify_job(&self, job: &updawg_protocol::Job) -> Result<()> {
+        use base64::Engine as _;
+        let signature = base64::engine::general_purpose::STANDARD
+            .decode(&job.signature)
+            .map_err(|_| CryptoError::BadSignature)?;
+        let bytes = job.signing_bytes().map_err(|_| CryptoError::BadSignature)?;
+        let signed_by = self.verify(&bytes, &signature)?;
+        if signed_by != job.key_id.as_str() {
+            return Err(CryptoError::WrongKey {
+                claimed: job.key_id.as_str().to_owned(),
+                signed_by: signed_by.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// Verify a signature against the pinned set.
     ///
     /// # Errors
@@ -527,6 +555,98 @@ impl Verifier for PinnedKeys {
 mod tests {
     use super::*;
     use updawg_protocol::SigningKeyId;
+
+    /* ---------------------------------------------------------- verify_job */
+
+    fn signed_job(key: &TestOrgKey, key_id: &str) -> updawg_protocol::Job {
+        use base64::Engine as _;
+        use updawg_protocol::job::{ApplyUpdates, JobSpec, PackagePin};
+        let mut job = updawg_protocol::Job {
+            id: updawg_protocol::JobId::new("job_0190a0de000070008000000000000001"),
+            host_id: updawg_protocol::HostId::new("hst_0190a0de000070008000000000000002"),
+            spec: JobSpec::ApplyUpdates(ApplyUpdates {
+                packages: vec![PackagePin {
+                    name: "openssl".into(),
+                    arch: "amd64".into(),
+                    from: "3.5.1-1".into(),
+                    to: "3.5.1-2".into(),
+                }],
+                ..ApplyUpdates::default()
+            }),
+            not_before: None,
+            expires_at: "2099-01-01T00:00:00Z".parse().unwrap(),
+            key_id: SigningKeyId::new(key_id),
+            signature: String::new(),
+        };
+        job.signature = base64::engine::general_purpose::STANDARD
+            .encode(key.sign(&job.signing_bytes().unwrap()));
+        job
+    }
+
+    #[test]
+    fn a_job_signed_by_a_pinned_key_that_it_names_verifies() {
+        let key = TestOrgKey::new();
+        let keys = pinned(&[("sk_a", &key, SigningKeyStatus::Active)]);
+        keys.verify_job(&signed_job(&key, "sk_a"))
+            .expect("verifies");
+    }
+
+    /// ⚠️ The attack the signature exists for: one version edited in flight.
+    #[test]
+    fn an_edited_job_does_not_verify() {
+        let key = TestOrgKey::new();
+        let keys = pinned(&[("sk_a", &key, SigningKeyStatus::Active)]);
+        let mut job = signed_job(&key, "sk_a");
+        if let updawg_protocol::job::JobSpec::ApplyUpdates(ref mut p) = job.spec {
+            p.packages[0].to = "3.5.1-99".into();
+        }
+        assert!(matches!(
+            keys.verify_job(&job),
+            Err(CryptoError::BadSignature)
+        ));
+    }
+
+    #[test]
+    fn a_job_naming_another_key_than_the_one_that_signed_it_is_refused() {
+        let (a, b) = (TestOrgKey::new(), TestOrgKey::new());
+        let keys = pinned(&[
+            ("sk_a", &a, SigningKeyStatus::Active),
+            ("sk_b", &b, SigningKeyStatus::Retiring),
+        ]);
+        // Signed with a's key, claiming b's id — with the id in the signed
+        // bytes, so this is only reachable by a signer that lied.
+        let job = signed_job(&a, "sk_b");
+        assert!(matches!(
+            keys.verify_job(&job),
+            Err(CryptoError::WrongKey { .. })
+        ));
+    }
+
+    #[test]
+    fn a_job_signed_by_a_retired_key_or_an_unknown_one_is_refused() {
+        let (a, b, stranger) = (TestOrgKey::new(), TestOrgKey::new(), TestOrgKey::new());
+        // A set of only retired keys is refused when pinned, so pin a live one
+        // beside it.
+        let keys = pinned(&[
+            ("sk_a", &a, SigningKeyStatus::Retired),
+            ("sk_b", &b, SigningKeyStatus::Active),
+        ]);
+        assert!(matches!(
+            keys.verify_job(&signed_job(&a, "sk_a")),
+            Err(CryptoError::KeyRetired { .. })
+        ));
+        let keys = pinned(&[("sk_a", &a, SigningKeyStatus::Active)]);
+        assert!(matches!(
+            keys.verify_job(&signed_job(&stranger, "sk_a")),
+            Err(CryptoError::BadSignature)
+        ));
+        let mut job = signed_job(&a, "sk_a");
+        job.signature = "not base64!".into();
+        assert!(matches!(
+            keys.verify_job(&job),
+            Err(CryptoError::BadSignature)
+        ));
+    }
 
     /// A throwaway organization key pair, so the tests sign with real Ed25519
     /// rather than asserting against a fixture that could drift.

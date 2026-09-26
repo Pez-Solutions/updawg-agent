@@ -27,7 +27,8 @@
 //! metadata is incomplete and inconsistent between families.
 
 use crate::{
-    ApplyOutcome, ApplyPlan, BackendError, LogSink, PackageBackend, PendingChanges, Result,
+    ApplyOutcome, ApplyPlan, BackendError, Change, LogSink, PackageBackend, PendingChanges, Pin,
+    Result,
 };
 use async_trait::async_trait;
 use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, PendingRemoval, Repository};
@@ -113,13 +114,58 @@ impl PackageBackend for AptBackend {
             .collect())
     }
 
-    async fn apply(&self, _plan: &ApplyPlan, _log: &dyn LogSink) -> Result<ApplyOutcome> {
-        // Deliberately still a stub. Applying updates is the mutating half and
-        // belongs with job execution and its permission checks (DAWG-38); DAWG-34
-        // is the reporting half. A backend that could report and not act is a
-        // useful thing to ship on its own.
-        Err(BackendError::ToolMissing {
-            tool: "apt-get install (DAWG-38)",
+    /// Install exactly the approved versions, or nothing (DAWG-102).
+    ///
+    /// Four steps, and the first three change nothing:
+    ///
+    /// 1. **What is installed now.** Each pin must be at its `from` version —
+    ///    or already at its `to`, which is done and skipped. Anything else is
+    ///    a host that moved since the approval, and is refused.
+    /// 2. **What apt would do**, by simulation with the exact command line.
+    ///    It must upgrade exactly the pins that remain, to exactly their
+    ///    versions, and nothing else: a removal, or a package pulled in that
+    ///    nobody approved, is refused. So is an approved version apt can no
+    ///    longer find — the candidate moved on.
+    /// 3. **Do it**, with the same command line: non-interactive, keeping
+    ///    local configuration files, waiting for the dpkg lock rather than
+    ///    fighting `unattended-upgrades` for it.
+    /// 4. **What is installed after.** Each pin must now be at its `to`. The
+    ///    changes reported are what dpkg says, not what was asked for.
+    async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome> {
+        let before = installed_versions(&plan.packages).await?;
+        let todo = still_to_do(&plan.packages, &before)?;
+        if todo.is_empty() {
+            log.line("every approved version is already installed; nothing to do");
+            return Ok(ApplyOutcome {
+                changed: vec![],
+                reboot_required: reboot_required(),
+            });
+        }
+
+        let simulated = run_status("apt-get", &simulate_args(&todo)).await?;
+        check_simulation(&todo, &simulated)?;
+
+        log.line(&format!(
+            "installing {} package(s) at their approved versions",
+            todo.len()
+        ));
+        let installed = run_status("apt-get", &install_args(&todo)).await?;
+        for line in installed.stdout.lines() {
+            log.line(line);
+        }
+        if installed.code != 0 {
+            return Err(BackendError::CommandFailed {
+                tool: "apt-get",
+                status: installed.code,
+                stderr: installed.stderr,
+            });
+        }
+
+        let after = installed_versions(&plan.packages).await?;
+        let changed = changes(&todo, &after)?;
+        Ok(ApplyOutcome {
+            changed,
+            reboot_required: reboot_required(),
         })
     }
 }
@@ -408,6 +454,260 @@ pub fn parse_holds(out: &str) -> Vec<String> {
         .filter(|l| !l.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+/* ------------------------------------------------------ applying, decided */
+
+/// `name:arch` as apt and dpkg spell a package on one architecture.
+///
+/// `all` is left off: an architecture-independent package has one version for
+/// every architecture, and older apt refuses the qualifier.
+fn qualified(pin: &Pin) -> String {
+    if pin.arch == "all" || pin.arch.is_empty() {
+        pin.name.clone()
+    } else {
+        format!("{}:{}", pin.name, pin.arch)
+    }
+}
+
+/// The pins not already at their approved version, or a refusal naming the
+/// first one that is at neither end.
+///
+/// `installed` maps [`qualified`] names to the version dpkg reports; a package
+/// that is not installed at all is absent.
+///
+/// # Errors
+/// [`BackendError::Refused`] when a package moved since the approval.
+pub fn still_to_do<'a>(
+    pins: &'a [Pin],
+    installed: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<&'a Pin>> {
+    let mut todo = Vec::new();
+    for pin in pins {
+        match installed.get(&qualified(pin)).map(String::as_str) {
+            Some(v) if v == pin.to => {}
+            Some(v) if v == pin.from => todo.push(pin),
+            Some(v) => {
+                return Err(BackendError::Refused(format!(
+                    "{} is at {v}, and the job was approved for {} to {}",
+                    pin.name, pin.from, pin.to
+                )));
+            }
+            None => {
+                return Err(BackendError::Refused(format!(
+                    "{} is not installed, and the job was approved to upgrade it from {}",
+                    pin.name, pin.from
+                )));
+            }
+        }
+    }
+    Ok(todo)
+}
+
+const APT_OPTIONS: &[&str] = &[
+    "-y",
+    "--only-upgrade",
+    "--no-install-recommends",
+    // Wait for the lock rather than fight unattended-upgrades for it. Ten
+    // minutes is longer than it ever holds it.
+    "-o",
+    "DPkg::Lock::Timeout=600",
+    // A changed configuration file keeps the local version. The package's
+    // new one is left beside it as `.dpkg-dist`, for a person to read.
+    "-o",
+    "Dpkg::Options::=--force-confdef",
+    "-o",
+    "Dpkg::Options::=--force-confold",
+];
+
+/// The exact `apt-get install` command line for these pins.
+#[must_use]
+pub fn install_args(todo: &[&Pin]) -> Vec<String> {
+    let mut args = vec!["install".to_owned()];
+    args.extend(APT_OPTIONS.iter().map(|&o| o.to_owned()));
+    args.extend(todo.iter().map(|p| format!("{}={}", qualified(p), p.to)));
+    args
+}
+
+/// The same command line, simulated.
+#[must_use]
+pub fn simulate_args(todo: &[&Pin]) -> Vec<String> {
+    let mut args = install_args(todo);
+    args.insert(1, "-s".to_owned());
+    args
+}
+
+/// What an `apt-get` run said, whatever its exit status.
+#[derive(Debug, Clone)]
+pub struct Ran {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Whether apt's simulation does exactly what was approved and nothing else.
+///
+/// # Errors
+/// [`BackendError::Refused`] naming what differs.
+pub fn check_simulation(todo: &[&Pin], simulated: &Ran) -> Result<()> {
+    if simulated.code != 0 {
+        // Almost always "Version 'x' for 'y' was not found": the archive moved
+        // on and the approved version is gone.
+        let why = simulated
+            .stderr
+            .lines()
+            .chain(simulated.stdout.lines())
+            .find(|l| l.starts_with("E:"))
+            .unwrap_or("apt refused the simulation")
+            .trim_start_matches("E: ");
+        return Err(BackendError::Refused(format!(
+            "the approved versions cannot be installed: {why}"
+        )));
+    }
+    let mut upgraded = std::collections::BTreeMap::new();
+    for line in simulated.stdout.lines() {
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("Remv") => {
+                let name = words.next().unwrap_or("?");
+                return Err(BackendError::Refused(format!(
+                    "installing the approved versions would remove {name}, which nobody approved"
+                )));
+            }
+            Some("Inst") => {
+                let name = words.next().unwrap_or("?").to_owned();
+                // `Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])`
+                let new = line
+                    .split('(')
+                    .nth(1)
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .unwrap_or("")
+                    .to_owned();
+                upgraded.insert(name, new);
+            }
+            _ => {}
+        }
+    }
+    for (name, version) in &upgraded {
+        let approved = todo
+            .iter()
+            .find(|p| &p.name == name || &qualified(p) == name);
+        match approved {
+            Some(p) if &p.to == version => {}
+            Some(p) => {
+                return Err(BackendError::Refused(format!(
+                    "apt would install {name} {version}, and {} was approved",
+                    p.to
+                )));
+            }
+            None => {
+                return Err(BackendError::Refused(format!(
+                    "installing the approved versions would also install {name} {version}, which nobody approved"
+                )));
+            }
+        }
+    }
+    if let Some(missing) = todo
+        .iter()
+        .find(|p| !upgraded.contains_key(&p.name) && !upgraded.contains_key(&qualified(p)))
+    {
+        return Err(BackendError::Refused(format!(
+            "apt would not upgrade {} — is it held?",
+            missing.name
+        )));
+    }
+    Ok(())
+}
+
+/// What changed, from dpkg's own account afterwards.
+///
+/// # Errors
+/// [`BackendError::CommandFailed`] when apt exited cleanly and a package is
+/// still not at its approved version — which would otherwise be reported as a
+/// success that patched nothing.
+pub fn changes(
+    todo: &[&Pin],
+    after: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<Change>> {
+    let mut changed = Vec::new();
+    for pin in todo {
+        let now = after.get(&qualified(pin)).cloned().unwrap_or_default();
+        if now != pin.to {
+            return Err(BackendError::CommandFailed {
+                tool: "apt-get",
+                status: 0,
+                stderr: format!("{} is at {now} after installing, not {}", pin.name, pin.to),
+            });
+        }
+        changed.push(Change {
+            name: pin.name.clone(),
+            arch: pin.arch.clone(),
+            from: pin.from.clone(),
+            to: now,
+        });
+    }
+    Ok(changed)
+}
+
+/// `/var/run/reboot-required`, which Debian and Ubuntu's packages touch.
+fn reboot_required() -> bool {
+    std::path::Path::new("/var/run/reboot-required").exists()
+}
+
+/// The version dpkg reports for each pin's package, where installed.
+async fn installed_versions(pins: &[Pin]) -> Result<std::collections::BTreeMap<String, String>> {
+    let names: Vec<String> = pins.iter().map(qualified).collect();
+    let mut args = vec![
+        "-W".to_owned(),
+        "-f=${Package}:${Architecture}\t${Version}\t${db:Status-Status}\n".to_owned(),
+    ];
+    args.extend(names);
+    // Exit 1 means "one of these is not installed", which is an answer.
+    let ran = run_status("dpkg-query", &args).await?;
+    Ok(parse_versions(&ran.stdout))
+}
+
+/// `dpkg-query -W -f='${Package}:${Architecture}\t${Version}\t${db:Status-Status}\n'`,
+/// installed packages only, keyed the way [`qualified`] spells them.
+#[must_use]
+pub fn parse_versions(out: &str) -> std::collections::BTreeMap<String, String> {
+    out.lines()
+        .filter_map(|line| {
+            let mut f = line.split('\t');
+            let (name, version, status) = (f.next()?, f.next()?, f.next()?);
+            (status.trim() == "installed").then(|| {
+                let key = name.strip_suffix(":all").unwrap_or(name).to_owned();
+                (key, version.to_owned())
+            })
+        })
+        .collect()
+}
+
+/* ------------------------------------- running apt, whatever it answers */
+
+async fn run_status(tool: &'static str, args: &[String]) -> Result<Ran> {
+    let output = tokio::process::Command::new(tool)
+        .args(args)
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        // Ubuntu's needrestart would otherwise restart services by itself,
+        // which is a decision this job was not approved to make. `l` lists.
+        .env("NEEDRESTART_MODE", "l")
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                BackendError::ToolMissing { tool }
+            } else {
+                BackendError::Io(e)
+            }
+        })?;
+    Ok(Ran {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 /* ------------------------------------------------------------- the shelling */

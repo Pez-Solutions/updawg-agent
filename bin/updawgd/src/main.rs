@@ -20,9 +20,10 @@ use std::{
 };
 use updawg_agent_core::{
     CONFIG_PATH, STATE_DIR, VERSION,
-    checkin::{GatewayCheckIn, UnhandledJobs},
+    checkin::GatewayCheckIn,
     config::AgentConfig,
     inventory::GatewayInventory,
+    jobs::{Executor, Reporter},
     logging,
     scheduler::{CheckIn, CheckinOutcome, Inventory, Scheduler},
     state::LocalState,
@@ -196,17 +197,24 @@ async fn main() -> Result<()> {
     // what it needs is more useful than one that exits: the operator may be
     // about to run `updawgctl enroll`, and a dead unit is harder to notice
     // than a running one complaining.
-    let checkin: Arc<dyn CheckIn> = build_checkin(&config, &state, extra_root.as_deref())
-        .unwrap_or_else(|| {
-            tracing::warn!("not checking in: this host has no usable identity");
-            placeholder.clone()
-        });
+    // Inventory first: the job executor uploads a fresh one after every job,
+    // so the server sees what changed without waiting six hours.
+    let real_inventory = build_inventory(&config, &state, extra_root.as_deref());
+    let checkin: Arc<dyn CheckIn> = build_checkin(
+        &config,
+        &state,
+        extra_root.as_deref(),
+        real_inventory.clone(),
+    )
+    .unwrap_or_else(|| {
+        tracing::warn!("not checking in: this host has no usable identity");
+        placeholder.clone()
+    });
 
-    let inventory: Arc<dyn Inventory> = build_inventory(&config, &state, extra_root.as_deref())
-        .unwrap_or_else(|| {
-            tracing::warn!("not collecting inventory: this host has no usable identity or backend");
-            placeholder.clone()
-        });
+    let inventory: Arc<dyn Inventory> = real_inventory.unwrap_or_else(|| {
+        tracing::warn!("not collecting inventory: this host has no usable identity or backend");
+        placeholder.clone()
+    });
 
     let scheduler = Scheduler::new(config, checkin, inventory);
 
@@ -268,6 +276,7 @@ fn build_checkin(
     config: &AgentConfig,
     state: &LocalState,
     extra_root: Option<&[u8]>,
+    inventory: Option<Arc<dyn Inventory>>,
 ) -> Option<Arc<dyn CheckIn>> {
     if !state.is_enrolled() {
         return None;
@@ -287,14 +296,25 @@ fn build_checkin(
         }
     };
 
+    // `None` on a host with no package manager the agent knows: jobs are then
+    // refused with that reason, rather than failing halfway.
+    let backend: Option<Arc<dyn updawg_backends::PackageBackend>> =
+        updawg_backends::detect().ok().map(Arc::from);
+    // Verified, permission-checked and run (DAWG-38, DAWG-102). Observe mode
+    // refuses every job that changes the host, and says so to the server.
+    let jobs = Arc::new(Executor::new(
+        Arc::clone(&transport) as Arc<dyn Reporter>,
+        state.clone(),
+        config.clone(),
+        backend,
+        inventory,
+    ));
+
     Some(Arc::new(GatewayCheckIn::new(
         transport,
         state.clone(),
         collector,
-        // Jobs are delivered but not run: verifying and executing one is a
-        // different problem with its own security story (DAWG-38). Until then
-        // the agent says so loudly rather than dropping them silently.
-        Arc::new(UnhandledJobs),
+        jobs,
         // What this file permits, reported on every check-in so the server can
         // narrow against it rather than guess (DAWG-223).
         config.local_policy(),

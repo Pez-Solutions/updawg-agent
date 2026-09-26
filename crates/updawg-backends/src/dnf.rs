@@ -194,12 +194,11 @@ impl PackageBackend for DnfBackend {
     }
 
     async fn apply(&self, _plan: &ApplyPlan, _log: &dyn LogSink) -> Result<ApplyOutcome> {
-        // Deliberately still a stub, exactly as apt's is. Applying updates is the
-        // mutating half and belongs with job execution and its permission checks
-        // (DAWG-38); DAWG-35 is the reporting half.
-        Err(BackendError::ToolMissing {
-            tool: "dnf upgrade (DAWG-38)",
-        })
+        // Not built yet for rpm hosts. A refusal, not a failure: nothing on the
+        // host changed, and the proposal halts saying so.
+        Err(BackendError::Refused(
+            "applying updates is not built for dnf hosts yet".to_owned(),
+        ))
     }
 }
 
