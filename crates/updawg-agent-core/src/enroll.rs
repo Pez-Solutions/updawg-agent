@@ -489,8 +489,18 @@ pub(crate) fn causes(error: &dyn std::error::Error) -> String {
     parts.join(": ")
 }
 
-/// Pull the human-readable part out of an RFC 9457 problem document.
+/// Pull the human-readable part out of an error body.
+///
+/// ⚠️ **The gateway's own shape first**: `updawg_protocol::ApiError`, whose text
+/// is `message`. This used to look only for RFC 9457's `detail` and `title`,
+/// which the gateway has never sent — so every refusal reached the operator as
+/// raw JSON cut at 200 characters, and the tests passed because they fed it
+/// problem documents instead of what the gateway answers. RFC 9457 stays as
+/// the fallback for anything in between (a proxy, a load balancer's own page).
 pub(crate) fn problem_detail(body: &str) -> String {
+    if let Ok(error) = serde_json::from_str::<updawg_protocol::ApiError>(body) {
+        return error.message;
+    }
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|v| {
@@ -1268,6 +1278,20 @@ mod tests {
         assert_eq!(
             causes(&error),
             "error sending request: tls handshake eof: received fatal alert: InternalError"
+        );
+    }
+
+    #[test]
+    fn the_gateways_own_error_is_reported_by_its_message_not_its_json() {
+        // Byte for byte what the gateway answers an organization that has no
+        // signing key yet — the first real enrollment's error, which this
+        // printed as JSON.
+        let detail = problem_detail(
+            r#"{"code":"organization_not_ready","message":"this organization has no signing key yet; an administrator must create one before hosts can enroll"}"#,
+        );
+        assert_eq!(
+            detail,
+            "this organization has no signing key yet; an administrator must create one before hosts can enroll"
         );
     }
 
