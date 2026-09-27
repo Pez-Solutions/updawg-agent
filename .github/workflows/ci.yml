@@ -12,7 +12,7 @@ env:
 jobs:
   check:
     name: fmt, clippy, test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, copenhagen]
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +75,7 @@ jobs:
   # changed — on the platforms it must turn away.
   install-sh:
     name: install.sh
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, copenhagen]
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
