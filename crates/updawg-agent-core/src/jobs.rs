@@ -98,14 +98,6 @@ impl Rebooter for SystemRebooter {
     }
 }
 
-/// The wall message for a reboot that finishes an `apply_updates` job, which
-/// carries no message of its own.
-const REBOOT_MESSAGE: &str = "Updawg: rebooting in a minute to finish an approved update";
-
-/// A minute's warning to anyone logged in. `apply_updates` carries no delay
-/// of its own, and rebooting under somebody's shell without one is rude.
-const REBOOT_DELAY_S: u64 = 60;
-
 /// Where answers about jobs go. The gateway, in production.
 #[async_trait]
 pub trait Reporter: Send + Sync {
@@ -410,6 +402,8 @@ impl crate::checkin::JobSink for Executor {
         );
         let checks = self.checks();
         let (state, rebooter) = (self.state.clone(), Arc::clone(&self.rebooter));
+        // The warning is the host's to set, in agent.toml's `[reboot]`.
+        let warning = self.config.reboot.clone();
         let policy = match &job.spec {
             JobSpec::ApplyUpdates(apply) => apply.reboot,
             _ => RebootPolicy::Never,
@@ -420,7 +414,7 @@ impl crate::checkin::JobSink for Executor {
             let _one_at_a_time = running.lock().await;
             let mut done = run(&job, &plan, backend.as_ref(), &checks).await;
             if wants_reboot(policy, &done) {
-                match reboot(&job, &done, &state, rebooter.as_ref()).await {
+                match reboot(&job, &done, &state, rebooter.as_ref(), &warning).await {
                     // The report is finished by `resume_after_reboot` on the
                     // other side, with the checks run again.
                     Ok(()) => return,
@@ -499,6 +493,7 @@ async fn reboot(
     done: &JobComplete,
     state: &LocalState,
     rebooter: &dyn Rebooter,
+    warning: &crate::config::RebootSettings,
 ) -> Result<(), String> {
     let Some(boot_id) = rebooter.boot_id() else {
         return Err("this host has no boot id to tell a reboot by, so it did not reboot".into());
@@ -511,8 +506,8 @@ async fn reboot(
             boot_id_before: boot_id,
         })
         .map_err(|e| format!("could not record the pending reboot, so did not reboot: {e}"))?;
-    tracing::warn!(job = %job.id, delay_s = REBOOT_DELAY_S, "rebooting to finish the job");
-    if let Err(error) = rebooter.reboot(REBOOT_DELAY_S, REBOOT_MESSAGE).await {
+    tracing::warn!(job = %job.id, delay_s = warning.delay_s(), "rebooting to finish the job");
+    if let Err(error) = rebooter.reboot(warning.delay_s(), &warning.message).await {
         let _ = state.take_pending_reboot();
         return Err(format!("could not reboot: {error:#}"));
     }

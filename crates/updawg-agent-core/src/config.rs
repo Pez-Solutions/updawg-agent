@@ -117,6 +117,48 @@ impl Default for Snapshots {
     }
 }
 
+/// `[reboot]`: how this host warns people before a job reboots it (DAWG-103).
+///
+/// The host's, not the server's: whoever runs it knows who is logged in and
+/// how long they need. Whether a reboot may happen at all is
+/// `[permissions]`'s `reboot`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebootSettings {
+    /// How long between the warning and the reboot. Rounded **up** to whole
+    /// minutes, because that is what `shutdown` counts in, and a warning must
+    /// not arrive late. At least a minute.
+    #[serde(default = "default_reboot_delay")]
+    pub delay: HumanDuration,
+    /// What logged-in users see.
+    #[serde(default = "default_reboot_message")]
+    pub message: String,
+}
+
+fn default_reboot_delay() -> HumanDuration {
+    HumanDuration(Duration::from_secs(60))
+}
+fn default_reboot_message() -> String {
+    "Updawg: rebooting shortly to finish an approved update".to_owned()
+}
+
+impl Default for RebootSettings {
+    fn default() -> Self {
+        Self {
+            delay: default_reboot_delay(),
+            message: default_reboot_message(),
+        }
+    }
+}
+
+impl RebootSettings {
+    /// The delay in seconds, never under a minute: a reboot without warning
+    /// anybody is not something configuration can ask for by accident.
+    #[must_use]
+    pub fn delay_s(&self) -> u64 {
+        self.delay.0.as_secs().max(60)
+    }
+}
+
 /// One `[[health_check]]` entry.
 ///
 /// Checks run after every mutating job, and a failure is what halts a rollout.
@@ -210,6 +252,8 @@ pub struct AgentConfig {
     pub schedule: Schedule,
     #[serde(default)]
     pub snapshots: Snapshots,
+    #[serde(default)]
+    pub reboot: RebootSettings,
     /// `[[health_check]]` entries, in the order they were written.
     #[serde(default, rename = "health_check")]
     pub health_checks: Vec<HealthCheck>,
@@ -316,6 +360,7 @@ mod tests {
             permissions: perms(allow, deny),
             schedule: Schedule::default(),
             snapshots: Snapshots::default(),
+            reboot: RebootSettings::default(),
             health_checks: Vec::new(),
         }
     }
@@ -509,6 +554,7 @@ mod policy_tests {
             },
             schedule: Schedule::default(),
             snapshots: Snapshots::default(),
+            reboot: RebootSettings::default(),
             health_checks: Vec::new(),
         }
     }
@@ -578,5 +624,30 @@ mod policy_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_reboot_warning_is_the_hosts_to_set_and_never_under_a_minute() {
+        let base = "server = \"https://agents.example\"\n";
+        let default = AgentConfig::from_toml(base).unwrap();
+        assert_eq!(default.reboot.delay_s(), 60);
+        assert!(!default.reboot.message.is_empty());
+
+        let set = AgentConfig::from_toml(&format!(
+            "{base}[reboot]\ndelay = \"10m\"\nmessage = \"db01 reboots for patching; save your work\"\n"
+        ))
+        .unwrap();
+        assert_eq!(set.reboot.delay_s(), 600);
+        assert_eq!(
+            set.reboot.message,
+            "db01 reboots for patching; save your work"
+        );
+
+        let rushed = AgentConfig::from_toml(&format!("{base}[reboot]\ndelay = \"5s\"\n")).unwrap();
+        assert_eq!(
+            rushed.reboot.delay_s(),
+            60,
+            "a reboot without warning was configurable"
+        );
     }
 }

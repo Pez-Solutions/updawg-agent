@@ -12,3 +12,23 @@ deny  = ["dist_upgrade"]
 [schedule]
 inventory_interval = "6h"
 refresh_metadata   = "1h"
+
+# How people logged in are warned before a job reboots this host. Whether a
+# job may reboot at all is the "reboot" permission above.
+[reboot]
+delay   = "5m"        # rounded up to whole minutes; never under one
+message = "Rebooting in 5 minutes to finish an approved update"
+
+# Run after every job that changes packages. A failing check halts the
+# rollout. Checks only ever come from this file.
+[[health_check]]
+name = "sshd running"
+type = "systemd"
+unit = "ssh.service"
+
+# [[health_check]]
+# name = "app responds"
+# type = "http"
+# url  = "http://127.0.0.1:8080/healthz"
+# expect_status = 200
+# timeout = "5s"
