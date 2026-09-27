@@ -16,8 +16,8 @@
 //! 4. **Run it**, in the background and one at a time (DAWG-106), then say how
 //!    it went and upload a fresh inventory so the server sees the new state.
 //!
-//! `apply_updates` is the only kind that runs so far. The others are refused
-//! as not built, which is honest and halts rather than pretends.
+//! `apply_updates` and `reboot` run (DAWG-103). The others are refused as not
+//! built, which is honest and halts rather than pretends.
 
 use crate::{
     config::AgentConfig,
@@ -290,9 +290,9 @@ impl Executor {
         None
     }
 
-    /// Everything up to and including the acknowledgement. Returns the plan
-    /// to run, or `None` when the job was ignored or refused.
-    async fn admit(&self, job: &Job) -> Option<(ApplyPlan, Arc<dyn PackageBackend>)> {
+    /// Everything up to and including the acknowledgement. Returns what to
+    /// run, or `None` when the job was ignored or refused.
+    async fn admit(&self, job: &Job) -> Option<Work> {
         match self.state.has_seen_job(&job.id) {
             Ok(true) => {
                 tracing::info!(job = %job.id, "already seen; ignoring");
@@ -344,21 +344,45 @@ impl Executor {
             self.refuse(job, reason).await;
             return None;
         }
-        let JobSpec::ApplyUpdates(apply) = &job.spec else {
-            self.refuse(
-                job,
-                format!("this agent version does not run {:?} jobs yet", job.kind()),
-            )
-            .await;
-            return None;
-        };
-        let Some(backend) = self.backend.clone() else {
-            self.refuse(
-                job,
-                "this host has no package manager the agent can drive".into(),
-            )
-            .await;
-            return None;
+        let work = match &job.spec {
+            JobSpec::ApplyUpdates(apply) => {
+                let Some(backend) = self.backend.clone() else {
+                    self.refuse(
+                        job,
+                        "this host has no package manager the agent can drive".into(),
+                    )
+                    .await;
+                    return None;
+                };
+                Work::Apply(
+                    ApplyPlan {
+                        packages: apply
+                            .packages
+                            .iter()
+                            .map(|p| Pin {
+                                name: p.name.clone(),
+                                arch: p.arch.clone(),
+                                from: p.from.clone(),
+                                to: p.to.clone(),
+                            })
+                            .collect(),
+                        allow_reboot: apply.reboot != RebootPolicy::Never,
+                    },
+                    backend,
+                    apply.reboot,
+                )
+            }
+            // Permission was checked above: `reboot` is its own kind, and
+            // agent.toml must allow it.
+            JobSpec::Reboot(reboot) => Work::Reboot(reboot.policy),
+            _ => {
+                self.refuse(
+                    job,
+                    format!("this agent version does not run {:?} jobs yet", job.kind()),
+                )
+                .await;
+                return None;
+            }
         };
 
         let ack = JobAck {
@@ -372,27 +396,23 @@ impl Executor {
             // strand it.
             tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not acknowledge; running anyway");
         }
-        let plan = ApplyPlan {
-            packages: apply
-                .packages
-                .iter()
-                .map(|p| Pin {
-                    name: p.name.clone(),
-                    arch: p.arch.clone(),
-                    from: p.from.clone(),
-                    to: p.to.clone(),
-                })
-                .collect(),
-            allow_reboot: apply.reboot != RebootPolicy::Never,
-        };
-        Some((plan, backend))
+        Some(work)
     }
+}
+
+/// What an admitted job is to do.
+enum Work {
+    /// Install exactly these, then reboot as the policy says.
+    Apply(ApplyPlan, Arc<dyn PackageBackend>, RebootPolicy),
+    /// Reboot and nothing else — the one a rule wanted in its window, after
+    /// an install that ran outside it (DAWG-103).
+    Reboot(RebootPolicy),
 }
 
 #[async_trait]
 impl crate::checkin::JobSink for Executor {
     async fn deliver(&self, job: Job) {
-        let Some((plan, backend)) = self.admit(&job).await else {
+        let Some(work) = self.admit(&job).await else {
             return;
         };
         let (reporter, inventory, running) = (
@@ -404,15 +424,16 @@ impl crate::checkin::JobSink for Executor {
         let (state, rebooter) = (self.state.clone(), Arc::clone(&self.rebooter));
         // The warning is the host's to set, in agent.toml's `[reboot]`.
         let warning = self.config.reboot.clone();
-        let policy = match &job.spec {
-            JobSpec::ApplyUpdates(apply) => apply.reboot,
-            _ => RebootPolicy::Never,
-        };
         // In the background: an install can take minutes, and the check-in
         // that delivered it must not wait for it.
         tokio::spawn(async move {
             let _one_at_a_time = running.lock().await;
-            let mut done = run(&job, &plan, backend.as_ref(), &checks).await;
+            let (mut done, policy) = match work {
+                Work::Apply(plan, backend, policy) => {
+                    (run(&job, &plan, backend.as_ref(), &checks).await, policy)
+                }
+                Work::Reboot(policy) => (reboot_only(&job, rebooter.as_ref()).await, policy),
+            };
             if wants_reboot(policy, &done) {
                 match reboot(&job, &done, &state, rebooter.as_ref(), &warning).await {
                     // The report is finished by `resume_after_reboot` on the
@@ -470,6 +491,27 @@ async fn run(
         done.finished_at = Utc::now();
     }
     done
+}
+
+/// A `reboot` job's report before any reboot: nothing installed, and whether
+/// the host still needs one — which, with `if_required`, decides whether it
+/// happens at all. A host rebooted by other means since its install reports
+/// success and stays up.
+async fn reboot_only(job: &Job, rebooter: &dyn Rebooter) -> JobComplete {
+    let now = Utc::now();
+    let reboot_required = rebooter.reboot_required().await;
+    tracing::info!(job = %job.id, reboot_required, "a reboot job");
+    JobComplete {
+        status: JobStatus::Succeeded,
+        started_at: now,
+        finished_at: now,
+        snapshot_id: None,
+        changes: vec![],
+        health_checks: vec![],
+        reboot_required,
+        inventory_hash: None,
+        error: None,
+    }
 }
 
 /// Whether this job's policy says to reboot now.
@@ -1146,5 +1188,76 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(done.status, JobStatus::Failed);
         assert!(done.error.unwrap().contains("could not reboot"));
         assert!(w.executor.state.take_pending_reboot().unwrap().is_none());
+    }
+
+    /* ----------------------------------- a reboot job of its own (DAWG-103) */
+
+    fn reboot_job(w: &World) -> Job {
+        job(w, |j| {
+            j.spec = JobSpec::Reboot(updawg_protocol::Reboot {
+                policy: RebootPolicy::IfRequired,
+                ..updawg_protocol::Reboot::default()
+            });
+        })
+    }
+
+    fn still_needing_a_reboot() -> Arc<FakeRebooter> {
+        Arc::new(FakeRebooter {
+            boot_id: std::sync::Mutex::new("boot-1".into()),
+            requested: AtomicUsize::new(0),
+            still_required: true,
+            fail: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_reboot_job_reboots_a_host_that_needs_it_and_installs_nothing() {
+        let rebooter = still_needing_a_reboot();
+        let mut w = world_allowing("managed", succeeds, CHECKS, ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor.deliver(reboot_job(&w)).await;
+        settled(&w, &rebooter).await;
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 1);
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+        assert!(w.gateway.completes.lock().unwrap().is_empty());
+
+        *rebooter.boot_id.lock().unwrap() = "boot-2".into();
+        w.executor.resume_after_reboot().await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded);
+        assert!(done.changes.is_empty());
+        assert_eq!(done.health_checks.len(), 2, "the checks ran after it");
+    }
+
+    /// `if_required`: a host rebooted by other means since its install has
+    /// nothing to do, and says so.
+    #[tokio::test]
+    async fn a_reboot_job_leaves_a_host_that_no_longer_needs_one_alone() {
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", succeeds, "", ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor.deliver(reboot_job(&w)).await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded);
+        assert!(!done.reboot_required);
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_host_that_does_not_permit_reboots_refuses_a_reboot_job() {
+        let rebooter = still_needing_a_reboot();
+        let mut w = world_with("managed", succeeds, "");
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor.deliver(reboot_job(&w)).await;
+        let why = refusals(&w);
+        assert_eq!(why.len(), 1);
+        assert!(why[0].contains("does not permit reboot"), "{why:?}");
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
     }
 }
