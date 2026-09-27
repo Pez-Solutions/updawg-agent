@@ -21,6 +21,7 @@
 
 use crate::{
     config::AgentConfig,
+    joblog::{AFTER_REBOOT, JobLog},
     scheduler::Inventory,
     state::LocalState,
     transport::{JobAnswer, MtlsTransport},
@@ -29,7 +30,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use updawg_backends::{ApplyPlan, BackendError, LogSink, PackageBackend, Pin};
+use updawg_backends::{ApplyPlan, BackendError, PackageBackend, Pin};
 use updawg_crypto::PinnedKeys;
 use updawg_executor::health::{self, Check};
 use updawg_protocol::{
@@ -103,6 +104,9 @@ impl Rebooter for SystemRebooter {
 pub trait Reporter: Send + Sync {
     async fn ack(&self, job: &Job, ack: &JobAck) -> anyhow::Result<()>;
     async fn complete(&self, job: &Job, done: &JobComplete) -> anyhow::Result<()>;
+    /// A batch of the job's log, as NDJSON (DAWG-101). `Ok(false)` when it
+    /// will never be taken, so the caller drops it rather than retrying.
+    async fn logs(&self, job: &Job, ndjson: String) -> anyhow::Result<bool>;
 }
 
 #[async_trait]
@@ -115,6 +119,10 @@ impl Reporter for MtlsTransport {
     async fn complete(&self, job: &Job, done: &JobComplete) -> anyhow::Result<()> {
         log_answer(job, "complete", self.complete_job(&job.id, done).await?);
         Ok(())
+    }
+
+    async fn logs(&self, job: &Job, ndjson: String) -> anyhow::Result<bool> {
+        Ok(self.upload_logs(&job.id, ndjson).await?)
     }
 }
 
@@ -219,15 +227,18 @@ impl Executor {
         };
         let job = pending.job;
         let mut done = pending.report;
+        let log = JobLog::start(Arc::clone(&self.reporter), job.clone(), AFTER_REBOOT);
         let now = self.rebooter.boot_id();
         if now.as_deref() == Some(pending.boot_id_before.as_str()) || now.is_none() {
             tracing::error!(job = %job.id, "a reboot was asked for and the host has not rebooted");
+            log.agent("the agent restarted, and the host has not rebooted");
             done.status = JobStatus::Failed;
             done.error = Some("the job asked for a reboot, and the host has not rebooted".into());
         } else {
-            tracing::info!(job = %job.id, "rebooted; running the health checks again");
-            done.health_checks = checks_reported(&job, &self.checks()).await;
+            log.agent("rebooted; running the health checks again");
+            done.health_checks = checks_reported(&job, &self.checks(), &log).await;
         }
+        log.finish().await;
         done.reboot_required = self.rebooter.reboot_required().await;
         done.finished_at = Utc::now();
         if let Err(error) = self.reporter.complete(&job, &done).await {
@@ -428,24 +439,49 @@ impl crate::checkin::JobSink for Executor {
         // that delivered it must not wait for it.
         tokio::spawn(async move {
             let _one_at_a_time = running.lock().await;
+            let log = JobLog::start(Arc::clone(&reporter), job.clone(), 0);
             let (mut done, policy) = match work {
                 Work::Apply(plan, backend, policy) => {
-                    (run(&job, &plan, backend.as_ref(), &checks).await, policy)
+                    log.agent(format!(
+                        "installing {} package{} at exactly the approved versions",
+                        plan.packages.len(),
+                        if plan.packages.len() == 1 { "" } else { "s" }
+                    ));
+                    (
+                        run(&job, &plan, backend.as_ref(), &checks, &log).await,
+                        policy,
+                    )
                 }
-                Work::Reboot(policy) => (reboot_only(&job, rebooter.as_ref()).await, policy),
+                Work::Reboot(policy) => (reboot_only(rebooter.as_ref(), &log).await, policy),
             };
             if wants_reboot(policy, &done) {
+                log.agent(format!(
+                    "rebooting in {} s to finish the job",
+                    warning.delay_s()
+                ));
+                // Before the reboot: it may be the last chance to send them.
+                log.finish().await;
                 match reboot(&job, &done, &state, rebooter.as_ref(), &warning).await {
                     // The report is finished by `resume_after_reboot` on the
                     // other side, with the checks run again.
                     Ok(()) => return,
                     Err(why) => {
                         tracing::error!(job = %job.id, %why, "could not reboot");
+                        log.agent(format!("could not reboot: {why}"));
                         done.status = JobStatus::Failed;
                         done.error = Some(why);
                     }
                 }
             }
+            log.agent(match done.status {
+                JobStatus::Succeeded => format!("done: {} package(s) changed", done.changes.len()),
+                _ => format!(
+                    "{:?}: {}",
+                    done.status,
+                    done.error.as_deref().unwrap_or("no detail")
+                ),
+            });
+            log.finish().await;
             if let Err(error) = reporter.complete(&job, &done).await {
                 tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the job went");
             }
@@ -455,14 +491,6 @@ impl crate::checkin::JobSink for Executor {
                 tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not upload the inventory after the job");
             }
         });
-    }
-}
-
-struct Logged<'a>(&'a Job);
-
-impl LogSink for Logged<'_> {
-    fn line(&self, line: &str) {
-        tracing::info!(job = %self.0.id, "{line}");
     }
 }
 
@@ -482,12 +510,13 @@ async fn run(
     plan: &ApplyPlan,
     backend: &dyn PackageBackend,
     checks: &[Check],
+    log: &JobLog,
 ) -> JobComplete {
     let started_at = Utc::now();
-    let outcome = backend.apply(plan, &Logged(job)).await;
+    let outcome = backend.apply(plan, log).await;
     let mut done = report(job, started_at, outcome);
     if done.status != JobStatus::RejectedByHost {
-        done.health_checks = checks_reported(job, checks).await;
+        done.health_checks = checks_reported(job, checks, log).await;
         done.finished_at = Utc::now();
     }
     done
@@ -497,10 +526,14 @@ async fn run(
 /// the host still needs one — which, with `if_required`, decides whether it
 /// happens at all. A host rebooted by other means since its install reports
 /// success and stays up.
-async fn reboot_only(job: &Job, rebooter: &dyn Rebooter) -> JobComplete {
+async fn reboot_only(rebooter: &dyn Rebooter, log: &JobLog) -> JobComplete {
     let now = Utc::now();
     let reboot_required = rebooter.reboot_required().await;
-    tracing::info!(job = %job.id, reboot_required, "a reboot job");
+    log.agent(if reboot_required {
+        "a reboot job, and the host needs one"
+    } else {
+        "a reboot job, and the host no longer needs one: nothing to do"
+    });
     JobComplete {
         status: JobStatus::Succeeded,
         started_at: now,
@@ -557,13 +590,20 @@ async fn reboot(
 }
 
 /// Run the checks and shape them for the report.
-async fn checks_reported(job: &Job, checks: &[Check]) -> Vec<HealthCheckReport> {
+async fn checks_reported(job: &Job, checks: &[Check], log: &JobLog) -> Vec<HealthCheckReport> {
     health::run_all(checks)
         .await
         .into_iter()
         .map(|r| {
-            if !r.passed {
+            if r.passed {
+                log.agent(format!("health check {}: passed", r.name));
+            } else {
                 tracing::warn!(job = %job.id, check = %r.name, detail = ?r.detail, "health check failed");
+                log.agent(format!(
+                    "health check {}: FAILED{}",
+                    r.name,
+                    r.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default()
+                ));
             }
             HealthCheckReport {
                 name: r.name,
@@ -648,7 +688,7 @@ mod tests {
     use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
     use base64::Engine as _;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use updawg_backends::{ApplyOutcome, Change, PendingChanges};
+    use updawg_backends::{ApplyOutcome, Change, LogSink, PendingChanges};
     use updawg_protocol::{
         AvailableUpdate, Ecosystem, HostId, InstalledPackage, JobId, OrgSigningKey, Repository,
         SigningKeyId, SigningKeyStatus,
@@ -662,6 +702,10 @@ mod tests {
     struct Gateway {
         acks: std::sync::Mutex<Vec<JobAck>>,
         completes: std::sync::Mutex<Vec<JobComplete>>,
+        /// Every log line sent, in the order the batches arrived, and whether
+        /// any batch reached the gateway after the report did.
+        logged: std::sync::Mutex<Vec<updawg_protocol::LogLine>>,
+        logged_after_complete: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
@@ -673,6 +717,16 @@ mod tests {
         async fn complete(&self, _job: &Job, done: &JobComplete) -> anyhow::Result<()> {
             self.completes.lock().unwrap().push(done.clone());
             Ok(())
+        }
+        async fn logs(&self, _job: &Job, ndjson: String) -> anyhow::Result<bool> {
+            if !self.completes.lock().unwrap().is_empty() {
+                self.logged_after_complete.store(true, Ordering::SeqCst);
+            }
+            self.logged
+                .lock()
+                .unwrap()
+                .extend(updawg_protocol::LogLine::from_ndjson(&ndjson)?);
+            Ok(true)
         }
     }
 
@@ -711,9 +765,12 @@ mod tests {
         async fn apply(
             &self,
             plan: &ApplyPlan,
-            _log: &dyn LogSink,
+            log: &dyn LogSink,
         ) -> updawg_backends::Result<ApplyOutcome> {
             self.applied.fetch_add(1, Ordering::SeqCst);
+            // What apt would print, so a test can see it arrive.
+            log.line("Unpacking openssl (3.5.1-2) over (3.5.1-1) ...");
+            log.line("Setting up openssl (3.5.1-2) ...");
             (self.outcome)(plan)
         }
     }
@@ -1259,5 +1316,80 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(why.len(), 1);
         assert!(why[0].contains("does not permit reboot"), "{why:?}");
         assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    /* ------------------------------------------- the job's log (DAWG-101) */
+
+    /// What the package manager printed reaches the gateway, numbered in
+    /// order, among the agent's own lines — and all of it before the report,
+    /// so a portal that sees the job finished sees its whole log.
+    #[tokio::test]
+    async fn a_jobs_output_is_streamed_before_its_report() {
+        let w = world_with("managed", succeeds, CHECKS);
+        w.executor.deliver(job(&w, |_| {})).await;
+        completed(&w).await;
+
+        let lines = w.gateway.logged.lock().unwrap().clone();
+        let seqs: Vec<u64> = lines.iter().map(|l| l.seq).collect();
+        assert_eq!(
+            seqs,
+            (0..seqs.len() as u64).collect::<Vec<_>>(),
+            "{lines:#?}"
+        );
+        let text: Vec<&str> = lines.iter().map(|l| l.line.as_str()).collect();
+        assert!(
+            text.contains(&"Setting up openssl (3.5.1-2) ..."),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter().any(|l| l.starts_with("health check")),
+            "{text:#?}"
+        );
+        assert!(text.last().unwrap().starts_with("done:"), "{text:#?}");
+        assert_eq!(
+            lines
+                .iter()
+                .find(|l| l.line.starts_with("Setting up"))
+                .unwrap()
+                .stream,
+            updawg_protocol::LogStream::Stdout
+        );
+        assert!(
+            !w.gateway.logged_after_complete.load(Ordering::SeqCst),
+            "a log batch arrived after the report"
+        );
+    }
+
+    /// After a reboot the log carries on, numbered clear of the first half.
+    #[tokio::test]
+    async fn the_log_carries_on_after_a_reboot() {
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", needs_reboot, "", ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(rebooting(&w, RebootPolicy::IfRequired))
+            .await;
+        settled(&w, &rebooter).await;
+        // Sent before rebooting, which may be the last chance.
+        assert!(
+            w.gateway
+                .logged
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.line.starts_with("rebooting"))
+        );
+
+        *rebooter.boot_id.lock().unwrap() = "boot-2".into();
+        w.executor.resume_after_reboot().await;
+        completed(&w).await;
+        let lines = w.gateway.logged.lock().unwrap().clone();
+        let resumed = lines
+            .iter()
+            .find(|l| l.line.starts_with("rebooted"))
+            .expect("a line from after the reboot");
+        assert!(resumed.seq >= crate::joblog::AFTER_REBOOT, "{resumed:?}");
     }
 }

@@ -451,6 +451,46 @@ impl MtlsTransport {
             .await
     }
 
+    /// `POST /agent/v1/jobs/{id}/logs` (DAWG-101): a batch of NDJSON lines.
+    ///
+    /// `Ok(false)` when the gateway will never take this batch — it is
+    /// malformed, or the job is closed to logs — so the caller drops it rather
+    /// than retrying for ever. `Err` is worth retrying.
+    ///
+    /// # Errors
+    /// Transport failures and server errors.
+    pub async fn upload_logs(&self, id: &updawg_protocol::JobId, ndjson: String) -> Result<bool> {
+        let url = self.url(&format!("/jobs/{}/logs", id.as_str()));
+        let response = self
+            .client()
+            .post(&url)
+            .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
+            .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
+            .timeout(JOB_ANSWER_TIMEOUT)
+            .body(ndjson)
+            .send()
+            .await
+            .map_err(|e| self.connection_error(&url, &e))?;
+        let status = response.status().as_u16();
+        match status {
+            401 | 403 => Err(self.certificate_rejected()),
+            200..=299 => Ok(true),
+            // Refused for good: not ours, not open, or not log lines.
+            400 | 404 | 409 | 413 => Ok(false),
+            _ => {
+                let detail = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "no response body".into());
+                Err(TransportError::Server {
+                    url,
+                    status,
+                    detail: crate::enroll::problem_detail(&detail),
+                })
+            }
+        }
+    }
+
     /// A `POST` the gateway answers with `204` and no body.
     async fn answer<B: Serialize + Sync>(&self, path: &str, body: &B) -> Result<JobAnswer> {
         let url = self.url(path);

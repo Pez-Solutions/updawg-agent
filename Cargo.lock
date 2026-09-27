@@ -2017,6 +2017,7 @@ name = "updawg-executor"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "reqwest",
  "thiserror",
  "tokio",
  "tracing",

@@ -11,6 +11,7 @@ pub mod enroll;
 #[cfg(feature = "insecure-extra-root")]
 pub mod insecure;
 pub mod inventory;
+pub mod joblog;
 pub mod jobs;
 pub mod logging;
 pub mod scheduler;
