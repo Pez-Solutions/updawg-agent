@@ -167,18 +167,11 @@ async fn main() -> Result<()> {
     let state = LocalState::new(&cli.state_dir);
     state.ensure().context("preparing the state directory")?;
 
-    // A job that rebooted the machine could not report its own result. Finish
-    // that report before doing anything else, or the server is left believing
-    // the job is still running.
-    if let Some(pending) = state
-        .take_pending_reboot()
-        .context("reading pending reboot state")?
-    {
-        tracing::info!(
-            job_id = %pending.job_id,
-            "host rebooted while running a job; reporting completion (DAWG-71)"
-        );
-    }
+    // A job that rebooted the machine is finished by
+    // `Executor::resume_after_reboot`, started in `build_checkin` once there is
+    // a transport to report through (DAWG-103). ⚠️ Nothing before that may
+    // read the pending-reboot record: reading it takes it, and a report taken
+    // and not sent leaves the job running on the server for ever.
 
     report_identity(&state).context("reading identity")?;
     report_host(&Root::default());
@@ -309,6 +302,13 @@ fn build_checkin(
         backend,
         inventory,
     ));
+    // A job that rebooted this host is finished from here (DAWG-103): the
+    // health checks run again and the report goes out. In the background, so
+    // a slow check does not hold up the first check-in.
+    tokio::spawn({
+        let jobs = Arc::clone(&jobs);
+        async move { jobs.resume_after_reboot().await }
+    });
 
     Some(Arc::new(GatewayCheckIn::new(
         transport,

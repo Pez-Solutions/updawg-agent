@@ -33,13 +33,78 @@ use updawg_backends::{ApplyPlan, BackendError, LogSink, PackageBackend, Pin};
 use updawg_crypto::PinnedKeys;
 use updawg_executor::health::{self, Check};
 use updawg_protocol::{
-    HealthCheckReport, Job, JobAck, JobComplete, JobStatus, PackageChange,
+    HealthCheckReport, Job, JobAck, JobComplete, JobKind, JobStatus, PackageChange,
     job::{JobSpec, RebootPolicy},
 };
 
 /// How far ahead of `not_before` a job may arrive and still be taken. The
 /// gateway withholds a job until then, so this is only clock skew.
 const EARLY: Duration = Duration::minutes(5);
+
+/// Rebooting, behind a seam, because it is the one thing a test must never do
+/// for real (DAWG-103).
+#[async_trait]
+pub trait Rebooter: Send + Sync {
+    /// This boot's id. A different one after a reboot is the proof it happened.
+    fn boot_id(&self) -> Option<String>;
+    /// Whether the host still needs a reboot, as the distribution says.
+    async fn reboot_required(&self) -> bool;
+    /// Ask the system to reboot after `delay_s`, with `message` on terminals.
+    async fn reboot(&self, delay_s: u64, message: &str) -> anyhow::Result<()>;
+}
+
+/// The real one: `shutdown -r`.
+#[derive(Debug, Default)]
+pub struct SystemRebooter;
+
+#[async_trait]
+impl Rebooter for SystemRebooter {
+    fn boot_id(&self) -> Option<String> {
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .ok()
+            .map(|s| s.trim().to_owned())
+    }
+
+    async fn reboot_required(&self) -> bool {
+        // Debian and Ubuntu touch a file; the RHEL family answers
+        // `needs-restarting -r` with exit 1.
+        if std::path::Path::new("/var/run/reboot-required").exists() {
+            return true;
+        }
+        tokio::process::Command::new("needs-restarting")
+            .arg("-r")
+            .output()
+            .await
+            .is_ok_and(|o| o.status.code() == Some(1))
+    }
+
+    async fn reboot(&self, delay_s: u64, message: &str) -> anyhow::Result<()> {
+        // `shutdown` counts in minutes. Round up: a delay is a promise to the
+        // people logged in, and it must not arrive early.
+        let when = match delay_s.div_ceil(60) {
+            0 => "now".to_owned(),
+            minutes => format!("+{minutes}"),
+        };
+        let out = tokio::process::Command::new("shutdown")
+            .args(["-r", &when, message])
+            .output()
+            .await?;
+        anyhow::ensure!(
+            out.status.success(),
+            "shutdown -r {when} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        Ok(())
+    }
+}
+
+/// The wall message for a reboot that finishes an `apply_updates` job, which
+/// carries no message of its own.
+const REBOOT_MESSAGE: &str = "Updawg: rebooting in a minute to finish an approved update";
+
+/// A minute's warning to anyone logged in. `apply_updates` carries no delay
+/// of its own, and rebooting under somebody's shell without one is rude.
+const REBOOT_DELAY_S: u64 = 60;
 
 /// Where answers about jobs go. The gateway, in production.
 #[async_trait]
@@ -103,6 +168,7 @@ pub struct Executor {
     config: AgentConfig,
     backend: Option<Arc<dyn PackageBackend>>,
     inventory: Option<Arc<dyn Inventory>>,
+    rebooter: Arc<dyn Rebooter>,
     /// One mutating job at a time (DAWG-106).
     running: Arc<Mutex<()>>,
 }
@@ -131,8 +197,63 @@ impl Executor {
             config,
             backend,
             inventory,
+            rebooter: Arc::new(SystemRebooter),
             running: Arc::default(),
         }
+    }
+
+    /// Replace how this executor reboots. Tests, and nothing else.
+    #[must_use]
+    pub fn with_rebooter(mut self, rebooter: Arc<dyn Rebooter>) -> Self {
+        self.rebooter = rebooter;
+        self
+    }
+
+    /// Finish a job that rebooted the host (DAWG-103). Call once at startup.
+    ///
+    /// The boot id is the evidence: a different one means the host really
+    /// did restart, and the health checks run again — those are the ones that
+    /// matter — before the job is reported. The same one means the agent
+    /// restarted and the host did not, which is reported as a failure rather
+    /// than left hanging for ever.
+    pub async fn resume_after_reboot(&self) {
+        let pending = match self.state.take_pending_reboot() {
+            Ok(Some(pending)) => pending,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::error!(%error, "cannot read the record of a pending reboot");
+                return;
+            }
+        };
+        let job = pending.job;
+        let mut done = pending.report;
+        let now = self.rebooter.boot_id();
+        if now.as_deref() == Some(pending.boot_id_before.as_str()) || now.is_none() {
+            tracing::error!(job = %job.id, "a reboot was asked for and the host has not rebooted");
+            done.status = JobStatus::Failed;
+            done.error = Some("the job asked for a reboot, and the host has not rebooted".into());
+        } else {
+            tracing::info!(job = %job.id, "rebooted; running the health checks again");
+            done.health_checks = checks_reported(&job, &self.checks()).await;
+        }
+        done.reboot_required = self.rebooter.reboot_required().await;
+        done.finished_at = Utc::now();
+        if let Err(error) = self.reporter.complete(&job, &done).await {
+            tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the job went");
+        }
+        if let Some(inventory) = &self.inventory
+            && let Err(error) = inventory.collect_and_upload().await
+        {
+            tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not upload the inventory after the reboot");
+        }
+    }
+
+    fn checks(&self) -> Vec<Check> {
+        self.config
+            .health_checks
+            .iter()
+            .map(crate::config::HealthCheck::to_check)
+            .collect()
     }
 
     async fn refuse(&self, job: &Job, reason: String) {
@@ -145,6 +266,36 @@ impl Executor {
         if let Err(error) = self.reporter.ack(job, &ack).await {
             tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report a refusal");
         }
+    }
+
+    /// Why local configuration will not run this job, if it will not.
+    ///
+    /// Local configuration always wins (DAWG-38), rebooting included
+    /// (DAWG-103): a job that may reboot is refused whole on a host that does
+    /// not permit reboots — explicitly, before anything changes, rather than
+    /// installing and then quietly skipping the part it was approved for.
+    fn not_permitted(&self, job: &Job) -> Option<String> {
+        if !self.config.admits(job.kind(), None) {
+            return Some(if self.config.mode == crate::config::Mode::Observe {
+                "this agent is in observe mode, which refuses every job that changes the host"
+                    .to_owned()
+            } else {
+                format!(
+                    "local configuration does not permit {}",
+                    job.kind().permission()
+                )
+            });
+        }
+        if let JobSpec::ApplyUpdates(apply) = &job.spec
+            && apply.reboot != RebootPolicy::Never
+            && !self.config.admits(JobKind::Reboot, None)
+        {
+            return Some(
+                "the job may reboot this host, and local configuration does not permit reboot"
+                    .to_owned(),
+            );
+        }
+        None
     }
 
     /// Everything up to and including the acknowledgement. Returns the plan
@@ -197,16 +348,7 @@ impl Executor {
             self.refuse(job, reason).await;
             return None;
         }
-        if !self.config.admits(job.kind(), None) {
-            let reason = if self.config.mode == crate::config::Mode::Observe {
-                "this agent is in observe mode, which refuses every job that changes the host"
-                    .to_owned()
-            } else {
-                format!(
-                    "local configuration does not permit {}",
-                    job.kind().permission()
-                )
-            };
+        if let Some(reason) = self.not_permitted(job) {
             self.refuse(job, reason).await;
             return None;
         }
@@ -266,17 +408,29 @@ impl crate::checkin::JobSink for Executor {
             self.inventory.clone(),
             Arc::clone(&self.running),
         );
-        let checks: Vec<Check> = self
-            .config
-            .health_checks
-            .iter()
-            .map(crate::config::HealthCheck::to_check)
-            .collect();
+        let checks = self.checks();
+        let (state, rebooter) = (self.state.clone(), Arc::clone(&self.rebooter));
+        let policy = match &job.spec {
+            JobSpec::ApplyUpdates(apply) => apply.reboot,
+            _ => RebootPolicy::Never,
+        };
         // In the background: an install can take minutes, and the check-in
         // that delivered it must not wait for it.
         tokio::spawn(async move {
             let _one_at_a_time = running.lock().await;
-            let done = run(&job, &plan, backend.as_ref(), &checks).await;
+            let mut done = run(&job, &plan, backend.as_ref(), &checks).await;
+            if wants_reboot(policy, &done) {
+                match reboot(&job, &done, &state, rebooter.as_ref()).await {
+                    // The report is finished by `resume_after_reboot` on the
+                    // other side, with the checks run again.
+                    Ok(()) => return,
+                    Err(why) => {
+                        tracing::error!(job = %job.id, %why, "could not reboot");
+                        done.status = JobStatus::Failed;
+                        done.error = Some(why);
+                    }
+                }
+            }
             if let Err(error) = reporter.complete(&job, &done).await {
                 tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the job went");
             }
@@ -318,24 +472,70 @@ async fn run(
     let outcome = backend.apply(plan, &Logged(job)).await;
     let mut done = report(job, started_at, outcome);
     if done.status != JobStatus::RejectedByHost {
-        done.health_checks = health::run_all(checks)
-            .await
-            .into_iter()
-            .map(|r| {
-                if !r.passed {
-                    tracing::warn!(job = %job.id, check = %r.name, detail = ?r.detail, "health check failed");
-                }
-                HealthCheckReport {
-                    name: r.name,
-                    passed: r.passed,
-                    duration_ms: u64::try_from(r.duration.as_millis()).unwrap_or(u64::MAX),
-                    detail: r.detail,
-                }
-            })
-            .collect();
+        done.health_checks = checks_reported(job, checks).await;
         done.finished_at = Utc::now();
     }
     done
+}
+
+/// Whether this job's policy says to reboot now.
+///
+/// Only after a success: a failed install is a host in an unknown state, and
+/// rebooting it is the one move that could turn a broken service into a
+/// broken host. A person decides that.
+fn wants_reboot(policy: RebootPolicy, done: &JobComplete) -> bool {
+    done.status == JobStatus::Succeeded
+        && match policy {
+            RebootPolicy::Never => false,
+            RebootPolicy::IfRequired => done.reboot_required,
+            RebootPolicy::Always => true,
+        }
+}
+
+/// Persist the report, then ask for the reboot. `Err` with why when the
+/// reboot could not be asked for, in which case nothing is left pending.
+async fn reboot(
+    job: &Job,
+    done: &JobComplete,
+    state: &LocalState,
+    rebooter: &dyn Rebooter,
+) -> Result<(), String> {
+    let Some(boot_id) = rebooter.boot_id() else {
+        return Err("this host has no boot id to tell a reboot by, so it did not reboot".into());
+    };
+    // Written first: the reboot may come before this function returns.
+    state
+        .set_pending_reboot(&crate::state::PendingReboot {
+            job: job.clone(),
+            report: done.clone(),
+            boot_id_before: boot_id,
+        })
+        .map_err(|e| format!("could not record the pending reboot, so did not reboot: {e}"))?;
+    tracing::warn!(job = %job.id, delay_s = REBOOT_DELAY_S, "rebooting to finish the job");
+    if let Err(error) = rebooter.reboot(REBOOT_DELAY_S, REBOOT_MESSAGE).await {
+        let _ = state.take_pending_reboot();
+        return Err(format!("could not reboot: {error:#}"));
+    }
+    Ok(())
+}
+
+/// Run the checks and shape them for the report.
+async fn checks_reported(job: &Job, checks: &[Check]) -> Vec<HealthCheckReport> {
+    health::run_all(checks)
+        .await
+        .into_iter()
+        .map(|r| {
+            if !r.passed {
+                tracing::warn!(job = %job.id, check = %r.name, detail = ?r.detail, "health check failed");
+            }
+            HealthCheckReport {
+                name: r.name,
+                passed: r.passed,
+                duration_ms: u64::try_from(r.duration.as_millis()).unwrap_or(u64::MAX),
+                detail: r.detail,
+            }
+        })
+        .collect()
 }
 
 /// What the backend's answer means for the report.
@@ -525,6 +725,16 @@ mod tests {
         outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
         extra_toml: &str,
     ) -> World {
+        world_allowing(mode, outcome, extra_toml, "\"apply_patch\"")
+    }
+
+    /// As [`world_with`], with the `[permissions] allow` list given.
+    fn world_allowing(
+        mode: &str,
+        outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
+        extra_toml: &str,
+        allow: &str,
+    ) -> World {
         let rng = aws_lc_rs::rand::SystemRandom::new();
         let key =
             Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
@@ -554,7 +764,7 @@ mod tests {
             })
             .unwrap();
         let config = AgentConfig::from_toml(&format!(
-            "server = \"https://agents.example\"\nmode = \"{mode}\"\n[permissions]\nallow = [\"apply_patch\"]\n{extra_toml}"
+            "server = \"https://agents.example\"\nmode = \"{mode}\"\n[permissions]\nallow = [{allow}]\n{extra_toml}"
         ))
         .unwrap();
         let gateway = Arc::new(Gateway::default());
@@ -743,5 +953,203 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         let done = completed(&w).await;
         assert_eq!(done.status, JobStatus::RejectedByHost);
         assert!(done.health_checks.is_empty());
+    }
+
+    /* ------------------------------------------------- rebooting (DAWG-103) */
+
+    /// A host that never really reboots: it counts the requests, and a test
+    /// "reboots" it by changing the boot id.
+    struct FakeRebooter {
+        boot_id: std::sync::Mutex<String>,
+        requested: AtomicUsize,
+        still_required: bool,
+        fail: bool,
+    }
+
+    impl FakeRebooter {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                boot_id: std::sync::Mutex::new("boot-1".into()),
+                requested: AtomicUsize::new(0),
+                still_required: false,
+                fail: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Rebooter for FakeRebooter {
+        fn boot_id(&self) -> Option<String> {
+            Some(self.boot_id.lock().unwrap().clone())
+        }
+        async fn reboot_required(&self) -> bool {
+            self.still_required
+        }
+        async fn reboot(&self, delay_s: u64, message: &str) -> anyhow::Result<()> {
+            assert!(delay_s >= 60, "rebooted without warning anybody");
+            assert!(!message.is_empty());
+            self.requested.fetch_add(1, Ordering::SeqCst);
+            anyhow::ensure!(!self.fail, "shutdown: permission denied");
+            Ok(())
+        }
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn needs_reboot(plan: &ApplyPlan) -> updawg_backends::Result<ApplyOutcome> {
+        let mut outcome = succeeds(plan)?;
+        outcome.reboot_required = true;
+        Ok(outcome)
+    }
+
+    const ALLOW_REBOOT: &str = "\"apply_patch\", \"reboot\"";
+
+    fn rebooting(w: &World, policy: RebootPolicy) -> Job {
+        job(w, |j| {
+            if let JobSpec::ApplyUpdates(apply) = &mut j.spec {
+                apply.reboot = policy;
+            }
+        })
+    }
+
+    /// Wait for the background run to either report or ask to reboot.
+    async fn settled(w: &World, rebooter: &FakeRebooter) {
+        for _ in 0..200 {
+            if !w.gateway.completes.lock().unwrap().is_empty()
+                || rebooter.requested.load(Ordering::SeqCst) > 0
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the job neither reported nor rebooted");
+    }
+
+    #[tokio::test]
+    async fn a_job_that_needs_a_reboot_reboots_and_reports_from_the_other_side() {
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", needs_reboot, CHECKS, ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(rebooting(&w, RebootPolicy::IfRequired))
+            .await;
+        settled(&w, &rebooter).await;
+
+        // Asked to reboot, and nothing reported yet: the report is waiting
+        // for the host to come back.
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 1);
+        assert!(w.gateway.completes.lock().unwrap().is_empty());
+
+        // The host reboots; the agent starts again.
+        *rebooter.boot_id.lock().unwrap() = "boot-2".into();
+        w.executor.resume_after_reboot().await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded);
+        assert_eq!(done.changes[0].to, "3.5.1-2");
+        assert!(!done.reboot_required, "the reboot happened");
+        assert_eq!(
+            done.health_checks.len(),
+            2,
+            "the checks ran again after the reboot"
+        );
+
+        // And only once.
+        w.executor.resume_after_reboot().await;
+        assert_eq!(w.gateway.completes.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_restarted_without_a_reboot_says_so_rather_than_waiting_for_ever() {
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", needs_reboot, "", ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(rebooting(&w, RebootPolicy::Always))
+            .await;
+        settled(&w, &rebooter).await;
+
+        // Same boot id: the agent restarted, the host did not.
+        w.executor.resume_after_reboot().await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Failed);
+        assert!(done.error.unwrap().contains("has not rebooted"));
+    }
+
+    #[tokio::test]
+    async fn if_required_does_not_reboot_a_host_that_does_not_need_it() {
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", succeeds, "", ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(rebooting(&w, RebootPolicy::IfRequired))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded);
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    /// Local configuration wins: a job that may reboot is refused whole on a
+    /// host that does not permit reboots, and nothing is installed.
+    #[tokio::test]
+    async fn a_host_that_does_not_permit_reboots_refuses_a_job_that_might() {
+        let rebooter = FakeRebooter::new();
+        let mut w = world_with("managed", needs_reboot, "");
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(rebooting(&w, RebootPolicy::IfRequired))
+            .await;
+        let why = refusals(&w);
+        assert_eq!(why.len(), 1);
+        assert!(why[0].contains("does not permit reboot"), "{why:?}");
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_install_is_never_followed_by_a_reboot() {
+        fn fails(_plan: &ApplyPlan) -> updawg_backends::Result<ApplyOutcome> {
+            Err(BackendError::CommandFailed {
+                tool: "apt-get",
+                status: 100,
+                stderr: "dpkg was interrupted".into(),
+            })
+        }
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", fails, "", ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(rebooting(&w, RebootPolicy::Always))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Failed);
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_reboot_that_cannot_be_asked_for_is_reported_and_leaves_nothing_pending() {
+        let rebooter = Arc::new(FakeRebooter {
+            fail: true,
+            ..Arc::try_unwrap(FakeRebooter::new()).ok().unwrap()
+        });
+        let mut w = world_allowing("managed", needs_reboot, "", ALLOW_REBOOT);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(rebooting(&w, RebootPolicy::Always))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Failed);
+        assert!(done.error.unwrap().contains("could not reboot"));
+        assert!(w.executor.state.take_pending_reboot().unwrap().is_none());
     }
 }

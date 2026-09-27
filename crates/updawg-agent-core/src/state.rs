@@ -66,11 +66,17 @@ pub struct Identity {
     pub enrolled_at: String,
 }
 
-/// What the agent was doing when it rebooted, so it can finish the report.
+/// What the agent was doing when it rebooted, so it can finish the report
+/// (DAWG-103).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingReboot {
-    pub job_id: JobId,
-    pub started_at: String,
+    /// The job, as signed, which is what the report is addressed to.
+    pub job: updawg_protocol::Job,
+    /// Everything but the ending: changes, the checks from before the
+    /// reboot, and when it started.
+    pub report: updawg_protocol::JobComplete,
+    /// `/proc/sys/kernel/random/boot_id` when the reboot was asked for. A
+    /// different one afterwards is the proof it happened.
     pub boot_id_before: String,
 }
 
@@ -445,8 +451,26 @@ mod tests {
         let (state, dir) = temp_state();
         state
             .set_pending_reboot(&PendingReboot {
-                job_id: JobId::new("job_reboot"),
-                started_at: "2026-09-19T01:00:00Z".into(),
+                job: updawg_protocol::Job {
+                    id: JobId::new("job_reboot"),
+                    host_id: HostId::new("hst_a"),
+                    spec: updawg_protocol::JobSpec::RefreshInventory,
+                    not_before: None,
+                    expires_at: chrono::Utc::now(),
+                    key_id: updawg_protocol::SigningKeyId::new("sk_a"),
+                    signature: String::new(),
+                },
+                report: updawg_protocol::JobComplete {
+                    status: updawg_protocol::JobStatus::Succeeded,
+                    started_at: chrono::Utc::now(),
+                    finished_at: chrono::Utc::now(),
+                    snapshot_id: None,
+                    changes: vec![],
+                    health_checks: vec![],
+                    reboot_required: true,
+                    inventory_hash: None,
+                    error: None,
+                },
                 boot_id_before: "b81e".into(),
             })
             .unwrap();
@@ -456,7 +480,9 @@ mod tests {
             .take_pending_reboot()
             .unwrap()
             .expect("should survive the reboot");
-        assert_eq!(taken.job_id.as_str(), "job_reboot");
+        assert_eq!(taken.job.id.as_str(), "job_reboot");
+        assert!(taken.report.reboot_required);
+        assert_eq!(taken.boot_id_before, "b81e");
         // Taken, not read: a second call finds nothing.
         assert!(reopened.take_pending_reboot().unwrap().is_none());
         fs::remove_dir_all(dir).ok();
