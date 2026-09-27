@@ -158,6 +158,37 @@ const fn default_expect_status() -> u16 {
 }
 
 impl HealthCheck {
+    /// What the executor runs for this entry (DAWG-104).
+    #[must_use]
+    pub fn to_check(&self) -> updawg_executor::health::Check {
+        use updawg_executor::health::{Check, CheckKind};
+        let (kind, timeout) = match self {
+            Self::Systemd { unit, timeout, .. } => {
+                (CheckKind::Systemd { unit: unit.clone() }, timeout)
+            }
+            Self::Http {
+                url,
+                expect_status,
+                timeout,
+                ..
+            } => (
+                CheckKind::Http {
+                    url: url.clone(),
+                    expect_status: *expect_status,
+                },
+                timeout,
+            ),
+            Self::Command { argv, timeout, .. } => {
+                (CheckKind::Command { argv: argv.clone() }, timeout)
+            }
+        };
+        Check {
+            name: self.name().to_owned(),
+            kind,
+            timeout: timeout.0,
+        }
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         match self {

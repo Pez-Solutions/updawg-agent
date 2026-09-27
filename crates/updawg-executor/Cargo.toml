@@ -13,8 +13,13 @@ updawg-backends.workspace = true
 updawg-snapshots.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+# Health checks: `http` checks, and `kill_on_drop` processes for the others.
+reqwest.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
 
 [lints]
 workspace = true

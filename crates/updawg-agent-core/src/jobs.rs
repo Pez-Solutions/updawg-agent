@@ -31,8 +31,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use updawg_backends::{ApplyPlan, BackendError, LogSink, PackageBackend, Pin};
 use updawg_crypto::PinnedKeys;
+use updawg_executor::health::{self, Check};
 use updawg_protocol::{
-    Job, JobAck, JobComplete, JobStatus, PackageChange,
+    HealthCheckReport, Job, JobAck, JobComplete, JobStatus, PackageChange,
     job::{JobSpec, RebootPolicy},
 };
 
@@ -265,11 +266,17 @@ impl crate::checkin::JobSink for Executor {
             self.inventory.clone(),
             Arc::clone(&self.running),
         );
+        let checks: Vec<Check> = self
+            .config
+            .health_checks
+            .iter()
+            .map(crate::config::HealthCheck::to_check)
+            .collect();
         // In the background: an install can take minutes, and the check-in
         // that delivered it must not wait for it.
         tokio::spawn(async move {
             let _one_at_a_time = running.lock().await;
-            let done = run(&job, &plan, backend.as_ref()).await;
+            let done = run(&job, &plan, backend.as_ref(), &checks).await;
             if let Err(error) = reporter.complete(&job, &done).await {
                 tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the job went");
             }
@@ -290,10 +297,53 @@ impl LogSink for Logged<'_> {
     }
 }
 
-/// Run the plan and say how it went.
-async fn run(job: &Job, plan: &ApplyPlan, backend: &dyn PackageBackend) -> JobComplete {
+/// Run the plan, then the host's health checks, and say how it went.
+///
+/// ⚠️ **A failed health check does not change the job's status** (DAWG-104).
+/// "The packages installed and nginx is down" and "the packages did not
+/// install" are different facts, and the report keeps them apart: the status
+/// is the job's, the checks are the host's. The server halts the rollout on
+/// either.
+///
+/// Checks run after a success and after a failure — a failed install can
+/// leave half the packages changed — but not after a refusal, which changed
+/// nothing.
+async fn run(
+    job: &Job,
+    plan: &ApplyPlan,
+    backend: &dyn PackageBackend,
+    checks: &[Check],
+) -> JobComplete {
     let started_at = Utc::now();
     let outcome = backend.apply(plan, &Logged(job)).await;
+    let mut done = report(job, started_at, outcome);
+    if done.status != JobStatus::RejectedByHost {
+        done.health_checks = health::run_all(checks)
+            .await
+            .into_iter()
+            .map(|r| {
+                if !r.passed {
+                    tracing::warn!(job = %job.id, check = %r.name, detail = ?r.detail, "health check failed");
+                }
+                HealthCheckReport {
+                    name: r.name,
+                    passed: r.passed,
+                    duration_ms: u64::try_from(r.duration.as_millis()).unwrap_or(u64::MAX),
+                    detail: r.detail,
+                }
+            })
+            .collect();
+        done.finished_at = Utc::now();
+    }
+    done
+}
+
+/// What the backend's answer means for the report.
+fn report(
+    job: &Job,
+    started_at: DateTime<Utc>,
+    outcome: updawg_backends::Result<updawg_backends::ApplyOutcome>,
+) -> JobComplete {
     let finished_at = Utc::now();
     match outcome {
         Ok(outcome) => {
@@ -466,6 +516,15 @@ mod tests {
         mode: &str,
         outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
     ) -> World {
+        world_with(mode, outcome, "")
+    }
+
+    /// As [`world`], with more `agent.toml` appended — health checks, say.
+    fn world_with(
+        mode: &str,
+        outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
+        extra_toml: &str,
+    ) -> World {
         let rng = aws_lc_rs::rand::SystemRandom::new();
         let key =
             Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
@@ -495,7 +554,7 @@ mod tests {
             })
             .unwrap();
         let config = AgentConfig::from_toml(&format!(
-            "server = \"https://agents.example\"\nmode = \"{mode}\"\n[permissions]\nallow = [\"apply_patch\"]\n"
+            "server = \"https://agents.example\"\nmode = \"{mode}\"\n[permissions]\nallow = [\"apply_patch\"]\n{extra_toml}"
         ))
         .unwrap();
         let gateway = Arc::new(Gateway::default());
@@ -641,5 +700,48 @@ mod tests {
         assert_eq!(done.status, JobStatus::RejectedByHost);
         assert!(done.changes.is_empty());
         assert!(done.error.unwrap().contains("3.5.0-9"));
+    }
+
+    const CHECKS: &str = r#"
+[[health_check]]
+name = "always fine"
+type = "command"
+argv = ["true"]
+
+[[health_check]]
+name = "the app"
+type = "command"
+argv = ["sh", "-c", "echo app is down >&2; exit 1"]
+"#;
+
+    /// DAWG-104: the checks the host's own config names run after the job,
+    /// in order, and a failing one is reported without changing the job's
+    /// status — the packages did install.
+    #[tokio::test]
+    async fn health_checks_run_after_a_job_and_a_failure_is_reported_beside_it() {
+        let w = world_with("managed", succeeds, CHECKS);
+        w.executor.deliver(job(&w, |_| {})).await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded);
+        let checks: Vec<(&str, bool)> = done
+            .health_checks
+            .iter()
+            .map(|c| (c.name.as_str(), c.passed))
+            .collect();
+        assert_eq!(checks, [("always fine", true), ("the app", false)]);
+        assert_eq!(
+            done.health_checks[1].detail.as_deref(),
+            Some("exited 1: app is down")
+        );
+    }
+
+    /// A refusal changed nothing, so there is nothing to check.
+    #[tokio::test]
+    async fn a_refused_job_runs_no_health_checks() {
+        let w = world_with("managed", refuses, CHECKS);
+        w.executor.deliver(job(&w, |_| {})).await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::RejectedByHost);
+        assert!(done.health_checks.is_empty());
     }
 }
