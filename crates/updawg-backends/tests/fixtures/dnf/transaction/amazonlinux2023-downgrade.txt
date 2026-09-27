@@ -1,0 +1,14 @@
+Last metadata expiration check: 0:00:09 ago on Sun Sep 27 08:38:29 2026.
+Dependencies resolved.
+================================================================================
+ Package                      Arch    Version                 Repository   Size
+================================================================================
+Downgrading:
+ openssl-fips-provider-latest aarch64 1:3.5.7-2.amzn2023.0.1  amazonlinux 744 k
+ openssl-libs                 aarch64 1:3.5.7-2.amzn2023.0.1  amazonlinux 2.2 M
+
+Transaction Summary
+================================================================================
+Downgrade  2 Packages
+
+Total download size: 2.9 M

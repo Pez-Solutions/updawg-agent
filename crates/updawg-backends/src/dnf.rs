@@ -70,7 +70,8 @@
 //! `updateinfo` is the only thing that does.
 
 use crate::{
-    ApplyOutcome, ApplyPlan, BackendError, LogSink, PackageBackend, PendingChanges, Result,
+    ApplyOutcome, ApplyPlan, BackendError, Change, LogSink, PackageBackend, PendingChanges, Pin,
+    Result, apt::Ran,
 };
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
@@ -193,12 +194,60 @@ impl PackageBackend for DnfBackend {
             .collect())
     }
 
-    async fn apply(&self, _plan: &ApplyPlan, _log: &dyn LogSink) -> Result<ApplyOutcome> {
-        // Not built yet for rpm hosts. A refusal, not a failure: nothing on the
-        // host changed, and the proposal halts saying so.
-        Err(BackendError::Refused(
-            "applying updates is not built for dnf hosts yet".to_owned(),
-        ))
+    /// Install exactly the approved versions, or nothing (DAWG-102).
+    ///
+    /// The same four steps as [`crate::apt`], and the first three change
+    /// nothing:
+    ///
+    /// 1. **What is installed now**, from `rpm -q`. Each pin must be at its
+    ///    `from` — or already at its `to`, which is done and skipped.
+    /// 2. **What dnf would do**, from `dnf install --assumeno` with the exact
+    ///    command line. It must upgrade exactly the remaining pins to exactly
+    ///    their versions and nothing else. On Rocky 9 asking for
+    ///    `openssl-libs` alone upgrades `openssl` and `openssl-fips-provider`
+    ///    too, and that is refused: nobody approved them.
+    /// 3. **Do it**, with the same command line and `-y`. Weak dependencies
+    ///    are off on both, so a recommended package is never pulled in.
+    /// 4. **What is installed after.** Each pin must now be at its `to`.
+    async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome> {
+        let before = installed_versions(&plan.packages).await?;
+        let todo = still_to_do(&plan.packages, &before)?;
+        if todo.is_empty() {
+            log.line("every approved version is already installed; nothing to do");
+            return Ok(ApplyOutcome {
+                changed: vec![],
+                reboot_required: reboot_required().await,
+            });
+        }
+
+        let simulated = run_status("dnf", &simulate_args(&todo)).await?;
+        check_transaction(&todo, &simulated)?;
+
+        log.line(&format!(
+            "installing {} package(s) at their approved versions",
+            todo.len()
+        ));
+        let installed = run_status("dnf", &install_args(&todo)).await?;
+        for line in crate::apt::as_shown(&installed.stdout) {
+            log.line(line);
+        }
+        if installed.code != 0 {
+            if is_locked(&installed.stderr) {
+                return Err(BackendError::Locked);
+            }
+            return Err(BackendError::CommandFailed {
+                tool: "dnf",
+                status: installed.code,
+                stderr: installed.stderr,
+            });
+        }
+
+        let after = installed_versions(&plan.packages).await?;
+        let changed = changes(&todo, &after)?;
+        Ok(ApplyOutcome {
+            changed,
+            reboot_required: reboot_required().await,
+        })
     }
 }
 
@@ -747,6 +796,315 @@ fn hold_name(entry: &str) -> Option<String> {
         None => entry.split('*').next()?.trim_end_matches(['-', '.']),
     };
     (!name.is_empty()).then(|| name.to_owned())
+}
+
+/* ------------------------------------------------------------- applying */
+
+/// On the simulation and the install alike, so the one checked is the one run.
+///
+/// Weak dependencies off: on Rocky 8, upgrading `openssl-libs` otherwise
+/// installs `openssl-pkcs11` because something recommends it.
+const DNF_OPTIONS: &[&str] = &["--setopt=install_weak_deps=False"];
+
+/// `name.arch`, which is how `rpm -q` and a transaction table both key a
+/// package, and which keeps two architectures of one package apart.
+fn key(name: &str, arch: &str) -> String {
+    format!("{name}.{arch}")
+}
+
+/// `openssl-libs-1:3.5.5-5.el9_8.aarch64`: the exact package dnf is asked for.
+#[must_use]
+pub fn nevra(pin: &Pin) -> String {
+    format!("{}-{}.{}", pin.name, pin.to, pin.arch)
+}
+
+/// The exact `dnf install` command line for these pins.
+#[must_use]
+pub fn install_args(todo: &[&Pin]) -> Vec<String> {
+    let mut args = vec!["install".to_owned(), "-y".to_owned()];
+    args.extend(DNF_OPTIONS.iter().map(|&o| o.to_owned()));
+    args.extend(todo.iter().map(|p| nevra(p)));
+    args
+}
+
+/// The same command line, answered "no" at the prompt: dnf resolves the
+/// transaction, prints it, and stops. It exits 1 whatever it decided, so the
+/// output is the only answer.
+#[must_use]
+pub fn simulate_args(todo: &[&Pin]) -> Vec<String> {
+    let mut args = install_args(todo);
+    "--assumeno".clone_into(&mut args[1]);
+    args
+}
+
+/// `rpm -q --qf` for the installed versions of these packages, keyed
+/// `name.arch`, spelled as [`RPM_QF`] spells them so they compare equal to
+/// what the server was sent.
+const RPM_Q_QF: &str = "%{NAME}.%{ARCH}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\n";
+
+/// Every installed version of each package. More than one is normal for an
+/// install-only package such as `kernel`.
+#[must_use]
+pub fn parse_versions(out: &str) -> BTreeMap<String, Vec<String>> {
+    let mut versions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Lines without a tab are rpm's "package x is not installed".
+    for (name, version) in out.lines().filter_map(|l| l.split_once('\t')) {
+        versions
+            .entry(name.to_owned())
+            .or_default()
+            .push(version.trim().to_owned());
+    }
+    versions
+}
+
+/// The pins not already at their approved version, or a refusal naming the
+/// first one at neither end.
+///
+/// # Errors
+/// [`BackendError::Refused`] when a package moved since the approval.
+pub fn still_to_do<'a>(
+    pins: &'a [Pin],
+    installed: &BTreeMap<String, Vec<String>>,
+) -> Result<Vec<&'a Pin>> {
+    let mut todo = Vec::new();
+    for pin in pins {
+        let have = installed.get(&key(&pin.name, &pin.arch));
+        match have {
+            Some(v) if v.contains(&pin.to) => {}
+            Some(v) if v.contains(&pin.from) => todo.push(pin),
+            Some(v) => {
+                return Err(BackendError::Refused(format!(
+                    "{} is at {}, and the job was approved for {} to {}",
+                    pin.name,
+                    v.join(", "),
+                    pin.from,
+                    pin.to
+                )));
+            }
+            None => {
+                return Err(BackendError::Refused(format!(
+                    "{} is not installed, and the job was approved to upgrade it from {}",
+                    pin.name, pin.from
+                )));
+            }
+        }
+    }
+    Ok(todo)
+}
+
+/// One row of a dnf transaction table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionRow {
+    /// The heading it sits under, without the colon: `Upgrading`,
+    /// `Installing dependencies`, `Downgrading`, `Removing`, … — or
+    /// `Replacing` for the indented `replacing` lines under an obsoletion.
+    pub section: String,
+    pub name: String,
+    pub arch: String,
+    pub version: String,
+}
+
+/// The table `dnf install --assumeno` prints.
+///
+/// `check-update`'s table wraps a long name onto its own line (see the module
+/// docs). This one, with output piped, **widened instead** in every capture —
+/// `tests/fixtures/dnf/transaction/rocky9-long-names.txt` is 87 columns. A
+/// lone name followed by the rest of its row is still read as one row, in
+/// case some dnf does wrap it; that path has no real capture behind it.
+#[must_use]
+pub fn parse_transaction(out: &str) -> Vec<TransactionRow> {
+    let mut rows = Vec::new();
+    let mut section: Option<String> = None;
+    let mut wrapped: Option<String> = None;
+    for line in out.lines() {
+        if line.starts_with("Transaction Summary") {
+            break;
+        }
+        if !line.starts_with(' ') {
+            // A heading, or the table's own frame and column titles.
+            section = line.strip_suffix(':').map(str::to_owned);
+            wrapped = None;
+            continue;
+        }
+        let Some(current) = section.as_deref() else {
+            continue;
+        };
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.first() == Some(&"replacing") {
+            // `     replacing  name.arch  version`
+            if let (Some(nevr), Some(version)) = (words.get(1), words.get(2))
+                && let Some((name, arch)) = nevr.rsplit_once('.')
+            {
+                rows.push(TransactionRow {
+                    section: "Replacing".to_owned(),
+                    name: name.to_owned(),
+                    arch: arch.to_owned(),
+                    version: (*version).to_owned(),
+                });
+            }
+            continue;
+        }
+        let words: Vec<&str> = match (wrapped.take(), words.as_slice()) {
+            (None, [name]) => {
+                wrapped = Some((*name).to_owned());
+                continue;
+            }
+            (Some(name), rest) => {
+                let mut joined = vec![name];
+                joined.extend(rest.iter().map(|w| (*w).to_owned()));
+                rows.extend(row(
+                    current,
+                    &joined.iter().map(String::as_str).collect::<Vec<_>>(),
+                ));
+                continue;
+            }
+            (None, words) => words.to_vec(),
+        };
+        rows.extend(row(current, &words));
+    }
+    rows
+}
+
+fn row(section: &str, words: &[&str]) -> Option<TransactionRow> {
+    let [name, arch, version, ..] = words else {
+        return None;
+    };
+    Some(TransactionRow {
+        section: section.to_owned(),
+        name: (*name).to_owned(),
+        arch: (*arch).to_owned(),
+        version: (*version).to_owned(),
+    })
+}
+
+/// Whether dnf's plan is exactly the approved pins and nothing else.
+///
+/// # Errors
+/// [`BackendError::Refused`] naming what differs.
+pub fn check_transaction(todo: &[&Pin], simulated: &Ran) -> Result<()> {
+    // `--assumeno` exits 1 whether it resolved or not; an error says so in
+    // words. Almost always a version the repositories no longer carry.
+    if let Some(error) = simulated
+        .stderr
+        .lines()
+        .chain(simulated.stdout.lines())
+        .find(|l| l.starts_with("Error:"))
+    {
+        return Err(BackendError::Refused(format!(
+            "the approved versions cannot be installed: {}",
+            error.trim_start_matches("Error:").trim()
+        )));
+    }
+    let wanted: BTreeMap<String, &str> = todo
+        .iter()
+        .map(|p| (key(&p.name, &p.arch), p.to.as_str()))
+        .collect();
+    let mut seen = BTreeSet::new();
+    for row in parse_transaction(&simulated.stdout) {
+        let k = key(&row.name, &row.arch);
+        // `Installing` rather than `Upgrading` is how an install-only package
+        // such as `kernel` arrives: alongside, not in place.
+        let approved = matches!(row.section.as_str(), "Upgrading" | "Installing")
+            && wanted.get(&k) == Some(&row.version.as_str());
+        if !approved {
+            return Err(BackendError::Refused(format!(
+                "installing the approved versions would also mean {} {} {}, which nobody approved",
+                row.section.to_lowercase(),
+                row.name,
+                row.version
+            )));
+        }
+        seen.insert(k);
+    }
+    if let Some(pin) = todo.iter().find(|p| !seen.contains(&key(&p.name, &p.arch))) {
+        return Err(BackendError::Refused(format!(
+            "dnf would not upgrade {} to {}",
+            pin.name, pin.to
+        )));
+    }
+    Ok(())
+}
+
+/// What changed, as rpm reports it afterwards. Each pin must be at its `to`.
+///
+/// # Errors
+/// [`BackendError::CommandFailed`] when dnf said it worked and rpm disagrees.
+pub fn changes(todo: &[&Pin], after: &BTreeMap<String, Vec<String>>) -> Result<Vec<Change>> {
+    let mut changed = Vec::new();
+    for pin in todo {
+        let now = after.get(&key(&pin.name, &pin.arch));
+        if !now.is_some_and(|v| v.contains(&pin.to)) {
+            return Err(BackendError::CommandFailed {
+                tool: "dnf",
+                status: 0,
+                stderr: format!(
+                    "{} is at {} after installing, not {}",
+                    pin.name,
+                    now.map(|v| v.join(", ")).unwrap_or_default(),
+                    pin.to
+                ),
+            });
+        }
+        changed.push(Change {
+            name: pin.name.clone(),
+            arch: pin.arch.clone(),
+            from: pin.from.clone(),
+            to: pin.to.clone(),
+        });
+    }
+    Ok(changed)
+}
+
+/// The `rpm -q` command line for these pins' installed versions, read by
+/// [`parse_versions`].
+#[must_use]
+pub fn query_args(pins: &[Pin]) -> Vec<String> {
+    let mut args = vec!["-q".to_owned(), "--qf".to_owned(), RPM_Q_QF.to_owned()];
+    args.extend(pins.iter().map(|p| key(&p.name, &p.arch)));
+    args
+}
+
+async fn installed_versions(pins: &[Pin]) -> Result<BTreeMap<String, Vec<String>>> {
+    // Exit 1 means one of them is not installed, which is an answer.
+    let ran = run_status("rpm", &query_args(pins)).await?;
+    Ok(parse_versions(&ran.stdout))
+}
+
+/// `needs-restarting -r`: exit 1 means a reboot is needed. Missing or
+/// anything else is "no"; the inventory uploaded after every job carries the
+/// collector's fuller answer.
+async fn reboot_required() -> bool {
+    tokio::process::Command::new("needs-restarting")
+        .arg("-r")
+        .output()
+        .await
+        .is_ok_and(|o| o.status.code() == Some(1))
+}
+
+fn is_locked(stderr: &str) -> bool {
+    stderr.contains("Failed to obtain the transaction lock") || stderr.contains("to finish.")
+}
+
+/// A command and what it said, whatever its exit status.
+async fn run_status(tool: &'static str, args: &[String]) -> Result<Ran> {
+    let output = tokio::process::Command::new(tool)
+        .args(args)
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                BackendError::ToolMissing { tool }
+            } else {
+                BackendError::Io(e)
+            }
+        })?;
+    Ok(Ran {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 /* ------------------------------------------------------------- the shelling */

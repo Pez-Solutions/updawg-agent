@@ -1,0 +1,17 @@
+Dependencies resolved.
+=======================================================================================
+ Package                                     Arch     Version          Repo        Size
+=======================================================================================
+Installing:
+ NetworkManager-config-connectivity-redhat   noarch   1:1.54.3-5.el9_8 appstream   16 k
+ NetworkManager-dispatcher-routing-rules     noarch   1:1.54.3-5.el9_8 appstream   16 k
+ ansible-collection-redhat-rhel_mgmt         noarch   1.1.0-2.el9      appstream   46 k
+Installing dependencies:
+ ipcalc                                      aarch64  1.0.0-5.el9      baseos      40 k
+
+Transaction Summary
+=======================================================================================
+Install  4 Packages
+
+Total download size: 119 k
+Installed size: 361 k

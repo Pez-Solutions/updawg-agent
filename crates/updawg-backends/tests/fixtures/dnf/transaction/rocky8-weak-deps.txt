@@ -1,0 +1,18 @@
+Last metadata expiration check: 0:00:01 ago on Sun Sep 27 08:38:26 2026.
+Dependencies resolved.
+================================================================================
+ Package              Architecture  Version                  Repository    Size
+================================================================================
+Upgrading:
+ openssl-libs         aarch64       1:1.1.1k-16.el8_10       baseos       1.3 M
+Installing dependencies:
+ openssl              aarch64       1:1.1.1k-16.el8_10       baseos       691 k
+Installing weak dependencies:
+ openssl-pkcs11       aarch64       0.4.10-3.el8             baseos        64 k
+
+Transaction Summary
+================================================================================
+Install  2 Packages
+Upgrade  1 Package
+
+Total download size: 2.1 M

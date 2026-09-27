@@ -40,6 +40,7 @@
 )]
 
 use std::collections::BTreeSet;
+use updawg_backends::dnf;
 use updawg_backends::dnf::{
     AdvisoryKind, attach_advisories, distro_name, parse_holds, parse_installed, parse_obsoletes,
     parse_repositories, parse_updateinfo, parse_upgrades, repo_is_distro, security_packages,
@@ -856,4 +857,191 @@ fn the_kind_of_an_advisory_is_lowercase_and_verbatim() {
             assert_eq!(spelled, other);
         }
     }
+}
+
+/* ----------------------------------------- applying: the transaction check */
+
+// `dnf install --assumeno <exact nevras>`, captured from rockylinux:9,
+// rockylinux:8 and amazonlinux:2023 on 2026-09-27 with LC_ALL=C and stdout
+// piped, which is how the agent runs it. `--assumeno` exits 1 every time.
+
+fn transaction(name: &str) -> &'static str {
+    match name {
+        "rocky9-openssl-libs" => include_str!("fixtures/dnf/transaction/rocky9-openssl-libs.txt"),
+        "rocky9-missing" => include_str!("fixtures/dnf/transaction/rocky9-missing.txt"),
+        "rocky9-missing.stderr" => {
+            include_str!("fixtures/dnf/transaction/rocky9-missing.stderr.txt")
+        }
+        "rocky8-weak-deps" => include_str!("fixtures/dnf/transaction/rocky8-weak-deps.txt"),
+        "amazonlinux2023-downgrade" => {
+            include_str!("fixtures/dnf/transaction/amazonlinux2023-downgrade.txt")
+        }
+        "rocky9-long-names" => include_str!("fixtures/dnf/transaction/rocky9-long-names.txt"),
+        other => panic!("no fixture {other}"),
+    }
+}
+
+fn ran(stdout: &str, stderr: &str) -> updawg_backends::apt::Ran {
+    updawg_backends::apt::Ran {
+        code: 1,
+        stdout: stdout.to_owned(),
+        stderr: stderr.to_owned(),
+    }
+}
+
+fn pin(name: &str, arch: &str, from: &str, to: &str) -> updawg_backends::Pin {
+    updawg_backends::Pin {
+        name: name.into(),
+        arch: arch.into(),
+        from: from.into(),
+        to: to.into(),
+    }
+}
+
+fn refusal(result: updawg_backends::Result<()>) -> String {
+    match result {
+        Err(updawg_backends::BackendError::Refused(why)) => why,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+fn openssl(name: &str) -> updawg_backends::Pin {
+    pin(name, "aarch64", "1:3.5.5-2.el9_8", "1:3.5.5-5.el9_8")
+}
+
+#[test]
+fn a_transaction_that_is_exactly_the_pins_passes() {
+    let pins = [
+        openssl("openssl"),
+        openssl("openssl-fips-provider"),
+        openssl("openssl-libs"),
+    ];
+    let todo: Vec<&updawg_backends::Pin> = pins.iter().collect();
+    dnf::check_transaction(
+        &todo,
+        &ran(transaction("rocky9-openssl-libs"), "Operation aborted.\n"),
+    )
+    .expect("exactly what was approved");
+}
+
+#[test]
+fn asking_for_one_package_and_getting_three_is_refused() {
+    // The real Rocky 9 behaviour: openssl-libs at this version needs openssl
+    // and openssl-fips-provider at it too. Nobody approved those.
+    let pins = [openssl("openssl-libs")];
+    let todo: Vec<&updawg_backends::Pin> = pins.iter().collect();
+    let why = refusal(dnf::check_transaction(
+        &todo,
+        &ran(transaction("rocky9-openssl-libs"), ""),
+    ));
+    assert!(why.contains("upgrading openssl "), "{why}");
+    assert!(why.contains("nobody approved"), "{why}");
+}
+
+#[test]
+fn a_version_the_repositories_no_longer_carry_is_refused_with_dnfs_reason() {
+    let pins = [pin(
+        "openssl-libs",
+        "aarch64",
+        "1:3.5.5-2.el9_8",
+        "1:3.5.5-99.el9_8",
+    )];
+    let todo: Vec<&updawg_backends::Pin> = pins.iter().collect();
+    let why = refusal(dnf::check_transaction(
+        &todo,
+        &ran(
+            transaction("rocky9-missing"),
+            transaction("rocky9-missing.stderr"),
+        ),
+    ));
+    assert!(why.contains("Unable to find a match"), "{why}");
+}
+
+#[test]
+fn a_dependency_or_a_weak_dependency_is_refused() {
+    let pins = [pin(
+        "openssl-libs",
+        "aarch64",
+        "1:1.1.1k-12.el8_9",
+        "1:1.1.1k-16.el8_10",
+    )];
+    let todo: Vec<&updawg_backends::Pin> = pins.iter().collect();
+    let why = refusal(dnf::check_transaction(
+        &todo,
+        &ran(transaction("rocky8-weak-deps"), ""),
+    ));
+    assert!(why.contains("installing dependencies openssl "), "{why}");
+}
+
+#[test]
+fn a_downgrade_is_refused() {
+    let pins = [pin(
+        "openssl-libs",
+        "aarch64",
+        "1:3.5.7-2.amzn2023.0.2",
+        "1:3.5.7-2.amzn2023.0.1",
+    )];
+    let todo: Vec<&updawg_backends::Pin> = pins.iter().collect();
+    let why = refusal(dnf::check_transaction(
+        &todo,
+        &ran(transaction("amazonlinux2023-downgrade"), ""),
+    ));
+    assert!(
+        why.starts_with("installing the approved versions would also mean downgrading"),
+        "{why}"
+    );
+}
+
+#[test]
+fn every_section_and_row_is_read_including_long_names() {
+    let rows = dnf::parse_transaction(transaction("rocky9-long-names"));
+    let got: Vec<(&str, &str, &str)> = rows
+        .iter()
+        .map(|r| (r.section.as_str(), r.name.as_str(), r.version.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "Installing",
+                "NetworkManager-config-connectivity-redhat",
+                "1:1.54.3-5.el9_8"
+            ),
+            (
+                "Installing",
+                "NetworkManager-dispatcher-routing-rules",
+                "1:1.54.3-5.el9_8"
+            ),
+            (
+                "Installing",
+                "ansible-collection-redhat-rhel_mgmt",
+                "1.1.0-2.el9"
+            ),
+            ("Installing dependencies", "ipcalc", "1.0.0-5.el9"),
+        ]
+    );
+    // Rocky 8's three sections, one row each.
+    let sections: Vec<String> = dnf::parse_transaction(transaction("rocky8-weak-deps"))
+        .into_iter()
+        .map(|r| r.section)
+        .collect();
+    assert_eq!(
+        sections,
+        [
+            "Upgrading",
+            "Installing dependencies",
+            "Installing weak dependencies"
+        ]
+    );
+}
+
+#[test]
+fn installed_versions_keep_every_install_of_an_install_only_package() {
+    let versions = dnf::parse_versions(
+        "kernel.x86_64\t5.14.0-570.12.1.el9_6\nkernel.x86_64\t5.14.0-611.5.1.el9_7\n\
+         package jq.x86_64 is not installed\nopenssl-libs.aarch64\t1:3.5.5-2.el9_8\n",
+    );
+    assert_eq!(versions["kernel.x86_64"].len(), 2);
+    assert_eq!(versions["openssl-libs.aarch64"], ["1:3.5.5-2.el9_8"]);
+    assert!(!versions.contains_key("jq.x86_64"));
 }
