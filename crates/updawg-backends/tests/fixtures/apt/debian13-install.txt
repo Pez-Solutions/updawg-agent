@@ -1,0 +1,28 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libjq1 libonig5
+The following NEW packages will be installed:
+  jq libjq1 libonig5
+0 upgraded, 3 newly installed, 0 to remove and 0 not upgraded.
+Need to get 411 kB of archives.
+After this operation, 1299 kB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian trixie/main arm64 libonig5 arm64 6.9.9-1+b1 [181 kB]
+Get:2 http://deb.debian.org/debian-security trixie-security/main arm64 libjq1 arm64 1.7.1-6+deb13u4 [152 kB]
+Get:3 http://deb.debian.org/debian-security trixie-security/main arm64 jq arm64 1.7.1-6+deb13u4 [78.4 kB]
+Fetched 411 kB in 0s (7623 kB/s)
+Selecting previously unselected package libonig5:arm64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 4948 files and directories currently installed.)
+Preparing to unpack .../libonig5_6.9.9-1+b1_arm64.deb ...
+Unpacking libonig5:arm64 (6.9.9-1+b1) ...
+Selecting previously unselected package libjq1:arm64.
+Preparing to unpack .../libjq1_1.7.1-6+deb13u4_arm64.deb ...
+Unpacking libjq1:arm64 (1.7.1-6+deb13u4) ...
+Selecting previously unselected package jq.
+Preparing to unpack .../jq_1.7.1-6+deb13u4_arm64.deb ...
+Unpacking jq (1.7.1-6+deb13u4) ...
+Setting up libonig5:arm64 (6.9.9-1+b1) ...
+Setting up libjq1:arm64 (1.7.1-6+deb13u4) ...
+Setting up jq (1.7.1-6+deb13u4) ...
+Processing triggers for libc-bin (2.41-12+deb13u4) ...

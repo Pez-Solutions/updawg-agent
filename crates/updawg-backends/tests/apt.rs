@@ -708,3 +708,34 @@ mod apply {
         assert!(!v.contains_key("old:amd64"));
     }
 }
+
+/* ----------------------------------------------------- output, as shown */
+
+#[test]
+fn a_line_redrawn_with_carriage_returns_is_logged_as_its_last_redraw() {
+    // `apt-get install jq` in debian:13, stdout piped as the agent pipes it.
+    // dpkg ends every line `\r\n` and redraws "Reading database" with bare
+    // `\r`, which is what reached the log as one long line.
+    let out = include_str!("fixtures/apt/debian13-install.txt");
+    let shown: Vec<&str> = updawg_backends::apt::as_shown(out).collect();
+    assert!(shown.iter().all(|l| !l.contains('\r')), "{shown:#?}");
+    let database: Vec<&&str> = shown
+        .iter()
+        .filter(|l| l.contains("Reading database"))
+        .collect();
+    assert_eq!(
+        database,
+        [&"(Reading database ... 4948 files and directories currently installed.)"],
+        "{shown:#?}"
+    );
+    assert!(
+        shown.contains(&"Setting up jq (1.7.1-6+deb13u4) ..."),
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn a_line_that_ends_in_a_carriage_return_keeps_what_came_before_it() {
+    let shown: Vec<&str> = updawg_backends::apt::as_shown("Progress: [ 50%]\r\n").collect();
+    assert_eq!(shown, ["Progress: [ 50%]"]);
+}

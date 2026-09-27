@@ -150,7 +150,7 @@ impl PackageBackend for AptBackend {
             todo.len()
         ));
         let installed = run_status("apt-get", &install_args(&todo)).await?;
-        for line in installed.stdout.lines() {
+        for line in as_shown(&installed.stdout) {
             log.line(line);
         }
         if installed.code != 0 {
@@ -527,6 +527,23 @@ pub fn install_args(todo: &[&Pin]) -> Vec<String> {
     args.extend(APT_OPTIONS.iter().map(|&o| o.to_owned()));
     args.extend(todo.iter().map(|p| format!("{}={}", qualified(p), p.to)));
     args
+}
+
+/// Output as a terminal would have left it on screen.
+///
+/// dpkg redraws "Reading database ... 45%" in place with `\r`, so split on
+/// newlines alone and one line of the log is every percentage from 0 to 100.
+/// What a person saw is the last redraw of each line, and blank lines are
+/// dropped.
+pub fn as_shown(output: &str) -> impl Iterator<Item = &str> {
+    output
+        .lines()
+        .map(|line| {
+            line.rsplit('\r')
+                .find(|s| !s.trim().is_empty())
+                .unwrap_or("")
+        })
+        .filter(|line| !line.trim().is_empty())
 }
 
 /// The same command line, simulated.
