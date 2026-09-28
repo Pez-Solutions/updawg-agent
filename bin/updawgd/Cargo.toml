@@ -24,6 +24,7 @@ updawg-backends.workspace = true
 updawg-collectors.workspace = true
 updawg-crypto.workspace = true
 updawg-protocol.workspace = true
+updawg-snapshots.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true

@@ -108,6 +108,20 @@ const fn default_keep() -> u32 {
     3
 }
 
+impl SnapshotProvider {
+    /// The provider crate's name for this choice.
+    #[must_use]
+    pub const fn provider(self) -> updawg_snapshots::Provider {
+        match self {
+            Self::Auto => updawg_snapshots::Provider::Auto,
+            Self::Snapper => updawg_snapshots::Provider::Snapper,
+            Self::Zfs => updawg_snapshots::Provider::Zfs,
+            Self::Lvm => updawg_snapshots::Provider::Lvm,
+            Self::None => updawg_snapshots::Provider::None,
+        }
+    }
+}
+
 impl Default for Snapshots {
     fn default() -> Self {
         Self {

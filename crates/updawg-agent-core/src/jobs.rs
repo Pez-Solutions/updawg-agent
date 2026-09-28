@@ -16,8 +16,18 @@
 //! 4. **Run it**, in the background and one at a time (DAWG-106), then say how
 //!    it went and upload a fresh inventory so the server sees the new state.
 //!
-//! `apply_updates` and `reboot` run (DAWG-103). The others are refused as not
-//! built, which is honest and halts rather than pretends.
+//! `apply_updates`, `reboot` (DAWG-103), `snapshot` and `rollback` (DAWG-119)
+//! run. The others are refused as not built, which is honest and halts rather
+//! than pretends.
+//!
+//! # Snapshots
+//!
+//! An `apply_updates` job whose policy asks for one takes a snapshot before
+//! it changes anything, and reports its id whatever happens next — a failed
+//! install is exactly the one somebody wants to roll back. `required` with no
+//! snapshot (no provider, not permitted, or it failed) changes nothing and
+//! says why; `if_available` carries on without and says that too. The agent's
+//! own snapshots beyond `[snapshots] keep` are pruned each time one is taken.
 
 use crate::{
     config::AgentConfig,
@@ -34,9 +44,14 @@ use updawg_backends::{ApplyPlan, BackendError, PackageBackend, Pin};
 use updawg_crypto::PinnedKeys;
 use updawg_executor::health::{self, Check};
 use updawg_protocol::{
-    HealthCheckReport, Job, JobAck, JobComplete, JobKind, JobStatus, PackageChange,
-    job::{JobSpec, RebootPolicy},
+    HealthCheckReport, InstalledPackage, Job, JobAck, JobComplete, JobKind, JobStatus,
+    PackageChange,
+    job::{JobSpec, RebootPolicy, SnapshotPolicy},
 };
+use updawg_snapshots::SnapshotProvider;
+
+/// The snapshot provider this host has, or why it has none.
+pub type Snapshots = std::result::Result<Arc<dyn SnapshotProvider>, String>;
 
 /// How far ahead of `not_before` a job may arrive and still be taken. The
 /// gateway withholds a job until then, so this is only clock skew.
@@ -169,6 +184,7 @@ pub struct Executor {
     backend: Option<Arc<dyn PackageBackend>>,
     inventory: Option<Arc<dyn Inventory>>,
     rebooter: Arc<dyn Rebooter>,
+    snapshots: Snapshots,
     /// One mutating job at a time (DAWG-106).
     running: Arc<Mutex<()>>,
 }
@@ -198,8 +214,16 @@ impl Executor {
             backend,
             inventory,
             rebooter: Arc::new(SystemRebooter),
+            snapshots: Err("no snapshot provider was looked for".into()),
             running: Arc::default(),
         }
+    }
+
+    /// The snapshot provider `updawg_snapshots::detect` found, or why none.
+    #[must_use]
+    pub fn with_snapshots(mut self, snapshots: Snapshots) -> Self {
+        self.snapshots = snapshots;
+        self
     }
 
     /// Replace how this executor reboots. Tests, and nothing else.
@@ -298,7 +322,100 @@ impl Executor {
                     .to_owned(),
             );
         }
+        // The same for a snapshot the job cannot do without: refused whole,
+        // before anything changes (DAWG-119).
+        if let JobSpec::ApplyUpdates(apply) = &job.spec
+            && apply.snapshot == SnapshotPolicy::Required
+        {
+            if !self.config.admits(JobKind::Snapshot, None) {
+                return Some(
+                    "the job requires a snapshot, and local configuration does not permit snapshot"
+                        .to_owned(),
+                );
+            }
+            if let Err(why) = &self.snapshots {
+                return Some(format!(
+                    "the job requires a snapshot, and this host cannot take one: {why}"
+                ));
+            }
+        }
         None
+    }
+
+    /// The provider, for a job that cannot run without one, or why not.
+    fn provider_for(&self, job: &Job) -> std::result::Result<Arc<dyn SnapshotProvider>, String> {
+        self.snapshots.clone().map_err(|why| {
+            format!(
+                "this host cannot run {} jobs, having no snapshot provider: {why}",
+                job.kind().permission()
+            )
+        })
+    }
+
+    /// What a verified, permitted job is to do, or why this host cannot.
+    fn work_for(&self, job: &Job) -> std::result::Result<Work, String> {
+        Ok(match &job.spec {
+            JobSpec::ApplyUpdates(apply) => {
+                let Some(backend) = self.backend.clone() else {
+                    return Err("this host has no package manager the agent can drive".into());
+                };
+                Work::Apply(
+                    ApplyPlan {
+                        packages: apply
+                            .packages
+                            .iter()
+                            .map(|p| Pin {
+                                name: p.name.clone(),
+                                arch: p.arch.clone(),
+                                from: p.from.clone(),
+                                to: p.to.clone(),
+                            })
+                            .collect(),
+                        allow_reboot: apply.reboot != RebootPolicy::Never,
+                    },
+                    backend,
+                    apply.reboot,
+                    // `if_available` on a host that does not permit snapshots
+                    // goes without, like one with no provider: it is the
+                    // host's call (DAWG-38). `required` was refused already.
+                    match (apply.snapshot, &self.snapshots) {
+                        (SnapshotPolicy::Never, _) | (_, Err(_)) => None,
+                        (_, Ok(_)) if !self.config.admits(JobKind::Snapshot, None) => None,
+                        (policy, Ok(provider)) => Some(SnapshotFirst {
+                            provider: Arc::clone(provider),
+                            required: policy == SnapshotPolicy::Required,
+                        }),
+                    },
+                )
+            }
+            // Permission was checked already: `reboot` is its own kind, and
+            // agent.toml must allow it.
+            JobSpec::Reboot(reboot) => Work::Reboot(reboot.policy),
+            JobSpec::Snapshot(snapshot) => Work::Snapshot(
+                self.provider_for(job)?,
+                snapshot
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("updawg: {}", job.id)),
+            ),
+            JobSpec::Rollback(rollback) => {
+                let provider = self.provider_for(job)?;
+                let name = provider.provider().name();
+                if !rollback.snapshot_id.starts_with(&format!("{name}:")) {
+                    return Err(format!(
+                        "{} is not a snapshot this host's provider ({name}) took",
+                        rollback.snapshot_id
+                    ));
+                }
+                Work::Rollback(provider, rollback.snapshot_id.clone(), self.backend.clone())
+            }
+            _ => {
+                return Err(format!(
+                    "this agent version does not run {:?} jobs yet",
+                    job.kind()
+                ));
+            }
+        })
     }
 
     /// Everything up to and including the acknowledgement. Returns what to
@@ -355,43 +472,10 @@ impl Executor {
             self.refuse(job, reason).await;
             return None;
         }
-        let work = match &job.spec {
-            JobSpec::ApplyUpdates(apply) => {
-                let Some(backend) = self.backend.clone() else {
-                    self.refuse(
-                        job,
-                        "this host has no package manager the agent can drive".into(),
-                    )
-                    .await;
-                    return None;
-                };
-                Work::Apply(
-                    ApplyPlan {
-                        packages: apply
-                            .packages
-                            .iter()
-                            .map(|p| Pin {
-                                name: p.name.clone(),
-                                arch: p.arch.clone(),
-                                from: p.from.clone(),
-                                to: p.to.clone(),
-                            })
-                            .collect(),
-                        allow_reboot: apply.reboot != RebootPolicy::Never,
-                    },
-                    backend,
-                    apply.reboot,
-                )
-            }
-            // Permission was checked above: `reboot` is its own kind, and
-            // agent.toml must allow it.
-            JobSpec::Reboot(reboot) => Work::Reboot(reboot.policy),
-            _ => {
-                self.refuse(
-                    job,
-                    format!("this agent version does not run {:?} jobs yet", job.kind()),
-                )
-                .await;
+        let work = match self.work_for(job) {
+            Ok(work) => work,
+            Err(reason) => {
+                self.refuse(job, reason).await;
                 return None;
             }
         };
@@ -413,11 +497,33 @@ impl Executor {
 
 /// What an admitted job is to do.
 enum Work {
-    /// Install exactly these, then reboot as the policy says.
-    Apply(ApplyPlan, Arc<dyn PackageBackend>, RebootPolicy),
+    /// Install exactly these, then reboot as the policy says, after a
+    /// snapshot if one is to be taken.
+    Apply(
+        ApplyPlan,
+        Arc<dyn PackageBackend>,
+        RebootPolicy,
+        Option<SnapshotFirst>,
+    ),
     /// Reboot and nothing else — the one a rule wanted in its window, after
     /// an install that ran outside it (DAWG-103).
     Reboot(RebootPolicy),
+    /// Take one, with this description (DAWG-119).
+    Snapshot(Arc<dyn SnapshotProvider>, String),
+    /// Put the host back as this snapshot has it. The backend, when there is
+    /// one, says which packages that moved.
+    Rollback(
+        Arc<dyn SnapshotProvider>,
+        String,
+        Option<Arc<dyn PackageBackend>>,
+    ),
+}
+
+/// A snapshot to take before an install.
+struct SnapshotFirst {
+    provider: Arc<dyn SnapshotProvider>,
+    /// `required`: no snapshot, no install.
+    required: bool,
 }
 
 #[async_trait]
@@ -433,6 +539,10 @@ impl crate::checkin::JobSink for Executor {
         );
         let checks = self.checks();
         let (state, rebooter) = (self.state.clone(), Arc::clone(&self.rebooter));
+        // At least one: the snapshot just taken is the one a rollout needs.
+        let keep = usize::try_from(self.config.snapshots.keep)
+            .unwrap_or(usize::MAX)
+            .max(1);
         // The warning is the host's to set, in agent.toml's `[reboot]`.
         let warning = self.config.reboot.clone();
         // In the background: an install can take minutes, and the check-in
@@ -440,20 +550,8 @@ impl crate::checkin::JobSink for Executor {
         tokio::spawn(async move {
             let _one_at_a_time = running.lock().await;
             let log = JobLog::start(Arc::clone(&reporter), job.clone(), 0);
-            let (mut done, policy) = match work {
-                Work::Apply(plan, backend, policy) => {
-                    log.agent(format!(
-                        "installing {} package{} at exactly the approved versions",
-                        plan.packages.len(),
-                        if plan.packages.len() == 1 { "" } else { "s" }
-                    ));
-                    (
-                        run(&job, &plan, backend.as_ref(), &checks, &log).await,
-                        policy,
-                    )
-                }
-                Work::Reboot(policy) => (reboot_only(rebooter.as_ref(), &log).await, policy),
-            };
+            let (mut done, policy) =
+                perform(&job, &work, &checks, &state, rebooter.as_ref(), keep, &log).await;
             if wants_reboot(policy, &done) {
                 log.agent(format!(
                     "rebooting in {} s to finish the job",
@@ -474,7 +572,14 @@ impl crate::checkin::JobSink for Executor {
                 }
             }
             log.agent(match done.status {
-                JobStatus::Succeeded => format!("done: {} package(s) changed", done.changes.len()),
+                JobStatus::Succeeded => format!(
+                    "done: {} package(s) changed{}",
+                    done.changes.len(),
+                    done.snapshot_id
+                        .as_deref()
+                        .map(|id| format!(", snapshot {id}"))
+                        .unwrap_or_default()
+                ),
                 _ => format!(
                     "{:?}: {}",
                     done.status,
@@ -545,6 +650,238 @@ async fn reboot_only(rebooter: &dyn Rebooter, log: &JobLog) -> JobComplete {
         inventory_hash: None,
         error: None,
     }
+}
+
+/// Run what was admitted: how it went, and the reboot policy to apply now.
+async fn perform(
+    job: &Job,
+    work: &Work,
+    checks: &[Check],
+    state: &LocalState,
+    rebooter: &dyn Rebooter,
+    keep: usize,
+    log: &JobLog,
+) -> (JobComplete, RebootPolicy) {
+    match work {
+        Work::Apply(plan, backend, policy, snapshot) => {
+            let started_at = Utc::now();
+            match snapshot_first(job, snapshot.as_ref(), keep, log).await {
+                // `required`, and none: nothing was changed.
+                Err(why) => (
+                    failed(JobStatus::RejectedByHost, started_at, Utc::now(), why),
+                    RebootPolicy::Never,
+                ),
+                Ok(taken) => {
+                    log.agent(format!(
+                        "installing {} package{} at exactly the approved versions",
+                        plan.packages.len(),
+                        if plan.packages.len() == 1 { "" } else { "s" }
+                    ));
+                    let mut done = run(job, plan, backend.as_ref(), checks, log).await;
+                    // Whatever happened: a failed install is the one somebody
+                    // wants to roll back.
+                    done.snapshot_id = taken;
+                    done.started_at = started_at;
+                    (done, *policy)
+                }
+            }
+        }
+        Work::Reboot(policy) => (reboot_only(rebooter, log).await, *policy),
+        Work::Snapshot(provider, description) => {
+            let started_at = Utc::now();
+            let done = match take(job, provider.as_ref(), description, keep, log).await {
+                Ok(id) => JobComplete {
+                    snapshot_id: Some(id),
+                    ..ended(JobStatus::Succeeded, started_at, Utc::now(), None)
+                },
+                Err(why) => failed(JobStatus::Failed, started_at, Utc::now(), why),
+            };
+            (done, RebootPolicy::Never)
+        }
+        Work::Rollback(provider, id, backend) => {
+            let mut done = roll_back(state, provider.as_ref(), id, backend.as_deref(), log).await;
+            if done.status == JobStatus::Succeeded {
+                done.reboot_required = rebooter.reboot_required().await;
+            }
+            // After a failure too: a rollback that stopped halfway is a host
+            // in a state nobody chose.
+            done.health_checks = checks_reported(job, checks, log).await;
+            done.finished_at = Utc::now();
+            (done, RebootPolicy::Never)
+        }
+    }
+}
+
+/// The snapshot an install takes first, if it takes one.
+///
+/// `Ok(None)` when none was asked for, or `if_available` could not have one
+/// and the install goes ahead; `Err` only when one was required and could not
+/// be taken, and then nothing is installed.
+async fn snapshot_first(
+    job: &Job,
+    first: Option<&SnapshotFirst>,
+    keep: usize,
+    log: &JobLog,
+) -> Result<Option<String>, String> {
+    let Some(first) = first else {
+        return Ok(None);
+    };
+    let description = format!("updawg: before {}", job.id);
+    match take(job, first.provider.as_ref(), &description, keep, log).await {
+        Ok(id) => Ok(Some(id)),
+        Err(why) if first.required => {
+            let why = format!(
+                "the job requires a snapshot and none could be taken, so nothing was changed: {why}"
+            );
+            log.agent(&why);
+            Err(why)
+        }
+        Err(why) => {
+            log.agent(format!("carrying on without a snapshot: {why}"));
+            Ok(None)
+        }
+    }
+}
+
+/// Take a snapshot for `job`, then prune the agent's own down to `keep`.
+///
+/// A failed prune is logged and does not fail the job: the snapshot it was
+/// for exists, and a disk filling slowly is for a person to see, not a
+/// reason to leave a host unpatched.
+async fn take(
+    job: &Job,
+    provider: &dyn SnapshotProvider,
+    description: &str,
+    keep: usize,
+    log: &JobLog,
+) -> Result<String, String> {
+    log.agent(format!("taking a {} snapshot", provider.provider().name()));
+    let snapshot = provider
+        .create(description, job.id.as_str())
+        .await
+        .map_err(|e| format!("could not take a snapshot: {e}"))?;
+    log.agent(format!("snapshot {} taken", snapshot.id));
+    match provider.prune(keep).await {
+        Ok(gone) if gone.is_empty() => {}
+        Ok(gone) => log.agent(format!(
+            "pruned {} older snapshot(s), keeping {keep}: {}",
+            gone.len(),
+            gone.join(", ")
+        )),
+        Err(error) => {
+            tracing::warn!(job = %job.id, %error, "could not prune snapshots");
+            log.agent(format!("could not prune older snapshots: {error}"));
+        }
+    }
+    Ok(snapshot.id)
+}
+
+/// Put the host back as snapshot `id` has it, and say what that moved.
+///
+/// The agent's own state is carried across (see [`LocalState::carry`]).
+/// Which packages moved is the package manager's answer before and after,
+/// not the snapshot's: that is what the server and the person reading the
+/// report think in.
+async fn roll_back(
+    state: &LocalState,
+    provider: &dyn SnapshotProvider,
+    id: &str,
+    backend: Option<&dyn PackageBackend>,
+    log: &JobLog,
+) -> JobComplete {
+    let started_at = Utc::now();
+    let fail = |why: String| {
+        log.agent(&why);
+        failed(JobStatus::Failed, started_at, Utc::now(), why)
+    };
+    let carried = match state.carry() {
+        Ok(carried) => carried,
+        Err(error) => {
+            // Refused rather than risked: without it the agent would forget
+            // the jobs it has run.
+            return failed(
+                JobStatus::RejectedByHost,
+                started_at,
+                Utc::now(),
+                format!(
+                    "could not hold the agent's own state across the rollback, so did not roll back: {error}"
+                ),
+            );
+        }
+    };
+    let before = match backend {
+        Some(b) => b.installed().await.ok(),
+        None => None,
+    };
+    log.agent(format!("rolling back to snapshot {id}"));
+    let restored = provider.rollback(id).await;
+    // Put back whether or not the rollback finished: it may have got partway.
+    if let Err(error) = state.put_back(&carried) {
+        tracing::error!(%error, "could not put the agent's state back after a rollback");
+        return fail(format!(
+            "the agent's own state could not be put back after the rollback: {error}"
+        ));
+    }
+    let restored = match restored {
+        Ok(restored) => restored,
+        Err(error) => return fail(format!("the rollback failed: {error}")),
+    };
+    log.agent(format!("rolled back: {restored}"));
+    let changes = match (before, backend) {
+        (Some(before), Some(b)) => match b.installed().await {
+            Ok(after) => package_changes(&before, &after),
+            Err(_) => vec![],
+        },
+        _ => vec![],
+    };
+    for c in &changes {
+        log.agent(format!(
+            "{} {}: {} -> {}",
+            c.name,
+            c.arch,
+            or_none(&c.from),
+            or_none(&c.to)
+        ));
+    }
+    JobComplete {
+        changes,
+        ..ended(JobStatus::Succeeded, started_at, Utc::now(), None)
+    }
+}
+
+fn or_none(version: &str) -> &str {
+    if version.is_empty() {
+        "(none)"
+    } else {
+        version
+    }
+}
+
+/// What moved between two package lists, by name and architecture. A
+/// package on one side only has an empty version on the other.
+fn package_changes(before: &[InstalledPackage], after: &[InstalledPackage]) -> Vec<PackageChange> {
+    use std::collections::BTreeMap;
+    let index = |list: &[InstalledPackage]| -> BTreeMap<(String, String), String> {
+        list.iter()
+            .map(|p| ((p.name.clone(), p.arch.clone()), p.version.clone()))
+            .collect()
+    };
+    let (before, after) = (index(before), index(after));
+    let mut keys: Vec<&(String, String)> = before.keys().chain(after.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .filter_map(|key| {
+            let from = before.get(key).cloned().unwrap_or_default();
+            let to = after.get(key).cloned().unwrap_or_default();
+            (from != to).then(|| PackageChange {
+                name: key.0.clone(),
+                arch: key.1.clone(),
+                from,
+                to,
+            })
+        })
+        .collect()
 }
 
 /// Whether this job's policy says to reboot now.
@@ -666,6 +1003,16 @@ fn failed(
     finished_at: DateTime<Utc>,
     error: String,
 ) -> JobComplete {
+    ended(status, started_at, finished_at, Some(error))
+}
+
+/// A report with nothing in it but how it ended.
+fn ended(
+    status: JobStatus,
+    started_at: DateTime<Utc>,
+    finished_at: DateTime<Utc>,
+    error: Option<String>,
+) -> JobComplete {
     JobComplete {
         status,
         started_at,
@@ -675,7 +1022,7 @@ fn failed(
         health_checks: vec![],
         reboot_required: false,
         inventory_hash: None,
-        error: Some(error),
+        error,
     }
 }
 
@@ -734,6 +1081,8 @@ mod tests {
     struct Backend {
         outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
         applied: AtomicUsize,
+        /// What `installed` answers.
+        packages: std::sync::Mutex<Vec<InstalledPackage>>,
     }
 
     #[async_trait]
@@ -742,7 +1091,7 @@ mod tests {
             Ecosystem::Deb
         }
         async fn installed(&self) -> updawg_backends::Result<Vec<InstalledPackage>> {
-            Ok(vec![])
+            Ok(self.packages.lock().unwrap().clone())
         }
         async fn refresh_metadata(&self) -> updawg_backends::Result<()> {
             Ok(())
@@ -865,6 +1214,7 @@ mod tests {
         let backend = Arc::new(Backend {
             outcome,
             applied: AtomicUsize::new(0),
+            packages: std::sync::Mutex::default(),
         });
         let executor = Executor::new(
             Arc::clone(&gateway) as Arc<dyn Reporter>,
@@ -1391,5 +1741,346 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             .find(|l| l.line.starts_with("rebooted"))
             .expect("a line from after the reboot");
         assert!(resumed.seq >= crate::joblog::AFTER_REBOOT, "{resumed:?}");
+    }
+
+    /* ------------------------------------------------ snapshots (DAWG-119) */
+
+    const ALLOW_SNAPSHOT: &str = "\"apply_patch\", \"snapshot\"";
+
+    /// A snapshot provider that, like a real one, puts back the files it
+    /// covers — here the agent's record of jobs, and the package list.
+    struct FakeSnapshots {
+        state_dir: std::path::PathBuf,
+        backend: Arc<Backend>,
+        fail_create: bool,
+        taken: std::sync::Mutex<Vec<Taken>>,
+        kept: std::sync::Mutex<Vec<usize>>,
+        rolled_back: AtomicUsize,
+    }
+
+    /// One the fake took: its id, and what it will put back.
+    struct Taken {
+        id: String,
+        seen_jobs: Option<Vec<u8>>,
+        packages: Vec<InstalledPackage>,
+    }
+
+    #[async_trait]
+    impl SnapshotProvider for FakeSnapshots {
+        fn provider(&self) -> updawg_snapshots::Provider {
+            updawg_snapshots::Provider::Snapper
+        }
+        async fn available(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn create(
+            &self,
+            description: &str,
+            job: &str,
+        ) -> updawg_snapshots::Result<updawg_snapshots::Snapshot> {
+            if self.fail_create {
+                return Err(updawg_snapshots::SnapshotError::InsufficientSpace {
+                    detail: "1% free".into(),
+                });
+            }
+            let mut taken = self.taken.lock().unwrap();
+            let id = format!("snapper:{}:{job}", taken.len() + 1);
+            taken.push(Taken {
+                id: id.clone(),
+                seen_jobs: std::fs::read(self.state_dir.join("seen-jobs.json")).ok(),
+                packages: self.backend.packages.lock().unwrap().clone(),
+            });
+            Ok(updawg_snapshots::Snapshot {
+                id,
+                description: description.into(),
+                job: job.into(),
+                created: String::new(),
+            })
+        }
+        async fn list(&self) -> updawg_snapshots::Result<Vec<updawg_snapshots::Snapshot>> {
+            Ok(vec![])
+        }
+        async fn rollback(&self, id: &str) -> updawg_snapshots::Result<updawg_snapshots::Restored> {
+            let taken = self.taken.lock().unwrap();
+            let Some(Taken {
+                seen_jobs,
+                packages,
+                ..
+            }) = taken.iter().find(|t| t.id == id)
+            else {
+                return Err(updawg_snapshots::SnapshotError::NotFound { id: id.into() });
+            };
+            let file = self.state_dir.join("seen-jobs.json");
+            match seen_jobs {
+                Some(bytes) => std::fs::write(&file, bytes).unwrap(),
+                None => std::fs::remove_file(&file).unwrap(),
+            }
+            self.backend.packages.lock().unwrap().clone_from(packages);
+            self.rolled_back.fetch_add(1, Ordering::SeqCst);
+            Ok(updawg_snapshots::Restored {
+                created: 0,
+                modified: 1,
+                deleted: 0,
+            })
+        }
+        async fn prune(&self, keep: usize) -> updawg_snapshots::Result<Vec<String>> {
+            self.kept.lock().unwrap().push(keep);
+            Ok(vec![])
+        }
+    }
+
+    /// `w`, with a fake snapshot provider.
+    fn with_snapshots(w: World, fail_create: bool) -> (World, Arc<FakeSnapshots>) {
+        let fake = Arc::new(FakeSnapshots {
+            state_dir: w.executor.state.root().to_path_buf(),
+            backend: Arc::clone(&w.backend),
+            fail_create,
+            taken: std::sync::Mutex::default(),
+            kept: std::sync::Mutex::default(),
+            rolled_back: AtomicUsize::new(0),
+        });
+        let World {
+            key,
+            gateway,
+            backend,
+            executor,
+        } = w;
+        let executor = executor.with_snapshots(Ok(Arc::clone(&fake) as Arc<dyn SnapshotProvider>));
+        (
+            World {
+                key,
+                gateway,
+                backend,
+                executor,
+            },
+            fake,
+        )
+    }
+
+    fn snapshotting(w: &World, policy: SnapshotPolicy) -> Job {
+        job(w, |j| {
+            if let JobSpec::ApplyUpdates(apply) = &mut j.spec {
+                apply.snapshot = policy;
+            }
+        })
+    }
+
+    /// The `n`th report, waiting for it.
+    async fn report_number(w: &World, n: usize) -> JobComplete {
+        for _ in 0..200 {
+            if let Some(done) = w.gateway.completes.lock().unwrap().get(n).cloned() {
+                return done;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("report {n} never came");
+    }
+
+    fn openssl(version: &str) -> InstalledPackage {
+        InstalledPackage {
+            name: "openssl".into(),
+            version: version.into(),
+            arch: "amd64".into(),
+            repo: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_is_taken_before_the_install_and_its_id_reported() {
+        let (w, snapshots) = with_snapshots(
+            world_allowing("managed", succeeds, "[snapshots]\nkeep = 5", ALLOW_SNAPSHOT),
+            false,
+        );
+        let job = snapshotting(&w, SnapshotPolicy::Required);
+        w.executor.deliver(job.clone()).await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded);
+        assert_eq!(
+            done.snapshot_id.as_deref(),
+            Some(format!("snapper:1:{}", job.id).as_str())
+        );
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 1);
+        assert_eq!(*snapshots.kept.lock().unwrap(), [5]);
+    }
+
+    /// `required` on a host that cannot: refused whole, before anything.
+    #[tokio::test]
+    async fn a_required_snapshot_the_host_cannot_take_is_refused_before_anything_changes() {
+        // No provider.
+        let w = world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT);
+        w.executor
+            .deliver(snapshotting(&w, SnapshotPolicy::Required))
+            .await;
+        // Not permitted.
+        let (n, _) = with_snapshots(
+            world_allowing("managed", succeeds, "", "\"apply_patch\""),
+            false,
+        );
+        n.executor
+            .deliver(snapshotting(&n, SnapshotPolicy::Required))
+            .await;
+
+        let (no_provider, not_permitted) = (refusals(&w), refusals(&n));
+        assert!(
+            no_provider[0].contains("cannot take one"),
+            "{no_provider:?}"
+        );
+        assert!(
+            not_permitted[0].contains("does not permit snapshot"),
+            "{not_permitted:?}"
+        );
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+        assert_eq!(n.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_required_snapshot_that_fails_installs_nothing() {
+        let (w, _) = with_snapshots(
+            world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT),
+            true,
+        );
+        w.executor
+            .deliver(snapshotting(&w, SnapshotPolicy::Required))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::RejectedByHost);
+        assert!(done.error.unwrap().contains("nothing was changed"));
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn if_available_goes_ahead_without_one() {
+        // No provider at all.
+        let w = world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT);
+        w.executor
+            .deliver(snapshotting(&w, SnapshotPolicy::IfAvailable))
+            .await;
+        // A provider that fails.
+        let (f, _) = with_snapshots(
+            world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT),
+            true,
+        );
+        f.executor
+            .deliver(snapshotting(&f, SnapshotPolicy::IfAvailable))
+            .await;
+        for w in [&w, &f] {
+            let done = completed(w).await;
+            assert_eq!(done.status, JobStatus::Succeeded);
+            assert_eq!(done.snapshot_id, None);
+            assert_eq!(w.backend.applied.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    /// A failed install is exactly the one somebody wants to roll back.
+    #[tokio::test]
+    async fn a_failed_install_still_reports_its_snapshot() {
+        fn breaks(_plan: &ApplyPlan) -> updawg_backends::Result<ApplyOutcome> {
+            Err(BackendError::CommandFailed {
+                tool: "apt-get",
+                status: 100,
+                stderr: "dpkg: error processing package openssl".into(),
+            })
+        }
+        let (w, _) = with_snapshots(world_allowing("managed", breaks, "", ALLOW_SNAPSHOT), false);
+        w.executor
+            .deliver(snapshotting(&w, SnapshotPolicy::IfAvailable))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Failed);
+        assert!(done.snapshot_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_job_takes_one_and_says_which() {
+        let (w, _) = with_snapshots(
+            world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT),
+            false,
+        );
+        w.executor
+            .deliver(job(&w, |j| {
+                j.spec = JobSpec::Snapshot(updawg_protocol::Snapshot {
+                    description: Some("before the migration".into()),
+                });
+            }))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded, "{done:?}");
+        assert!(done.snapshot_id.unwrap().starts_with("snapper:1:"));
+        assert_eq!(done.error, None);
+    }
+
+    /// The whole round: install after a snapshot, roll back, and the report
+    /// says which packages moved — while the agent still remembers every job
+    /// it ran, although the rollback put its state directory back too.
+    #[tokio::test]
+    async fn a_rollback_restores_the_packages_and_the_agent_remembers_its_jobs() {
+        let (w, snapshots) = with_snapshots(
+            world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT),
+            false,
+        );
+        w.backend.packages.lock().unwrap().push(openssl("3.5.1-1"));
+
+        let install = snapshotting(&w, SnapshotPolicy::Required);
+        w.executor.deliver(install.clone()).await;
+        let installed = completed(&w).await;
+        *w.backend.packages.lock().unwrap() = vec![openssl("3.5.1-2")];
+
+        let rollback = job(&w, |j| {
+            j.spec = JobSpec::Rollback(updawg_protocol::Rollback {
+                snapshot_id: installed.snapshot_id.clone().unwrap(),
+            });
+        });
+        w.executor.deliver(rollback.clone()).await;
+        let done = report_number(&w, 1).await;
+        assert_eq!(done.status, JobStatus::Succeeded, "{done:?}");
+        assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 1);
+        assert_eq!(done.changes.len(), 1, "{:?}", done.changes);
+        assert_eq!(
+            (done.changes[0].from.as_str(), done.changes[0].to.as_str()),
+            ("3.5.1-2", "3.5.1-1")
+        );
+        // The snapshot was taken after the install job was recorded and
+        // before the rollback job was: without carrying the state across,
+        // the rollback job would be forgotten and could run again.
+        assert!(w.executor.state.has_seen_job(&rollback.id).unwrap());
+        assert!(w.executor.state.has_seen_job(&install.id).unwrap());
+        w.executor.deliver(rollback).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_rollback_to_another_providers_snapshot_is_refused() {
+        let (w, snapshots) = with_snapshots(
+            world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT),
+            false,
+        );
+        w.executor
+            .deliver(job(&w, |j| {
+                j.spec = JobSpec::Rollback(updawg_protocol::Rollback {
+                    snapshot_id: "zfs:rpool/ROOT/debian@updawg-1".into(),
+                });
+            }))
+            .await;
+        let refused = refusals(&w);
+        assert!(refused[0].contains("not a snapshot"), "{refused:?}");
+        assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn package_changes_are_by_name_and_arch_both_ways() {
+        let gone = InstalledPackage {
+            name: "libfoo".into(),
+            ..openssl("1.0")
+        };
+        let changes = package_changes(&[openssl("3.5.1-2"), gone], &[openssl("3.5.1-1")]);
+        let pairs: Vec<_> = changes
+            .iter()
+            .map(|c| (c.name.as_str(), c.from.as_str(), c.to.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [("libfoo", "1.0", ""), ("openssl", "3.5.1-2", "3.5.1-1")]
+        );
     }
 }

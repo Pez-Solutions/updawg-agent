@@ -193,11 +193,22 @@ async fn main() -> Result<()> {
     // Inventory first: the job executor uploads a fresh one after every job,
     // so the server sees what changed without waiting six hours.
     let real_inventory = build_inventory(&config, &state, extra_root.as_deref());
+    // Looked for once, at start (DAWG-115). None is a normal answer: jobs
+    // that require a snapshot are then refused, with the reason.
+    let snapshots: updawg_agent_core::jobs::Snapshots =
+        updawg_snapshots::detect(config.snapshots.provider.provider())
+            .await
+            .map(Arc::from);
+    match &snapshots {
+        Ok(p) => tracing::info!(provider = p.provider().name(), "snapshots available"),
+        Err(why) => tracing::info!(%why, "no snapshots on this host"),
+    }
     let checkin: Arc<dyn CheckIn> = build_checkin(
         &config,
         &state,
         extra_root.as_deref(),
         real_inventory.clone(),
+        snapshots,
     )
     .unwrap_or_else(|| {
         tracing::warn!("not checking in: this host has no usable identity");
@@ -270,6 +281,7 @@ fn build_checkin(
     state: &LocalState,
     extra_root: Option<&[u8]>,
     inventory: Option<Arc<dyn Inventory>>,
+    snapshots: updawg_agent_core::jobs::Snapshots,
 ) -> Option<Arc<dyn CheckIn>> {
     if !state.is_enrolled() {
         return None;
@@ -295,13 +307,16 @@ fn build_checkin(
         updawg_backends::detect().ok().map(Arc::from);
     // Verified, permission-checked and run (DAWG-38, DAWG-102). Observe mode
     // refuses every job that changes the host, and says so to the server.
-    let jobs = Arc::new(Executor::new(
-        Arc::clone(&transport) as Arc<dyn Reporter>,
-        state.clone(),
-        config.clone(),
-        backend,
-        inventory,
-    ));
+    let jobs = Arc::new(
+        Executor::new(
+            Arc::clone(&transport) as Arc<dyn Reporter>,
+            state.clone(),
+            config.clone(),
+            backend,
+            inventory,
+        )
+        .with_snapshots(snapshots),
+    );
     // A job that rebooted this host is finished from here (DAWG-103): the
     // health checks run again and the report goes out. In the background, so
     // a slow check does not hold up the first check-in.

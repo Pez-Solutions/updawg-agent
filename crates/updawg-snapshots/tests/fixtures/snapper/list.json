@@ -1,0 +1,48 @@
+{
+  "data": [
+    {
+      "subvolume": "/srv/bt",
+      "number": 0,
+      "default": false,
+      "active": false,
+      "type": "single",
+      "pre-number": null,
+      "date": "",
+      "user": "root",
+      "used-space": null,
+      "cleanup": "",
+      "description": "current",
+      "userdata": null
+    },
+    {
+      "subvolume": "/srv/bt",
+      "number": 1,
+      "default": false,
+      "active": false,
+      "type": "single",
+      "pre-number": null,
+      "date": "2026-09-28 13:46:27",
+      "user": "root",
+      "used-space": null,
+      "cleanup": "",
+      "description": "updawg job_x before, with, commas",
+      "userdata": {
+        "updawg": "job_x"
+      }
+    },
+    {
+      "subvolume": "/srv/bt",
+      "number": 2,
+      "default": false,
+      "active": false,
+      "type": "single",
+      "pre-number": null,
+      "date": "2026-09-28 13:46:27",
+      "user": "root",
+      "used-space": null,
+      "cleanup": "",
+      "description": "admin's own",
+      "userdata": null
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "configs": [
+    {
+      "config": "data",
+      "subvolume": "/srv/bt"
+    }
+  ]
+}

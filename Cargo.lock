@@ -1973,6 +1973,7 @@ dependencies = [
  "updawg-crypto",
  "updawg-executor",
  "updawg-protocol",
+ "updawg-snapshots",
  "x509-parser",
  "zstd",
 ]
@@ -2040,7 +2041,9 @@ name = "updawg-snapshots"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde_json",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -2072,6 +2075,7 @@ dependencies = [
  "updawg-collectors",
  "updawg-crypto",
  "updawg-protocol",
+ "updawg-snapshots",
 ]
 
 [[package]]

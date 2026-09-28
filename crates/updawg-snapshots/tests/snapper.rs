@@ -1,0 +1,104 @@
+//! The snapper parsers, against output captured from a real snapper
+//! (DAWG-116). See `fixtures/snapper/README.md` for where each came from, and
+//! `snapper_live.rs` for the same commands run for real.
+
+// The whole file is the test: a panic is the assertion.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    unreachable_pub
+)]
+
+use updawg_snapshots::{
+    Restored, SnapshotError,
+    snapper::{parse_configs, parse_id, parse_list, parse_number, parse_undo},
+};
+
+fn fixture(name: &str) -> String {
+    std::fs::read_to_string(format!(
+        "{}/tests/fixtures/snapper/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
+#[test]
+fn configurations_and_their_subvolumes() {
+    assert_eq!(
+        parse_configs(&fixture("list-configs.json")).unwrap(),
+        vec![("data".to_owned(), "/srv/bt".to_owned())]
+    );
+}
+
+/// Snapper's number 0 is the live filesystem, and number 2 is an
+/// administrator's: neither is the agent's to restore or prune.
+#[test]
+fn only_the_agents_own_snapshots_are_listed() {
+    let ours = parse_list(&fixture("list.json")).unwrap();
+    assert_eq!(ours.len(), 1, "{ours:?}");
+    assert_eq!(ours[0].id, "snapper:1:job_x");
+    assert_eq!(ours[0].job, "job_x");
+    // A comma in a description is why this is JSON and not CSV.
+    assert_eq!(ours[0].description, "updawg job_x before, with, commas");
+    assert_eq!(ours[0].created, "2026-09-28 13:46:27");
+}
+
+#[test]
+fn they_are_listed_oldest_first_whatever_order_snapper_prints() {
+    let mut value: serde_json::Value = serde_json::from_str(&fixture("list.json")).unwrap();
+    let entries = value["data"].as_array_mut().unwrap();
+    let mut newer = entries[1].clone();
+    newer["number"] = 7.into();
+    newer["userdata"]["updawg"] = "job_y".into();
+    entries.insert(0, newer);
+    let ours = parse_list(&value.to_string()).unwrap();
+    let ids: Vec<_> = ours.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["snapper:1:job_x", "snapper:7:job_y"]);
+}
+
+#[test]
+fn create_prints_the_number() {
+    assert_eq!(parse_number(&fixture("create.txt")).unwrap(), 1);
+    assert!(matches!(
+        parse_number("Creating snapshot failed."),
+        Err(SnapshotError::Unparseable { .. })
+    ));
+}
+
+#[test]
+fn undochange_says_what_it_put_back() {
+    assert_eq!(
+        parse_undo(&fixture("undochange.txt")).unwrap(),
+        Restored {
+            created: 0,
+            modified: 1,
+            deleted: 1
+        }
+    );
+    assert_eq!(
+        parse_undo(&fixture("undochange-nothing.txt")).unwrap(),
+        Restored::default()
+    );
+    assert!(parse_undo("").is_err());
+}
+
+/// The number alone is not an identity, because snapper reuses them: the id
+/// has to carry the job, and anything else is somebody else's id.
+#[test]
+fn an_id_is_the_number_and_the_job() {
+    assert_eq!(parse_id("snapper:412:job_abc").unwrap(), (412, "job_abc"));
+    for foreign in [
+        "snapper:412",
+        "snapper:0:job_abc",
+        "snapper::job_abc",
+        "snapper:412:",
+        "zfs:rpool/ROOT@x",
+        "412",
+    ] {
+        assert!(
+            matches!(parse_id(foreign), Err(SnapshotError::ForeignId { .. })),
+            "{foreign}"
+        );
+    }
+}

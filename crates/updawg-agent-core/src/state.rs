@@ -338,6 +338,79 @@ impl LocalState {
         }
         Ok(pending)
     }
+
+    /* ------------------------------------------------ across a rollback */
+
+    /// Everything in the state directory, held in memory while the
+    /// filesystem under it is rolled back (DAWG-119).
+    ///
+    /// ⚠️ A rollback puts the whole filesystem back, and this directory is on
+    /// it. Without this, the agent would forget every job it has run since
+    /// the snapshot — the one that installed the packages included, which a
+    /// replay could then run again — and keys pinned by a rotation since.
+    /// The agent's memory is not part of the host state being undone.
+    pub fn carry(&self) -> Result<Carried> {
+        let entries = fs::read_dir(&self.root).map_err(|source| StateError::Read {
+            path: self.root.display().to_string(),
+            source,
+        })?;
+        let mut files = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| StateError::Read {
+                path: self.root.display().to_string(),
+                source,
+            })?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Temporary files are half-writes, and directories are not ours.
+            if name.starts_with('.') || !entry.path().is_file() {
+                continue;
+            }
+            let bytes = fs::read(entry.path()).map_err(|source| StateError::Read {
+                path: entry.path().display().to_string(),
+                source,
+            })?;
+            files.push((name, bytes));
+        }
+        Ok(Carried { files })
+    }
+
+    /// Put back what [`LocalState::carry`] held, and remove what it did not:
+    /// a `pending-reboot.json` the rollback restored from before would
+    /// otherwise finish a job that finished long ago.
+    pub fn put_back(&self, carried: &Carried) -> Result<()> {
+        for (name, bytes) in &carried.files {
+            self.write_atomic(name, bytes)?;
+        }
+        let entries = fs::read_dir(&self.root).map_err(|source| StateError::Read {
+            path: self.root.display().to_string(),
+            source,
+        })?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_file() && !carried.files.iter().any(|(n, _)| *n == name) {
+                fs::remove_file(entry.path()).map_err(|source| StateError::Write {
+                    path: entry.path().display().to_string(),
+                    source,
+                })?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The state directory's files, as [`LocalState::carry`] found them.
+#[derive(Clone)]
+pub struct Carried {
+    files: Vec<(String, Vec<u8>)>,
+}
+
+impl std::fmt::Debug for Carried {
+    // Names only: the identity is in here.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.files.iter().map(|(n, _)| n))
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -443,6 +516,38 @@ mod tests {
         assert!(!state.has_seen_job(&JobId::new("job_3")).unwrap());
         assert!(state.has_seen_job(&JobId::new("job_11")).unwrap());
         assert!(state.has_seen_job(&JobId::new("job_4")).unwrap());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// A rollback puts the filesystem back, this directory included; the
+    /// agent's memory comes through it as it was just before (DAWG-119).
+    #[test]
+    fn what_was_carried_across_a_rollback_is_put_back_exactly() {
+        let (state, dir) = temp_state();
+        state.save_identity(&identity()).unwrap();
+        state
+            .record_job(&JobId::new("job_before_snapshot"))
+            .unwrap();
+        let at_snapshot = fs::read(dir.join("seen-jobs.json")).unwrap();
+
+        state.record_job(&JobId::new("job_install")).unwrap();
+        state.record_job(&JobId::new("job_rollback")).unwrap();
+        let carried = state.carry().unwrap();
+        assert!(!format!("{carried:?}").contains("BEGIN"), "{carried:?}");
+
+        // What the rollback does: the files as they were at the snapshot,
+        // and one that existed then and has gone since.
+        fs::write(dir.join("seen-jobs.json"), &at_snapshot).unwrap();
+        fs::write(dir.join("pending-reboot.json"), b"{}").unwrap();
+
+        state.put_back(&carried).unwrap();
+        assert!(state.has_seen_job(&JobId::new("job_install")).unwrap());
+        assert!(state.has_seen_job(&JobId::new("job_rollback")).unwrap());
+        assert!(!dir.join("pending-reboot.json").exists());
+        assert_eq!(
+            state.identity().unwrap().unwrap().host_id.as_str(),
+            "hst_webprod01"
+        );
         fs::remove_dir_all(dir).ok();
     }
 
