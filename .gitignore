@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 .DS_Store
+# Release artifacts, downloaded for a deploy (ansible reads them from here).
+/dist
+/dist.new
