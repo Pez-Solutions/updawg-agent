@@ -1,0 +1,4 @@
+tank/ROOT/ubuntu@updawg-job_x	job_x
+tank/ROOT/ubuntu@admins-own	-
+tank/ROOT/ubuntu/var@updawg-job_x	job_x
+tank/ROOT/ubuntu/var/lib@updawg-job_x	job_x

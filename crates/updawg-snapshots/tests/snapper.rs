@@ -12,7 +12,10 @@
 
 use updawg_snapshots::{
     Restored, SnapshotError,
-    snapper::{parse_configs, parse_df, parse_id, parse_list, parse_number, parse_undo},
+    snapper::{
+        parse_configs, parse_df, parse_id, parse_list, parse_number, parse_status_kernels,
+        parse_undo,
+    },
 };
 
 fn fixture(name: &str) -> String {
@@ -85,7 +88,8 @@ fn undochange_says_what_it_put_back() {
         Restored {
             created: 0,
             modified: 1,
-            deleted: 1
+            deleted: 1,
+            ..Restored::default()
         }
     );
     assert_eq!(
@@ -113,4 +117,34 @@ fn an_id_is_the_number_and_the_job() {
             "{foreign}"
         );
     }
+}
+
+/// A kernel installed since the snapshot is what a rollback would take away:
+/// only its module directory counts, not what is inside it.
+#[test]
+fn a_kernel_installed_since_the_snapshot_is_found_by_its_modules_directory() {
+    assert_eq!(
+        parse_status_kernels(&fixture("status-kernel.txt"), "/srv/bt5"),
+        vec!["6.8.0-2".to_owned()]
+    );
+    // On a real root the subvolume is `/`.
+    assert_eq!(
+        parse_status_kernels("+..... /lib/modules/6.12.48+deb13-amd64\n", "/"),
+        vec!["6.12.48+deb13-amd64".to_owned()]
+    );
+    // Removed since, and so put back by a rollback: harmless.
+    assert!(parse_status_kernels("-..... /usr/lib/modules/6.8.0-1\n", "/").is_empty());
+}
+
+#[test]
+fn only_a_modules_directory_itself_names_a_kernel() {
+    use updawg_snapshots::kernel_dir;
+    assert_eq!(
+        kernel_dir("/usr/lib/modules/6.8.0-2"),
+        Some("6.8.0-2".into())
+    );
+    assert_eq!(kernel_dir("lib/modules/6.8.0-2/"), Some("6.8.0-2".into()));
+    assert_eq!(kernel_dir("/usr/lib/modules/6.8.0-2/kernel"), None);
+    assert_eq!(kernel_dir("/usr/lib/modules"), None);
+    assert_eq!(kernel_dir("/opt/lib/modules/x"), None);
 }

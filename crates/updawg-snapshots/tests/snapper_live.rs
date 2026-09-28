@@ -48,6 +48,11 @@ async fn take_change_roll_back_and_prune() {
     // The "install": one file changes, one appears.
     std::fs::write(&file, "3.5.1-2\n").unwrap();
     std::fs::write(dir.join("new.conf"), "x\n").unwrap();
+    std::fs::create_dir_all(dir.join("usr/lib/modules/6.8.0-9/kernel")).unwrap();
+    assert_eq!(
+        snapper.kernels_rolled_away(&before.id).await.unwrap(),
+        vec!["6.8.0-9".to_owned()]
+    );
 
     // Somebody else's snapshot is neither listed nor pruned.
     let admin = std::process::Command::new("snapper")
@@ -65,7 +70,8 @@ async fn take_change_roll_back_and_prune() {
     println!("restored: {restored}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "3.5.1-1\n");
     assert!(!dir.join("new.conf").exists());
-    assert_eq!((restored.modified, restored.deleted), (1, 1));
+    assert!(!dir.join("usr/lib/modules/6.8.0-9").exists());
+    assert_eq!(restored.modified, 1);
 
     // Again, with nothing to put back.
     let again = snapper.rollback(&before.id).await.unwrap();

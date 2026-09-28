@@ -1,0 +1,5 @@
+c..... /srv/bt5/etc/a.conf
+-..... /srv/bt5/etc/b.conf
++..... /srv/bt5/usr/lib/modules/6.8.0-2
++..... /srv/bt5/usr/lib/modules/6.8.0-2/kernel
++..... /srv/bt5/usr/lib/modules/6.8.0-2/modules.dep

@@ -1,0 +1,10 @@
+  {
+      "report": [
+          {
+              "lv": [
+                  {"vg_name":"testvg", "lv_name":"pool", "segtype":"thin-pool", "pool_lv":"", "origin":"", "lv_tags":"", "lv_dm_path":"/dev/mapper/testvg-pool", "lv_time":"2026-09-28 15:34:45 +0000", "lv_size":"1073741824", "data_percent":"6.29"},
+                  {"vg_name":"testvg", "lv_name":"root", "segtype":"thin", "pool_lv":"pool", "origin":"", "lv_tags":"", "lv_dm_path":"/dev/mapper/testvg-root", "lv_time":"2026-09-28 15:34:46 +0000", "lv_size":"838860800", "data_percent":"8.05"}
+              ]
+          }
+      ]
+  }

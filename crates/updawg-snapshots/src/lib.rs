@@ -5,9 +5,17 @@
 //! changes anything, and a `rollback` job puts the host back.
 //!
 //! Adding a provider means implementing [`SnapshotProvider`] and a row in
-//! [`detect`]; nothing else in the agent changes. Snapper (btrfs) is built
-//! (DAWG-116); ZFS and LVM thin are named and not built yet, and say so rather
-//! than pretending there is nothing to snapshot.
+//! [`detect`]; nothing else in the agent changes. Snapper (btrfs, DAWG-116),
+//! ZFS (DAWG-117) and LVM thin (DAWG-118) are built.
+//!
+//! # A kernel the rollback would take away
+//!
+//! A snapshot is of `/`. Where `/boot` is a filesystem of its own — Fedora's
+//! and RHEL's default, a ZFS `bpool` — a rollback that removes a kernel
+//! installed since leaves that kernel in `/boot`, its boot entry pointing at
+//! it, and its modules gone: the next boot can come up with none.
+//! [`SnapshotProvider::kernels_rolled_away`] says which, and the executor
+//! refuses such a rollback before changing anything.
 //!
 //! # What a rollback restores, and what it does not
 //!
@@ -26,7 +34,9 @@
 //! are theirs: the server cannot name one to roll back to, and pruning never
 //! counts or deletes them.
 
+pub mod lvm;
 pub mod snapper;
+pub mod zfs;
 
 use async_trait::async_trait;
 
@@ -100,10 +110,16 @@ pub struct Restored {
     pub created: u64,
     pub modified: u64,
     pub deleted: u64,
+    /// Nothing has changed yet: it happens at the next boot (LVM), and there
+    /// are no counts to give.
+    pub at_next_boot: bool,
 }
 
 impl std::fmt::Display for Restored {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.at_next_boot {
+            return f.write_str("restored at the next boot; nothing has changed until then");
+        }
         write!(
             f,
             "{} file(s) put back, {} restored to their earlier contents, {} removed",
@@ -130,6 +146,33 @@ pub trait SnapshotProvider: Send + Sync {
     /// Delete the agent's own beyond the newest `keep`, and say which went.
     /// Unbounded snapshots fill disks, which is its own outage.
     async fn prune(&self, keep: usize) -> Result<Vec<String>>;
+    /// Kernels installed since snapshot `id` — their module directories, e.g.
+    /// `6.8.0-2` — which rolling back to it would take away.
+    async fn kernels_rolled_away(&self, id: &str) -> Result<Vec<String>>;
+    /// Whether a rollback takes effect only at the next boot, as an LVM merge
+    /// into a mounted root does.
+    fn restores_at_next_boot(&self) -> bool {
+        false
+    }
+    /// For a provider whose rollback happens at the next boot: make `dir` in
+    /// snapshot `id` exactly what it is now, so the agent's own state is not
+    /// rolled back with everything else. Nothing to do for the others, whose
+    /// rollback happens while the agent watches and puts it back itself.
+    async fn carry_into(&self, _id: &str, _dir: &std::path::Path) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The kernel whose module directory `path` is — `lib/modules/<kernel>` or
+/// `usr/lib/modules/<kernel>`, relative to the root and nothing deeper.
+#[must_use]
+pub fn kernel_dir(path: &str) -> Option<String> {
+    let path = path.trim_start_matches('/');
+    let rest = path
+        .strip_prefix("usr/lib/modules/")
+        .or_else(|| path.strip_prefix("lib/modules/"))?;
+    let kernel = rest.trim_end_matches('/');
+    (!kernel.is_empty() && !kernel.contains('/')).then(|| kernel.to_owned())
 }
 
 /// The provider `wanted` names on this host, or why there is none.
@@ -146,16 +189,39 @@ pub async fn detect(wanted: Provider) -> std::result::Result<Box<dyn SnapshotPro
             snapper.available().await?;
             Ok(Box::new(snapper))
         }
-        Provider::Zfs | Provider::Lvm => Err(format!(
-            "agent.toml asks for {}, and this agent version cannot drive it yet",
-            wanted.name()
-        )),
+        Provider::Zfs => {
+            let zfs = zfs::Zfs::root().await?;
+            zfs.available().await?;
+            Ok(Box::new(zfs))
+        }
+        Provider::Lvm => {
+            let lvm = lvm::Lvm::root().await?;
+            lvm.available().await?;
+            Ok(Box::new(lvm))
+        }
         Provider::Auto => {
             let snapper = snapper::Snapper::root();
-            match snapper.available().await {
-                Ok(()) => Ok(Box::new(snapper)),
-                Err(why) => Err(format!("none detected (snapper: {why})")),
-            }
+            let snapper_why = match snapper.available().await {
+                Ok(()) => return Ok(Box::new(snapper)),
+                Err(why) => why,
+            };
+            let zfs_why = match zfs::Zfs::root().await {
+                Ok(zfs) => match zfs.available().await {
+                    Ok(()) => return Ok(Box::new(zfs)),
+                    Err(why) => why,
+                },
+                Err(why) => why,
+            };
+            let lvm_why = match lvm::Lvm::root().await {
+                Ok(lvm) => match lvm.available().await {
+                    Ok(()) => return Ok(Box::new(lvm)),
+                    Err(why) => why,
+                },
+                Err(why) => why,
+            };
+            Err(format!(
+                "none detected (snapper: {snapper_why}; zfs: {zfs_why}; lvm: {lvm_why})"
+            ))
         }
     }
 }

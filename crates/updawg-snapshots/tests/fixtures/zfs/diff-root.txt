@@ -1,0 +1,5 @@
+-	/srv/zroot/sys/gone.txt
++	/srv/zroot/sys/new.conf
++	/srv/zroot/sys/usr/lib/modules/6.8.0-2
+M	/srv/zroot/sys/
+M	/srv/zroot/sys/usr/lib/modules

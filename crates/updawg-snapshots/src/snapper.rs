@@ -153,6 +153,22 @@ impl SnapshotProvider for Snapper {
         parse_undo(&self.snapper(&["undochange", &range]).await?)
     }
 
+    async fn kernels_rolled_away(&self, id: &str) -> Result<Vec<String>> {
+        let (number, _) = parse_id(id)?;
+        if !self.list().await?.iter().any(|s| s.id == id) {
+            return Err(SnapshotError::NotFound { id: id.to_owned() });
+        }
+        let configs = parse_configs(&run(&["--jsonout", "list-configs"]).await?)?;
+        let subvolume = configs
+            .into_iter()
+            .find(|(name, _)| *name == self.config)
+            .map_or_else(|| "/".to_owned(), |(_, s)| s);
+        // Not JSON: `status` prints one change per line either way.
+        let range = format!("{number}..0");
+        let out = run(&["-c", &self.config, "status", &range]).await?;
+        Ok(parse_status_kernels(&out, &subvolume))
+    }
+
     async fn prune(&self, keep: usize) -> Result<Vec<String>> {
         let ours = self.list().await?;
         let excess = ours.len().saturating_sub(keep);
@@ -304,6 +320,30 @@ pub fn parse_undo(out: &str) -> Result<Restored> {
     Err(unparseable(&format!(
         "undochange printed no `create: modify: delete:` summary: {out:?}"
     )))
+}
+
+/// Kernels a rollback would take away, from `snapper status N..0`: module
+/// directories created since snapshot N (`+` first). Paths are absolute on
+/// the live system, under `subvolume`.
+#[must_use]
+pub fn parse_status_kernels(out: &str, subvolume: &str) -> Vec<String> {
+    let mut kernels: Vec<String> = out
+        .lines()
+        .filter_map(|line| {
+            let (flags, path) = line.split_once(' ')?;
+            if !flags.starts_with('+') {
+                return None;
+            }
+            let path = path.trim();
+            let relative = path
+                .strip_prefix(subvolume.trim_end_matches('/'))
+                .unwrap_or(path);
+            crate::kernel_dir(relative)
+        })
+        .collect();
+    kernels.sort();
+    kernels.dedup();
+    kernels
 }
 
 /// The `Available` column of `df -P`, in 1024-byte blocks, as bytes. POSIX

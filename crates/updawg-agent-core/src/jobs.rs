@@ -82,6 +82,9 @@ pub trait Rebooter: Send + Sync {
     async fn reboot_required(&self) -> bool;
     /// Ask the system to reboot after `delay_s`, with `message` on terminals.
     async fn reboot(&self, delay_s: u64, message: &str) -> anyhow::Result<()>;
+    /// Whether `/boot` is a filesystem of its own, which a snapshot of `/`
+    /// does not cover.
+    async fn boot_is_separate(&self) -> bool;
 }
 
 /// The real one: `shutdown -r`.
@@ -126,6 +129,16 @@ impl Rebooter for SystemRebooter {
             String::from_utf8_lossy(&out.stderr).trim()
         );
         Ok(())
+    }
+
+    async fn boot_is_separate(&self) -> bool {
+        // `findmnt /boot` answers only for a mount point; a /boot that is a
+        // directory on / answers nothing and exits 1.
+        tokio::process::Command::new("findmnt")
+            .args(["-n", "-o", "SOURCE", "/boot"])
+            .output()
+            .await
+            .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
     }
 }
 
@@ -711,9 +724,18 @@ async fn perform(
             (done, RebootPolicy::Never)
         }
         Work::Rollback(provider, id, backend) => {
-            let mut done = roll_back(state, provider.as_ref(), id, backend.as_deref(), log).await;
+            let mut done = roll_back(
+                state,
+                provider.as_ref(),
+                id,
+                backend.as_deref(),
+                rebooter,
+                log,
+            )
+            .await;
             if done.status == JobStatus::Succeeded {
-                done.reboot_required = rebooter.reboot_required().await;
+                // A rollback that happens at the next boot has said so.
+                done.reboot_required = done.reboot_required || rebooter.reboot_required().await;
             }
             // After a failure too: a rollback that stopped halfway is a host
             // in a state nobody chose.
@@ -836,13 +858,30 @@ async fn roll_back(
     provider: &dyn SnapshotProvider,
     id: &str,
     backend: Option<&dyn PackageBackend>,
+    rebooter: &dyn Rebooter,
     log: &JobLog,
 ) -> JobComplete {
     let started_at = Utc::now();
+    if let Some(why) = takes_a_kernel_from_boot(provider, id, rebooter).await {
+        log.agent(&why);
+        return failed(JobStatus::RejectedByHost, started_at, Utc::now(), why);
+    }
     let fail = |why: String| {
         log.agent(&why);
         failed(JobStatus::Failed, started_at, Utc::now(), why)
     };
+    // A rollback at the next boot turns this directory into the snapshot's
+    // then, long after this job has ended: its current state goes into the
+    // snapshot now, or the rollback does not happen.
+    if provider.restores_at_next_boot()
+        && let Err(error) = provider.carry_into(id, state.root()).await
+    {
+        let why = format!(
+            "could not write the agent's own state into the snapshot, so did not roll back: {error}"
+        );
+        log.agent(&why);
+        return failed(JobStatus::RejectedByHost, started_at, Utc::now(), why);
+    }
     let carried = match state.carry() {
         Ok(carried) => carried,
         Err(error) => {
@@ -876,6 +915,14 @@ async fn roll_back(
         Err(error) => return fail(format!("the rollback failed: {error}")),
     };
     log.agent(format!("rolled back: {restored}"));
+    if restored.at_next_boot {
+        // Nothing has moved yet, so there is nothing to list: the inventory
+        // after the reboot says what did.
+        return JobComplete {
+            reboot_required: true,
+            ..ended(JobStatus::Succeeded, started_at, Utc::now(), None)
+        };
+    }
     let changes = match (before, backend) {
         (Some(before), Some(b)) => match b.installed().await {
             Ok(after) => package_changes(&before, &after),
@@ -895,6 +942,32 @@ async fn roll_back(
     JobComplete {
         changes,
         ..ended(JobStatus::Succeeded, started_at, Utc::now(), None)
+    }
+}
+
+/// Why this rollback must not run, if it would take away a kernel `/boot`
+/// still holds (see `updawg_snapshots`): the host could boot it with its
+/// modules gone. Refused whole, before anything changes. Not being able to
+/// tell is refused too, on the same host, for the same reason.
+async fn takes_a_kernel_from_boot(
+    provider: &dyn SnapshotProvider,
+    id: &str,
+    rebooter: &dyn Rebooter,
+) -> Option<String> {
+    if !rebooter.boot_is_separate().await {
+        return None;
+    }
+    match provider.kernels_rolled_away(id).await {
+        Ok(kernels) if kernels.is_empty() => None,
+        Ok(kernels) => Some(format!(
+            "rolling back would remove kernel {} from / and not from /boot, which is its own filesystem; \
+             the host could boot a kernel whose modules are gone, so nothing was changed",
+            kernels.join(", ")
+        )),
+        Err(error) => Some(format!(
+            "could not tell whether rolling back would remove a kernel /boot still holds \
+             (/boot is its own filesystem), so nothing was changed: {error}"
+        )),
     }
 }
 
@@ -1457,6 +1530,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         requested: AtomicUsize,
         still_required: bool,
         fail: bool,
+        separate_boot: bool,
     }
 
     impl FakeRebooter {
@@ -1466,6 +1540,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
                 requested: AtomicUsize::new(0),
                 still_required: false,
                 fail: false,
+                separate_boot: false,
             })
         }
     }
@@ -1484,6 +1559,9 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             self.requested.fetch_add(1, Ordering::SeqCst);
             anyhow::ensure!(!self.fail, "shutdown: permission denied");
             Ok(())
+        }
+        async fn boot_is_separate(&self) -> bool {
+            self.separate_boot
         }
     }
 
@@ -1663,6 +1741,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             requested: AtomicUsize::new(0),
             still_required: true,
             fail: false,
+            separate_boot: false,
         })
     }
 
@@ -1802,6 +1881,11 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         state_dir: std::path::PathBuf,
         backend: Arc<Backend>,
         fail_create: bool,
+        /// What `kernels_rolled_away` answers.
+        kernels: std::sync::Mutex<Vec<String>>,
+        /// Rolls back at the next boot, as LVM does.
+        at_next_boot: std::sync::atomic::AtomicBool,
+        carried_into: std::sync::Mutex<Vec<std::path::PathBuf>>,
         free: AtomicU64,
         taken: std::sync::Mutex<Vec<Taken>>,
         kept: std::sync::Mutex<Vec<usize>>,
@@ -1854,6 +1938,14 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             Ok(vec![])
         }
         async fn rollback(&self, id: &str) -> updawg_snapshots::Result<updawg_snapshots::Restored> {
+            if self.at_next_boot.load(Ordering::SeqCst) {
+                // LVM's: merged at the next boot, nothing changed now.
+                self.rolled_back.fetch_add(1, Ordering::SeqCst);
+                return Ok(updawg_snapshots::Restored {
+                    at_next_boot: true,
+                    ..updawg_snapshots::Restored::default()
+                });
+            }
             let taken = self.taken.lock().unwrap();
             let Some(Taken {
                 seen_jobs,
@@ -1871,14 +1963,27 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             self.backend.packages.lock().unwrap().clone_from(packages);
             self.rolled_back.fetch_add(1, Ordering::SeqCst);
             Ok(updawg_snapshots::Restored {
-                created: 0,
                 modified: 1,
-                deleted: 0,
+                ..updawg_snapshots::Restored::default()
             })
         }
         async fn prune(&self, keep: usize) -> updawg_snapshots::Result<Vec<String>> {
             self.kept.lock().unwrap().push(keep);
             Ok(vec![])
+        }
+        async fn kernels_rolled_away(&self, _id: &str) -> updawg_snapshots::Result<Vec<String>> {
+            Ok(self.kernels.lock().unwrap().clone())
+        }
+        fn restores_at_next_boot(&self) -> bool {
+            self.at_next_boot.load(Ordering::SeqCst)
+        }
+        async fn carry_into(
+            &self,
+            _id: &str,
+            dir: &std::path::Path,
+        ) -> updawg_snapshots::Result<()> {
+            self.carried_into.lock().unwrap().push(dir.to_path_buf());
+            Ok(())
         }
     }
 
@@ -1888,6 +1993,9 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             state_dir: w.executor.state.root().to_path_buf(),
             backend: Arc::clone(&w.backend),
             fail_create,
+            kernels: std::sync::Mutex::default(),
+            at_next_boot: std::sync::atomic::AtomicBool::new(false),
+            carried_into: std::sync::Mutex::default(),
             free: AtomicU64::new(u64::MAX),
             taken: std::sync::Mutex::default(),
             kept: std::sync::Mutex::default(),
@@ -2144,6 +2252,78 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         let refused = refusals(&w);
         assert!(refused[0].contains("not a snapshot"), "{refused:?}");
         assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 0);
+    }
+
+    /// A rollback that would take away a kernel `/boot` still holds is
+    /// refused before anything changes; with `/boot` on `/`, the kernel goes
+    /// with everything else and it runs.
+    #[tokio::test]
+    async fn a_rollback_that_would_leave_boot_holding_a_kernel_without_modules_is_refused() {
+        for separate in [true, false] {
+            let (mut w, snapshots) = with_snapshots(
+                world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT),
+                false,
+            );
+            let rebooter = Arc::new(FakeRebooter {
+                separate_boot: separate,
+                ..Arc::try_unwrap(FakeRebooter::new()).ok().unwrap()
+            });
+            w.executor = w
+                .executor
+                .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+            *snapshots.kernels.lock().unwrap() = vec!["6.12.48+deb13-amd64".into()];
+            w.executor
+                .deliver(snapshotting(&w, SnapshotPolicy::Required))
+                .await;
+            let installed = completed(&w).await;
+            w.executor
+                .deliver(job(&w, |j| {
+                    j.spec = JobSpec::Rollback(updawg_protocol::Rollback {
+                        snapshot_id: installed.snapshot_id.clone().unwrap(),
+                    });
+                }))
+                .await;
+            let done = report_number(&w, 1).await;
+            if separate {
+                assert_eq!(done.status, JobStatus::RejectedByHost, "{done:?}");
+                assert!(done.error.unwrap().contains("6.12.48+deb13-amd64"));
+                assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 0);
+            } else {
+                assert_eq!(done.status, JobStatus::Succeeded, "{done:?}");
+                assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    /// LVM's rollback happens at the next boot: the agent's state goes into
+    /// the snapshot first, and the report says a reboot is needed and claims
+    /// no package moved yet.
+    #[tokio::test]
+    async fn a_rollback_at_the_next_boot_carries_the_agents_state_and_asks_for_a_reboot() {
+        let (w, snapshots) = with_snapshots(
+            world_allowing("managed", succeeds, "", ALLOW_SNAPSHOT),
+            false,
+        );
+        snapshots.at_next_boot.store(true, Ordering::SeqCst);
+        w.executor
+            .deliver(snapshotting(&w, SnapshotPolicy::Required))
+            .await;
+        let installed = completed(&w).await;
+        w.executor
+            .deliver(job(&w, |j| {
+                j.spec = JobSpec::Rollback(updawg_protocol::Rollback {
+                    snapshot_id: installed.snapshot_id.clone().unwrap(),
+                });
+            }))
+            .await;
+        let done = report_number(&w, 1).await;
+        assert_eq!(done.status, JobStatus::Succeeded, "{done:?}");
+        assert!(done.reboot_required);
+        assert!(done.changes.is_empty());
+        assert_eq!(
+            *snapshots.carried_into.lock().unwrap(),
+            vec![w.executor.state.root().to_path_buf()]
+        );
     }
 
     #[test]

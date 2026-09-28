@@ -1,0 +1,3 @@
+  Delaying merge since origin volume is open.
+  Logical volume testvg/root contains a filesystem in use.
+  Merging of thin snapshot testvg/updawg_job_x will occur on next activation of testvg/root.
