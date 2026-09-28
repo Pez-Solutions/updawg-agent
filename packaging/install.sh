@@ -31,9 +31,11 @@ fail() { printf 'updawg: %s\n' "$*" >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || fail "Linux only; this is $(uname -s)."
 [ "$(id -u)" -eq 0 ] || fail "run as root: curl -fsSL https://get.updawg.net | sudo UPDAWG_TOKEN=... sh"
 
+# x86_64's binaries at the top, aarch64's in aarch64/ (DAWG-41).
 case "$(uname -m)" in
-  x86_64 | amd64) ;;
-  *) fail "no agent build for $(uname -m) yet — only x86_64. Nothing was changed." ;;
+  x86_64 | amd64) dir= ;;
+  aarch64 | arm64) dir=aarch64/ ;;
+  *) fail "no agent build for $(uname -m) — only x86_64 and aarch64. Nothing was changed." ;;
 esac
 
 [ -r /etc/os-release ] || fail "no /etc/os-release, so the distribution cannot be identified. Nothing was changed."
@@ -60,7 +62,8 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 say "downloading the agent for ${PRETTY_NAME:-Linux} ($(uname -m))"
-for f in SHA256SUMS updawgd updawgctl updawgd.service; do
+mkdir -p "$tmp/aarch64"
+for f in SHA256SUMS "${dir}updawgd" "${dir}updawgctl" updawgd.service; do
   fetch "$BASE/$f" "$tmp/$f" || fail "could not download $BASE/$f. Nothing was changed."
 done
 
@@ -70,7 +73,7 @@ done
   || fail "the download does not match SHA256SUMS. Nothing was changed."
 
 # ----------------------------------------------------------------- install
-install -m 0755 "$tmp/updawgd" "$tmp/updawgctl" "$BIN/"
+install -m 0755 "$tmp/${dir}updawgd" "$tmp/${dir}updawgctl" "$BIN/"
 install -m 0644 "$tmp/updawgd.service" /etc/systemd/system/updawgd.service
 say "installed $("$BIN/updawgctl" --version)"
 
