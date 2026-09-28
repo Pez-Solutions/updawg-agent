@@ -320,6 +320,39 @@ pub struct JobComplete {
     pub inventory_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// What a `run_preflight` job found (DAWG-147), one entry per check.
+    /// Empty for every other kind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preflight: Vec<PreflightCheck>,
+}
+
+/// One preflight check's answer: whether the change can go ahead as far as
+/// this check can tell, and why (DAWG-147).
+///
+/// A check that could not run says so as a `warn` with the reason, never as
+/// a `pass`: "could not look" is not "looked and it is fine".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreflightCheck {
+    /// Stable, for code: `disk_space`, `held_packages`, `modified_conffiles`,
+    /// `dkms_modules`, `snapshot`, `reboot`.
+    pub name: String,
+    pub status: CheckStatus,
+    /// One sentence for a person, saying what to do when it is not a pass.
+    pub summary: String,
+    /// The specifics, one per entry: a package, a file, a module. Structured
+    /// so a portal can list them rather than parse a sentence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    Pass,
+    /// Worth a person's attention; not a reason to stop on its own.
+    Warn,
+    /// The change should not go ahead until this is dealt with.
+    Fail,
 }
 
 #[cfg(test)]

@@ -16,8 +16,9 @@
 //! 4. **Run it**, in the background and one at a time (DAWG-106), then say how
 //!    it went and upload a fresh inventory so the server sees the new state.
 //!
-//! `apply_updates`, `reboot` (DAWG-103), `snapshot` and `rollback` (DAWG-119)
-//! run. The others are refused as not built, which is honest and halts rather
+//! `apply_updates`, `reboot` (DAWG-103), `snapshot`, `rollback` (DAWG-119)
+//! and `run_preflight` (DAWG-147) run. The others are refused as not built,
+//! which is honest and halts rather
 //! than pretends.
 //!
 //! # Snapshots
@@ -419,6 +420,15 @@ impl Executor {
             // Permission was checked already: `reboot` is its own kind, and
             // agent.toml must allow it.
             JobSpec::Reboot(reboot) => Work::Reboot(reboot.policy),
+            // Changes nothing, so observe mode runs it too (DAWG-147).
+            JobSpec::RunPreflight(preflight) => Work::Preflight(
+                preflight.clone(),
+                self.backend.clone(),
+                self.snapshots
+                    .as_ref()
+                    .map(|p| p.provider().name().to_owned())
+                    .map_err(Clone::clone),
+            ),
             JobSpec::Snapshot(snapshot) => Work::Snapshot(
                 self.provider_for(job)?,
                 snapshot
@@ -544,6 +554,13 @@ enum Work {
         Arc<dyn SnapshotProvider>,
         String,
         Option<Arc<dyn PackageBackend>>,
+    ),
+    /// Look, and change nothing (DAWG-147): the checks in `crate::preflight`,
+    /// with the snapshot provider or why there is none.
+    Preflight(
+        updawg_protocol::job::Preflight,
+        Option<Arc<dyn PackageBackend>>,
+        std::result::Result<String, String>,
     ),
 }
 
@@ -674,6 +691,7 @@ async fn reboot_only(rebooter: &dyn Rebooter, log: &JobLog) -> JobComplete {
         reboot_required,
         inventory_hash: None,
         error: None,
+        preflight: vec![],
     }
 }
 
@@ -722,6 +740,37 @@ async fn perform(
                 Err(why) => failed(JobStatus::Failed, started_at, Utc::now(), why),
             };
             (done, RebootPolicy::Never)
+        }
+        Work::Preflight(preflight, backend, snapshots) => {
+            let started_at = Utc::now();
+            let reboot_now = if rebooter.reboot_required().await {
+                updawg_protocol::RebootRequired::Yes
+            } else {
+                updawg_protocol::RebootRequired::No
+            };
+            let facts = crate::preflight::gather(
+                preflight,
+                backend.as_deref(),
+                snapshots.clone(),
+                reboot_now,
+            )
+            .await;
+            let checks = crate::preflight::evaluate(&facts);
+            for c in &checks {
+                log.agent(format!(
+                    "preflight {}: {:?}: {}",
+                    c.name, c.status, c.summary
+                ));
+            }
+            // The job ran; what it found is the checks, and a failing check
+            // is an answer, not a failed job.
+            (
+                JobComplete {
+                    preflight: checks,
+                    ..ended(JobStatus::Succeeded, started_at, Utc::now(), None)
+                },
+                RebootPolicy::Never,
+            )
         }
         Work::Rollback(provider, id, backend) => {
             let mut done = roll_back(
@@ -1103,6 +1152,7 @@ fn report(
                 reboot_required: outcome.reboot_required,
                 inventory_hash: None,
                 error: None,
+                preflight: vec![],
             }
         }
         // ⚠️ Nothing changed: the plan could not be carried out as approved.
@@ -1145,6 +1195,7 @@ fn ended(
         reboot_required: false,
         inventory_hash: None,
         error,
+        preflight: vec![],
     }
 }
 
@@ -2324,6 +2375,66 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             *snapshots.carried_into.lock().unwrap(),
             vec![w.executor.state.root().to_path_buf()]
         );
+    }
+
+    /// DAWG-147's bar: preflight changes nothing. Run in observe mode, which
+    /// refuses anything that would, against fakes that count every mutating
+    /// call, and the state directory holds nothing new but the job's record.
+    #[tokio::test]
+    async fn preflight_runs_in_observe_mode_and_changes_nothing() {
+        let (mut w, snapshots) = with_snapshots(
+            world_allowing("observe", succeeds, "", "\"preflight\""),
+            false,
+        );
+        let rebooter = FakeRebooter::new();
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        let before: Vec<_> = std::fs::read_dir(w.executor.state.root())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+
+        w.executor
+            .deliver(job(&w, |j| {
+                j.spec = JobSpec::RunPreflight(updawg_protocol::job::Preflight {
+                    target_release: None,
+                    packages: vec![PackagePin {
+                        name: "openssl".into(),
+                        arch: "amd64".into(),
+                        from: "3.5.1-1".into(),
+                        to: "3.5.1-2".into(),
+                    }],
+                });
+            }))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded, "{done:?}");
+        let names: Vec<&str> = done.preflight.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "disk_space",
+                "held_packages",
+                "modified_conffiles",
+                "dkms_modules",
+                "snapshot",
+                "reboot"
+            ]
+        );
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+        assert!(snapshots.taken.lock().unwrap().is_empty());
+        assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 0);
+        assert!(snapshots.kept.lock().unwrap().is_empty(), "nothing pruned");
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
+        let mut after: Vec<_> = std::fs::read_dir(w.executor.state.root())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        after.retain(|f| f != "seen-jobs.json");
+        let mut before = before;
+        before.retain(|f| f != "seen-jobs.json");
+        assert_eq!(after, before, "preflight left something behind");
     }
 
     #[test]

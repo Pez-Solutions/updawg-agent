@@ -110,9 +110,9 @@ pub use inventory::{
     SystemFacts,
 };
 pub use job::{
-    ApplyUpdates, DistUpgrade, HealthCheckReport, Job, JobAck, JobComplete, JobKind, JobSpec,
-    JobStatus, PackageChange, PackagePin, Preflight, Reboot, RebootPolicy, Rollback, SelfUpdate,
-    Snapshot, SnapshotPolicy,
+    ApplyUpdates, CheckStatus, DistUpgrade, HealthCheckReport, Job, JobAck, JobComplete, JobKind,
+    JobSpec, JobStatus, PackageChange, PackagePin, Preflight, PreflightCheck, Reboot, RebootPolicy,
+    Rollback, SelfUpdate, Snapshot, SnapshotPolicy,
 };
 pub use logs::{LogLine, LogStream};
 pub use releases::{ReleaseChannel, ReleaseManifest};

@@ -575,6 +575,7 @@ mod tests {
                     reboot_required: true,
                     inventory_hash: None,
                     error: None,
+                    preflight: vec![],
                 },
                 boot_id_before: "b81e".into(),
             })
