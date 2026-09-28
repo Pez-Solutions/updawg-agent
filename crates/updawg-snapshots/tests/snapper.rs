@@ -12,7 +12,7 @@
 
 use updawg_snapshots::{
     Restored, SnapshotError,
-    snapper::{parse_configs, parse_id, parse_list, parse_number, parse_undo},
+    snapper::{parse_configs, parse_df, parse_id, parse_list, parse_number, parse_undo},
 };
 
 fn fixture(name: &str) -> String {
@@ -55,6 +55,18 @@ fn they_are_listed_oldest_first_whatever_order_snapper_prints() {
     let ours = parse_list(&value.to_string()).unwrap();
     let ids: Vec<_> = ours.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["snapper:1:job_x", "snapper:7:job_y"]);
+}
+
+/// `df -P /srv/bt` on the same host.
+#[test]
+fn free_space_is_df_s_available_column() {
+    assert_eq!(
+        parse_df(&fixture("df.txt")),
+        Some(1_870_080 * 1024),
+        "{}",
+        fixture("df.txt")
+    );
+    assert_eq!(parse_df(""), None);
 }
 
 #[test]

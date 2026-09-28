@@ -102,10 +102,20 @@ pub struct Snapshots {
     /// its own outage.
     #[serde(default = "default_keep")]
     pub keep: u32,
+    /// No snapshot with less than this free where it would live, in MiB
+    /// (DAWG-121). A snapshot pins the files an install replaces, so the
+    /// install needs room for the old and the new: running out halfway
+    /// through is worse than not starting.
+    #[serde(default = "default_min_free_mb")]
+    pub min_free_mb: u64,
 }
 
 const fn default_keep() -> u32 {
     3
+}
+
+const fn default_min_free_mb() -> u64 {
+    1024
 }
 
 impl SnapshotProvider {
@@ -127,6 +137,7 @@ impl Default for Snapshots {
         Self {
             provider: SnapshotProvider::default(),
             keep: default_keep(),
+            min_free_mb: default_min_free_mb(),
         }
     }
 }
@@ -511,6 +522,7 @@ timeout = "5s"
 
         assert_eq!(cfg.snapshots.provider, SnapshotProvider::Auto);
         assert_eq!(cfg.snapshots.keep, 3);
+        assert_eq!(cfg.snapshots.min_free_mb, 1024);
 
         assert_eq!(cfg.health_checks.len(), 2);
         assert_eq!(cfg.health_checks[0].name(), "nginx running");

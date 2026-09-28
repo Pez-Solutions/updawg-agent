@@ -92,6 +92,26 @@ impl SnapshotProvider for Snapper {
         }
     }
 
+    async fn free_bytes(&self) -> Result<u64> {
+        let configs = parse_configs(&run(&["--jsonout", "list-configs"]).await?)?;
+        let Some((_, subvolume)) = configs.into_iter().find(|(name, _)| *name == self.config)
+        else {
+            return Err(SnapshotError::Unavailable(format!(
+                "snapper has no `{}` configuration",
+                self.config
+            )));
+        };
+        let out = tokio::process::Command::new("df")
+            .args(["-P", &subvolume])
+            .env("LC_ALL", "C")
+            .output()
+            .await?;
+        parse_df(&String::from_utf8_lossy(&out.stdout)).ok_or_else(|| SnapshotError::Unparseable {
+            tool: "df",
+            detail: String::from_utf8_lossy(&out.stdout).into_owned(),
+        })
+    }
+
     async fn create(&self, description: &str, job: &str) -> Result<Snapshot> {
         let userdata = format!("{MARK}={job}");
         // No cleanup algorithm: snapper's own timers must not delete one a
@@ -284,6 +304,16 @@ pub fn parse_undo(out: &str) -> Result<Restored> {
     Err(unparseable(&format!(
         "undochange printed no `create: modify: delete:` summary: {out:?}"
     )))
+}
+
+/// The `Available` column of `df -P`, in 1024-byte blocks, as bytes. POSIX
+/// specifies the format, which is why it is `df` and not `statvfs`: the
+/// workspace forbids `unsafe`.
+#[must_use]
+pub fn parse_df(out: &str) -> Option<u64> {
+    let line = out.lines().nth(1)?;
+    let blocks: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
+    Some(blocks.saturating_mul(1024))
 }
 
 fn json(out: &str) -> Result<serde_json::Value> {

@@ -4,3 +4,5 @@ loop-mounted btrfs, on 2026-09-28. Not hand-written: `list.json` is the
 agent's snapshot (userdata `updawg=job_x`), an administrator's (`admin's
 own`, no userdata) and snapper's number 0, the live filesystem.
 `tests/snapper_live.rs` runs the same commands for real.
+
+`df.txt` is `LC_ALL=C df -P /srv/bt` on the same host.

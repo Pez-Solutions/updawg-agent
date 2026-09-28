@@ -1,0 +1,2 @@
+Filesystem     1024-blocks  Used Available Capacity Mounted on
+/dev/loop0         2097152  5984   1870080       1% /srv/bt

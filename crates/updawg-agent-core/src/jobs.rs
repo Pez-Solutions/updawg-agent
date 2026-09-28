@@ -539,10 +539,7 @@ impl crate::checkin::JobSink for Executor {
         );
         let checks = self.checks();
         let (state, rebooter) = (self.state.clone(), Arc::clone(&self.rebooter));
-        // At least one: the snapshot just taken is the one a rollout needs.
-        let keep = usize::try_from(self.config.snapshots.keep)
-            .unwrap_or(usize::MAX)
-            .max(1);
+        let room = Room::from(&self.config.snapshots);
         // The warning is the host's to set, in agent.toml's `[reboot]`.
         let warning = self.config.reboot.clone();
         // In the background: an install can take minutes, and the check-in
@@ -551,7 +548,7 @@ impl crate::checkin::JobSink for Executor {
             let _one_at_a_time = running.lock().await;
             let log = JobLog::start(Arc::clone(&reporter), job.clone(), 0);
             let (mut done, policy) =
-                perform(&job, &work, &checks, &state, rebooter.as_ref(), keep, &log).await;
+                perform(&job, &work, &checks, &state, rebooter.as_ref(), room, &log).await;
             if wants_reboot(policy, &done) {
                 log.agent(format!(
                     "rebooting in {} s to finish the job",
@@ -659,13 +656,13 @@ async fn perform(
     checks: &[Check],
     state: &LocalState,
     rebooter: &dyn Rebooter,
-    keep: usize,
+    room: Room,
     log: &JobLog,
 ) -> (JobComplete, RebootPolicy) {
     match work {
         Work::Apply(plan, backend, policy, snapshot) => {
             let started_at = Utc::now();
-            match snapshot_first(job, snapshot.as_ref(), keep, log).await {
+            match snapshot_first(job, snapshot.as_ref(), room, log).await {
                 // `required`, and none: nothing was changed.
                 Err(why) => (
                     failed(JobStatus::RejectedByHost, started_at, Utc::now(), why),
@@ -689,7 +686,7 @@ async fn perform(
         Work::Reboot(policy) => (reboot_only(rebooter, log).await, *policy),
         Work::Snapshot(provider, description) => {
             let started_at = Utc::now();
-            let done = match take(job, provider.as_ref(), description, keep, log).await {
+            let done = match take(job, provider.as_ref(), description, room, log).await {
                 Ok(id) => JobComplete {
                     snapshot_id: Some(id),
                     ..ended(JobStatus::Succeeded, started_at, Utc::now(), None)
@@ -720,14 +717,14 @@ async fn perform(
 async fn snapshot_first(
     job: &Job,
     first: Option<&SnapshotFirst>,
-    keep: usize,
+    room: Room,
     log: &JobLog,
 ) -> Result<Option<String>, String> {
     let Some(first) = first else {
         return Ok(None);
     };
     let description = format!("updawg: before {}", job.id);
-    match take(job, first.provider.as_ref(), &description, keep, log).await {
+    match take(job, first.provider.as_ref(), &description, room, log).await {
         Ok(id) => Ok(Some(id)),
         Err(why) if first.required => {
             let why = format!(
@@ -743,7 +740,29 @@ async fn snapshot_first(
     }
 }
 
+/// How many of its own snapshots the agent keeps, and how much room one needs
+/// (`[snapshots]` in agent.toml).
+#[derive(Debug, Clone, Copy)]
+struct Room {
+    /// At least one: the snapshot just taken is the one a rollout needs.
+    keep: usize,
+    min_free_bytes: u64,
+}
+
+impl From<&crate::config::Snapshots> for Room {
+    fn from(s: &crate::config::Snapshots) -> Self {
+        Self {
+            keep: usize::try_from(s.keep).unwrap_or(usize::MAX).max(1),
+            min_free_bytes: s.min_free_mb.saturating_mul(1024 * 1024),
+        }
+    }
+}
+
 /// Take a snapshot for `job`, then prune the agent's own down to `keep`.
+///
+/// Not with less than `min_free_mb` free (DAWG-121). Space that cannot be
+/// measured does not stop it: the check is a guard against a known-full
+/// disk, not a condition for patching.
 ///
 /// A failed prune is logged and does not fail the job: the snapshot it was
 /// for exists, and a disk filling slowly is for a person to see, not a
@@ -752,9 +771,24 @@ async fn take(
     job: &Job,
     provider: &dyn SnapshotProvider,
     description: &str,
-    keep: usize,
+    room: Room,
     log: &JobLog,
 ) -> Result<String, String> {
+    let Room {
+        keep,
+        min_free_bytes,
+    } = room;
+    match provider.free_bytes().await {
+        Ok(free) if free < min_free_bytes => {
+            return Err(format!(
+                "only {} MiB free where the snapshot would live, and [snapshots] min_free_mb is {}",
+                free / (1024 * 1024),
+                min_free_bytes / (1024 * 1024)
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => log.agent(format!("could not tell how much space is free: {error}")),
+    }
     log.agent(format!("taking a {} snapshot", provider.provider().name()));
     let snapshot = provider
         .create(description, job.id.as_str())
@@ -1753,6 +1787,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         state_dir: std::path::PathBuf,
         backend: Arc<Backend>,
         fail_create: bool,
+        free: AtomicU64,
         taken: std::sync::Mutex<Vec<Taken>>,
         kept: std::sync::Mutex<Vec<usize>>,
         rolled_back: AtomicUsize,
@@ -1772,6 +1807,9 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         }
         async fn available(&self) -> Result<(), String> {
             Ok(())
+        }
+        async fn free_bytes(&self) -> updawg_snapshots::Result<u64> {
+            Ok(self.free.load(Ordering::SeqCst))
         }
         async fn create(
             &self,
@@ -1835,6 +1873,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             state_dir: w.executor.state.root().to_path_buf(),
             backend: Arc::clone(&w.backend),
             fail_create,
+            free: AtomicU64::new(u64::MAX),
             taken: std::sync::Mutex::default(),
             kept: std::sync::Mutex::default(),
             rolled_back: AtomicUsize::new(0),
@@ -1945,6 +1984,30 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         let done = completed(&w).await;
         assert_eq!(done.status, JobStatus::RejectedByHost);
         assert!(done.error.unwrap().contains("nothing was changed"));
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    /// A snapshot pins what the install replaces: not on a full disk.
+    #[tokio::test]
+    async fn no_snapshot_is_taken_with_less_room_than_agent_toml_asks_for() {
+        let (w, snapshots) = with_snapshots(
+            world_allowing(
+                "managed",
+                succeeds,
+                "[snapshots]\nmin_free_mb = 2048",
+                ALLOW_SNAPSHOT,
+            ),
+            false,
+        );
+        snapshots.free.store(1024 * 1024 * 1024, Ordering::SeqCst);
+        w.executor
+            .deliver(snapshotting(&w, SnapshotPolicy::Required))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::RejectedByHost);
+        let error = done.error.unwrap();
+        assert!(error.contains("only 1024 MiB free"), "{error}");
+        assert!(snapshots.taken.lock().unwrap().is_empty());
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
     }
 

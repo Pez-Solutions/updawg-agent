@@ -118,6 +118,9 @@ pub trait SnapshotProvider: Send + Sync {
     /// Whether this provider can take a snapshot on this host now, and if
     /// not, why not.
     async fn available(&self) -> std::result::Result<(), String>;
+    /// Bytes free where a snapshot would live (DAWG-121). A snapshot pins
+    /// the files an install replaces, so the install needs room for both.
+    async fn free_bytes(&self) -> Result<u64>;
     /// Take one, marked as the agent's and as taken for `job`.
     async fn create(&self, description: &str, job: &str) -> Result<Snapshot>;
     /// The agent's own, oldest first.

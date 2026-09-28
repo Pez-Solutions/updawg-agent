@@ -34,6 +34,8 @@ async fn take_change_roll_back_and_prune() {
     let (snapper, dir) = scratch();
     snapper.available().await.unwrap();
     snapper.prune(0).await.unwrap();
+    let free = snapper.free_bytes().await.unwrap();
+    assert!(free > 1024 * 1024, "{free}");
 
     let file = dir.join("openssl.version");
     std::fs::write(&file, "3.5.1-1\n").unwrap();
