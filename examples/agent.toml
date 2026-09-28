@@ -6,7 +6,7 @@ server = "https://agents.updawg.net"
 mode = "managed"
 
 [permissions]
-allow = ["refresh", "apply_security", "apply_patch", "apply_kernel", "reboot", "snapshot"]
+allow = ["refresh", "preflight", "apply_patch", "reboot", "snapshot"]
 deny  = ["dist_upgrade"]
 
 [schedule]

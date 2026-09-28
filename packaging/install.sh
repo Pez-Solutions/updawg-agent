@@ -82,12 +82,20 @@ else
 # Updawg agent configuration. Written once by install.sh and never again.
 #
 # Local configuration always wins: the server can narrow what this agent does,
-# never widen it past this file. `observe` reports and changes nothing; see
-# https://github.com/Pez-Solutions/updawg-agent for `managed` and permissions.
+# never widen it past this file.
+#
+# `managed` runs jobs your organization approved and signed, but only the
+# kinds allowed below. For a host that must only report, set mode = "observe".
 server = "https://agents.updawg.net"
-mode = "observe"
+mode = "managed"
+
+[permissions]
+# Not "reboot" (add it when this host may be rebooted by an approved job) and
+# not "dist_upgrade" (moving to a new release is always your call, on the host).
+allow = ["refresh", "preflight", "apply_patch", "snapshot"]
+deny  = ["dist_upgrade"]
 TOML
-  say "wrote $CONF (observe mode: reports, changes nothing)"
+  say "wrote $CONF (managed: applies approved updates; no reboots, no release upgrades)"
 fi
 
 # ------------------------------------------------------------------ enroll

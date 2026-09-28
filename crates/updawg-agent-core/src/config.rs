@@ -241,10 +241,21 @@ impl HealthCheck {
     }
 }
 
+/// See [`AgentConfig::mode`]. Not the protocol's `AgentMode::default()`,
+/// which stays `observe`: that one is what a report that omits the mode means,
+/// and nothing may be read as more permissive than it said.
+const fn default_mode() -> Mode {
+    Mode::Managed
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub server: String,
-    #[serde(default)]
+    /// `managed` when the file does not say: an agent is installed to act on
+    /// what its organization approves. What it may do is still only what
+    /// `[permissions]` allows, and an empty allow list permits nothing — so a
+    /// truncated file still fails closed.
+    #[serde(default = "default_mode")]
     pub mode: Mode,
     #[serde(default)]
     pub permissions: Permissions,
@@ -533,9 +544,28 @@ inventory_interval = "6 hours"
     }
 
     #[test]
-    fn mode_defaults_to_observe_when_omitted() {
+    fn mode_defaults_to_managed_when_omitted() {
         let cfg = AgentConfig::from_toml(r#"server = "https://agents.updawg.net""#)
             .expect("minimal config should parse");
+        assert_eq!(cfg.mode, Mode::Managed);
+    }
+
+    #[test]
+    fn managed_by_default_still_permits_nothing_it_was_not_given() {
+        // The mode defaulting to managed is safe only because permissions do
+        // not default to anything: a file with neither permits no change.
+        let cfg = AgentConfig::from_toml(r#"server = "https://agents.updawg.net""#)
+            .expect("minimal config should parse");
+        for kind in [JobKind::ApplyUpdates, JobKind::Reboot, JobKind::DistUpgrade] {
+            assert!(!cfg.permissions.permits(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn observe_written_down_is_still_observe() {
+        let cfg =
+            AgentConfig::from_toml("server = \"https://agents.updawg.net\"\nmode = \"observe\"")
+                .expect("parse");
         assert_eq!(cfg.mode, Mode::Observe);
     }
 }

@@ -56,9 +56,12 @@ cargo run --bin updawgctl -- status
    `Permissions::intersect` and covered by tests that assert the server cannot
    grant a permission the local config withholds.
 
-Permissions also **fail closed**: an empty allow list permits nothing, and `mode`
-defaults to `observe`, so a truncated or malformed config leaves the agent
-reporting rather than acting.
+Permissions also **fail closed**: an empty allow list permits nothing, so a
+truncated or malformed config leaves the agent reporting rather than acting.
+`mode` defaults to `managed` — an agent is installed to act on what its
+organization approves — and `install.sh` writes `managed` with `refresh`,
+`preflight`, `apply_patch` and `snapshot` allowed (no `reboot`, no
+`dist_upgrade`). Set `mode = "observe"` for a host that must only report.
 
 ## Why the backends shell out
 
