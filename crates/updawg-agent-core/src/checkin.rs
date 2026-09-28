@@ -266,6 +266,23 @@ impl GatewayCheckIn {
 #[async_trait]
 impl CheckIn for GatewayCheckIn {
     async fn check_in(&self) -> anyhow::Result<CheckinOutcome> {
+        let result = self.check_in_once().await;
+        // For `updawgctl status` (DAWG-37). A write that fails is logged and
+        // costs the check-in nothing.
+        let last = crate::state::LastCheckin {
+            at: chrono::Utc::now(),
+            ok: result.is_ok(),
+            error: result.as_ref().err().map(|e| format!("{e:#}")),
+        };
+        if let Err(error) = self.state.set_last_checkin(&last) {
+            tracing::debug!(%error, "could not record the check-in for updawgctl");
+        }
+        result
+    }
+}
+
+impl GatewayCheckIn {
+    async fn check_in_once(&self) -> anyhow::Result<CheckinOutcome> {
         let request = self.request().await;
         if request.boot_id.is_empty() {
             tracing::debug!("checking in without a boot id; /proc is not readable");

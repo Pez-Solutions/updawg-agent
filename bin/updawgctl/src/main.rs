@@ -120,7 +120,7 @@ enum Command {
     Status,
     /// Print exactly what would be uploaded, and upload nothing.
     PrintInventory {
-        /// Emit JSON rather than a human-readable summary.
+        /// Emit the exact JSON the agent uploads, rather than a summary.
         #[arg(long)]
         json: bool,
     },
@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
         }
         Command::Status => status(&cli, &state)?,
         Command::PrintInventory { json } => print_inventory(&cli.config, json).await?,
-        Command::Jobs => println!("jobs: not implemented yet (DAWG-29)"),
+        Command::Jobs => jobs(&state)?,
         Command::Sign { .. } => println!("sign: not implemented yet (DAWG-148)"),
     }
     Ok(())
@@ -249,8 +249,91 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
         }
     }
 
-    println!("status:    check-in state not implemented yet (DAWG-32)");
+    let now = chrono::Utc::now();
+    match state.last_checkin() {
+        Ok(Some(last)) => println!("{}", describe_checkin(&last, now)),
+        Ok(None) => println!("check-in:  none recorded yet (is updawgd running?)"),
+        Err(e) => println!("check-in:  UNREADABLE — {e}"),
+    }
+    match state.pending_reboot() {
+        Ok(Some(pending)) => println!(
+            "reboot:    pending for job {}, asked for by this agent; it finishes the job when the host is back",
+            pending.job.id
+        ),
+        Ok(None) => {}
+        Err(e) => println!("reboot:    record UNREADABLE — {e}"),
+    }
+    let running: Vec<_> = state
+        .job_history()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|j| j.status == "running" || j.status == "rebooting")
+        .collect();
+    if running.is_empty() {
+        println!("jobs:      none running");
+    } else {
+        for job in running {
+            println!("job:       {} {} ({})", job.id, job.kind, job.status);
+        }
+    }
     Ok(())
+}
+
+/// One line about the last check-in, for a person: when, and whether the
+/// gateway answered.
+fn describe_checkin(
+    last: &updawg_agent_core::state::LastCheckin,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let ago = ago(now - last.at);
+    if last.ok {
+        format!(
+            "check-in:  ok, {ago} ({})",
+            last.at.format("%Y-%m-%d %H:%M:%S UTC")
+        )
+    } else {
+        format!(
+            "check-in:  FAILED {ago}: {}",
+            last.error.as_deref().unwrap_or("no detail")
+        )
+    }
+}
+
+fn ago(d: chrono::Duration) -> String {
+    let s = d.num_seconds().max(0);
+    match s {
+        0..=59 => format!("{s} s ago"),
+        60..=3599 => format!("{} min ago", s / 60),
+        3600..=86_399 => format!("{} h ago", s / 3600),
+        _ => format!("{} days ago", s / 86_400),
+    }
+}
+
+/// `updawgctl jobs`: the jobs this host has seen lately, newest first.
+fn jobs(state: &LocalState) -> Result<()> {
+    let history = state.job_history().context("reading the job history")?;
+    if history.is_empty() {
+        println!("no jobs recorded on this host yet");
+        return Ok(());
+    }
+    for job in history.iter().rev() {
+        println!("{}", describe_job(job));
+    }
+    Ok(())
+}
+
+fn describe_job(job: &updawg_agent_core::state::JobRecord) -> String {
+    let mut line = format!(
+        "{}  {:<10} {:<16} {}",
+        job.at.format("%Y-%m-%d %H:%M"),
+        job.status,
+        job.kind,
+        job.id
+    );
+    if let Some(detail) = &job.detail {
+        let _ = write!(line, "\n    {detail}");
+    }
+    line
 }
 
 /// Print exactly what an inventory upload would send, and send nothing.
@@ -276,7 +359,10 @@ async fn print_inventory(config_path: &str, json: bool) -> Result<()> {
     let upload = collected.upload(None);
 
     if json {
-        return emit(&format!("{}\n", serde_json::to_string_pretty(&upload)?));
+        // The very bytes the agent sends, not a pretty-printed copy of them
+        // (DAWG-37): pipe to `jq` to read it.
+        let body = updawg_agent_core::transport::inventory_body(&upload)?;
+        return emit(&format!("{}\n", String::from_utf8(body)?));
     }
 
     let mut out = String::new();
@@ -387,7 +473,46 @@ fn emit(text: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::plural;
+    use super::{describe_checkin, describe_job, plural};
+
+    #[test]
+    fn a_check_in_says_when_and_whether_it_worked() {
+        use updawg_agent_core::state::LastCheckin;
+        let now = chrono::Utc::now();
+        let ok = LastCheckin {
+            at: now - chrono::Duration::seconds(42),
+            ok: true,
+            error: None,
+        };
+        assert!(describe_checkin(&ok, now).starts_with("check-in:  ok, 42 s ago"));
+        let failed = LastCheckin {
+            at: now - chrono::Duration::minutes(3),
+            ok: false,
+            error: Some("could not reach https://agents.updawg.net".into()),
+        };
+        assert_eq!(
+            describe_checkin(&failed, now),
+            "check-in:  FAILED 3 min ago: could not reach https://agents.updawg.net"
+        );
+    }
+
+    #[test]
+    fn a_refused_job_says_why_under_it() {
+        use updawg_agent_core::state::JobRecord;
+        let line = describe_job(&JobRecord {
+            id: "job_01".into(),
+            kind: "apply_updates".into(),
+            status: "refused".into(),
+            at: chrono::DateTime::parse_from_rfc3339("2026-09-28T18:00:31Z")
+                .unwrap()
+                .into(),
+            detail: Some("this agent is in observe mode".into()),
+        });
+        assert_eq!(
+            line,
+            "2026-09-28 18:00  refused    apply_updates    job_01\n    this agent is in observe mode"
+        );
+    }
 
     #[test]
     fn counts_read_as_english() {

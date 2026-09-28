@@ -156,6 +156,15 @@ pub struct MtlsTransport {
     extra_root: Option<Vec<u8>>,
 }
 
+/// The exact bytes an inventory upload sends, before compression (DAWG-37).
+///
+/// One function for two callers — the upload, and `updawgctl print-inventory
+/// --json` — so what a person is shown is byte for byte what leaves their
+/// host. A test holds the wire to this.
+pub fn inventory_body(upload: &updawg_protocol::InventoryUpload) -> serde_json::Result<Vec<u8>> {
+    serde_json::to_vec(upload)
+}
+
 impl MtlsTransport {
     /// Build a transport from the identity written at enrollment.
     ///
@@ -582,7 +591,7 @@ impl MtlsTransport {
     /// how the one case that matters is recognised.
     pub async fn upload_inventory(&self, upload: &updawg_protocol::InventoryUpload) -> Result<()> {
         let url = self.url("/inventory");
-        let json = serde_json::to_vec(upload).map_err(|e| TransportError::BadResponse {
+        let json = inventory_body(upload).map_err(|e| TransportError::BadResponse {
             url: url.clone(),
             detail: format!("could not serialise the inventory: {e}"),
         })?;

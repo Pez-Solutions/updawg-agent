@@ -339,6 +339,48 @@ impl LocalState {
         Ok(pending)
     }
 
+    /// The pending reboot, if there is one, **without** taking it: for
+    /// `updawgctl status`, which must never be the thing that loses it.
+    pub fn pending_reboot(&self) -> Result<Option<PendingReboot>> {
+        self.read_json("pending-reboot.json")
+    }
+
+    /* ------------------------------------- what updawgctl shows (DAWG-37) */
+
+    /// How the last check-in went. Local only: it is for a person on the host
+    /// asking whether the agent is talking to anybody.
+    pub fn last_checkin(&self) -> Result<Option<LastCheckin>> {
+        self.read_json("last-checkin.json")
+    }
+
+    pub fn set_last_checkin(&self, last: &LastCheckin) -> Result<()> {
+        let bytes = serde_json::to_vec(last).map_err(|source| StateError::Corrupt {
+            path: "last-checkin.json".into(),
+            source,
+        })?;
+        self.write_atomic("last-checkin.json", &bytes)
+    }
+
+    /// The jobs this host has seen lately, newest last.
+    pub fn job_history(&self) -> Result<Vec<JobRecord>> {
+        Ok(self.read_json("job-history.json")?.unwrap_or_default())
+    }
+
+    /// Record where a job has got to, replacing what was recorded for it
+    /// before. The oldest fall off after [`JOB_HISTORY`].
+    pub fn record_job_status(&self, record: &JobRecord) -> Result<()> {
+        let mut history = self.job_history()?;
+        history.retain(|r| r.id != record.id);
+        history.push(record.clone());
+        let excess = history.len().saturating_sub(JOB_HISTORY);
+        history.drain(..excess);
+        let bytes = serde_json::to_vec(&history).map_err(|source| StateError::Corrupt {
+            path: "job-history.json".into(),
+            source,
+        })?;
+        self.write_atomic("job-history.json", &bytes)
+    }
+
     /* ------------------------------------------------ across a rollback */
 
     /// Everything in the state directory, held in memory while the
@@ -396,6 +438,33 @@ impl LocalState {
         }
         Ok(())
     }
+}
+
+/// How many jobs [`LocalState::job_history`] keeps.
+pub const JOB_HISTORY: usize = 50;
+
+/// How the last check-in went (DAWG-37).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastCheckin {
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// The gateway answered.
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One job, as `updawgctl jobs` lists it (DAWG-37).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobRecord {
+    pub id: String,
+    /// `apply_updates`, `reboot`, …
+    pub kind: String,
+    /// `running`, `rebooting`, `succeeded`, `failed`, `refused`.
+    pub status: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// Why it was refused or failed, or what it changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// The state directory's files, as [`LocalState::carry`] found them.
@@ -548,6 +617,46 @@ mod tests {
             state.identity().unwrap().unwrap().host_id.as_str(),
             "hst_webprod01"
         );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_job_history_keeps_the_newest_and_one_line_per_job() {
+        let (state, dir) = temp_state();
+        let at = chrono::Utc::now();
+        let rec = |id: &str, status: &str| JobRecord {
+            id: id.into(),
+            kind: "apply_updates".into(),
+            status: status.into(),
+            at,
+            detail: None,
+        };
+        state.record_job_status(&rec("job_a", "running")).unwrap();
+        state.record_job_status(&rec("job_a", "succeeded")).unwrap();
+        let history = state.job_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "succeeded");
+        for i in 0..JOB_HISTORY + 5 {
+            state
+                .record_job_status(&rec(&format!("job_{i}"), "succeeded"))
+                .unwrap();
+        }
+        let history = state.job_history().unwrap();
+        assert_eq!(history.len(), JOB_HISTORY);
+        assert_eq!(
+            history.last().unwrap().id,
+            format!("job_{}", JOB_HISTORY + 4)
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn reading_a_pending_reboot_for_status_leaves_it_pending() {
+        let (state, dir) = temp_state();
+        assert!(state.pending_reboot().unwrap().is_none());
+        fs::write(dir.join("pending-reboot.json"), b"{ not json").unwrap();
+        assert!(state.pending_reboot().is_err());
+        assert!(dir.join("pending-reboot.json").exists());
         fs::remove_dir_all(dir).ok();
     }
 

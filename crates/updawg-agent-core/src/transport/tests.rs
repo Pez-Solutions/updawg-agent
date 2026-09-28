@@ -359,6 +359,8 @@ async fn an_inventory_is_uploaded_compressed_and_arrives_intact() {
     // And it decompresses back to exactly what was sent — the agent compressing
     // something the gateway cannot read is the failure this is really for.
     let decoded = zstd::decode_all(seen[0].body_bytes.as_slice()).expect("the body is zstd");
+    // DAWG-37: byte for byte what `updawgctl print-inventory --json` prints.
+    assert_eq!(decoded, super::inventory_body(&upload).unwrap());
     let round_tripped: updawg_protocol::InventoryUpload =
         serde_json::from_slice(&decoded).expect("the body is the inventory JSON");
     assert_eq!(round_tripped.hash, upload.hash);

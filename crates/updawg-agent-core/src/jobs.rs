@@ -294,6 +294,7 @@ impl Executor {
         log.finish().await;
         done.reboot_required = self.rebooter.reboot_required().await;
         done.finished_at = Utc::now();
+        note_done(&self.state, &job, &done);
         if let Err(error) = self.reporter.complete(&job, &done).await {
             tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the job went");
         }
@@ -314,6 +315,7 @@ impl Executor {
 
     async fn refuse(&self, job: &Job, reason: String) {
         tracing::warn!(job = %job.id, kind = ?job.kind(), %reason, "refused a job");
+        note(&self.state, job, "refused", Some(&reason));
         let ack = JobAck {
             accepted: false,
             rejection_reason: Some(reason),
@@ -518,6 +520,7 @@ impl Executor {
             }
         };
 
+        note(&self.state, job, "running", None);
         let ack = JobAck {
             accepted: true,
             rejection_reason: None,
@@ -604,7 +607,10 @@ impl crate::checkin::JobSink for Executor {
                 match reboot(&job, &done, &state, rebooter.as_ref(), &warning).await {
                     // The report is finished by `resume_after_reboot` on the
                     // other side, with the checks run again.
-                    Ok(()) => return,
+                    Ok(()) => {
+                        note(&state, &job, "rebooting", None);
+                        return;
+                    }
                     Err(why) => {
                         tracing::error!(job = %job.id, %why, "could not reboot");
                         log.agent(format!("could not reboot: {why}"));
@@ -629,6 +635,7 @@ impl crate::checkin::JobSink for Executor {
                 ),
             });
             log.finish().await;
+            note_done(&state, &job, &done);
             if let Err(error) = reporter.complete(&job, &done).await {
                 tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the job went");
             }
@@ -693,6 +700,38 @@ async fn reboot_only(rebooter: &dyn Rebooter, log: &JobLog) -> JobComplete {
         error: None,
         preflight: vec![],
     }
+}
+
+/// Record where `job` has got to, for `updawgctl jobs` (DAWG-37). Local
+/// only; a write that fails costs the job nothing.
+fn note(state: &LocalState, job: &Job, status: &str, detail: Option<&str>) {
+    let record = crate::state::JobRecord {
+        id: job.id.as_str().to_owned(),
+        // The wire's name, `apply_updates`, as the portal and logs spell it.
+        kind: serde_json::to_value(job.kind())
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("{:?}", job.kind())),
+        status: status.to_owned(),
+        at: Utc::now(),
+        detail: detail.map(str::to_owned),
+    };
+    if let Err(error) = state.record_job_status(&record) {
+        tracing::debug!(job = %job.id, %error, "could not record the job for updawgctl");
+    }
+}
+
+/// [`note`] for a report: its status, and the error or what it changed.
+fn note_done(state: &LocalState, job: &Job, done: &JobComplete) {
+    let status = match done.status {
+        JobStatus::Succeeded => "succeeded",
+        JobStatus::Failed => "failed",
+        JobStatus::RejectedByHost => "refused",
+    };
+    let detail = done.error.clone().or_else(|| {
+        (!done.changes.is_empty()).then(|| format!("{} package(s) changed", done.changes.len()))
+    });
+    note(state, job, status, detail.as_deref());
 }
 
 /// Run what was admitted: how it went, and the reboot policy to apply now.
@@ -2379,7 +2418,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
 
     /// DAWG-147's bar: preflight changes nothing. Run in observe mode, which
     /// refuses anything that would, against fakes that count every mutating
-    /// call, and the state directory holds nothing new but the job's record.
+    /// call, and the state directory holds nothing new but the job's records.
     #[tokio::test]
     async fn preflight_runs_in_observe_mode_and_changes_nothing() {
         let (mut w, snapshots) = with_snapshots(
@@ -2431,9 +2470,12 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
-        after.retain(|f| f != "seen-jobs.json");
+        // The job's own records: that it was seen, and its line in
+        // `updawgctl jobs` (DAWG-37). Nothing else.
+        let own = |f: &std::ffi::OsString| f != "seen-jobs.json" && f != "job-history.json";
+        after.retain(own);
         let mut before = before;
-        before.retain(|f| f != "seen-jobs.json");
+        before.retain(own);
         assert_eq!(after, before, "preflight left something behind");
     }
 
