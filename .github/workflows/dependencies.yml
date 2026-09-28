@@ -1,0 +1,42 @@
+name: Dependencies
+
+# DAWG-165: advisories, licences and sources, with cargo deny. On every change,
+# and daily on main, because an advisory published tomorrow is about code
+# that is already released — a check that only runs when somebody pushes
+# would never see it.
+#
+# A failure blocks merging. To get past one that cannot be fixed yet, add the
+# advisory to `advisories.ignore` in deny.toml with a `reason`, in the same
+# pull request; see the comment there.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: [self-hosted, copenhagen]
+    timeout-minutes: 10
+    env:
+      VERSION: "0.20.2"
+      # Of the release tarball, pinned: this binary reads every dependency we
+      # have, and a swapped download is the attack this job exists to catch.
+      SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-deny
+        run: |
+          set -eu
+          name="cargo-deny-${VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${VERSION}/$name.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/$name.tar.gz" | sha256sum --check --quiet
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - name: Advisories, licences, bans and sources
+        run: cargo-deny --log-level warn check

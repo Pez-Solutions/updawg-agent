@@ -67,8 +67,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y musl-tools
           cargo check --workspace --target x86_64-unknown-linux-musl
 
-  # DAWG-22 extends this with cargo audit and cargo deny as a shared workflow
-  # used by both Rust repositories.
+  # Advisories, licences and sources are dependencies.yml (DAWG-165), which
+  # also runs daily.
 
   # install.sh is piped into a root shell on somebody else's machine (DAWG-44).
   # Lint it, and prove the refusals refuse — before anything is downloaded or

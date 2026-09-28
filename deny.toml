@@ -1,0 +1,55 @@
+# cargo deny (DAWG-165): run in CI on every change and daily on main.
+#
+# One tool for what `cargo audit` checks (the RustSec advisory database) and
+# for licences and sources, so there is one exception list and one place to
+# read it.
+#
+# ## Exceptions
+#
+# An advisory that cannot be fixed yet goes in `advisories.ignore` with its
+# id and a `reason` saying why it does not apply or what it waits on, in the
+# same pull request that makes the build green again. Nothing is ignored
+# without one; the list is reviewed like code.
+
+[advisories]
+# Unmaintained crates too: an abandoned dependency is where an unfixed
+# vulnerability comes from next.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licences, and MPL-2.0 (file-level copyleft, fine to link).
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# Our own crates are not published and carry no licence of their own.
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
