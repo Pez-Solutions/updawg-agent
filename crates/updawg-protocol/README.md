@@ -12,7 +12,7 @@ agent and the server — depend on one definition rather than two that drift.
 
 ```toml
 [dependencies]
-updawg-protocol = "0.3"
+updawg-protocol = "0.4"
 ```
 
 ## The property this crate exists to preserve
@@ -84,6 +84,13 @@ does not verify under 0.3, and `OrgSigningKey::endorsement` is now an
 `Endorsement` rather than a bare, unverifiable signature string. Both halves
 fail loudly at a mismatched peer rather than quietly. See
 [ADR 0002](https://github.com/Pez-Solutions/updawg-docs/blob/main/decisions/0002-signing-key-rotation-endorsements.md).
+
+⚠️ **0.4 widens `HostStateReport::reboot_required`** from a `bool` to
+`RebootRequired` (`yes`, `no`, `unknown`), so a host that cannot tell is no
+longer reported as one that does not need a reboot. A 0.4 reader still takes
+the old `true`/`false`; a 0.3 reader does not take the words, so **the gateway
+moves to 0.4 before any agent does.** 0.4 also adds `CheckinRequest::snapshots`
+and `InstalledPackage::source`, both optional.
 
 ## Transport
 

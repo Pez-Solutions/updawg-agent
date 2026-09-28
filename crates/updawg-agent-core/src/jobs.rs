@@ -53,6 +53,21 @@ use updawg_snapshots::SnapshotProvider;
 /// The snapshot provider this host has, or why it has none.
 pub type Snapshots = std::result::Result<Arc<dyn SnapshotProvider>, String>;
 
+/// What the server is told about `snapshots` (DAWG-115).
+#[must_use]
+pub fn snapshot_support(snapshots: &Snapshots) -> updawg_protocol::SnapshotSupport {
+    match snapshots {
+        Ok(provider) => updawg_protocol::SnapshotSupport {
+            provider: Some(provider.provider().name().to_owned()),
+            reason: None,
+        },
+        Err(why) => updawg_protocol::SnapshotSupport {
+            provider: None,
+            reason: Some(why.clone()),
+        },
+    }
+}
+
 /// How far ahead of `not_before` a job may arrive and still be taken. The
 /// gateway withholds a job until then, so this is only clock skew.
 const EARLY: Duration = Duration::minutes(5);
@@ -1921,6 +1936,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             version: version.into(),
             arch: "amd64".into(),
             repo: None,
+            source: None,
         }
     }
 

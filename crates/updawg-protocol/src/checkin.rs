@@ -15,10 +15,87 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Whether the host needs a reboot, as it can tell (DAWG-210).
+///
+/// Three values, because the mechanisms are uneven across distributions and
+/// **a host that cannot answer is not a host whose answer is no**. Before 0.4
+/// this was a `bool` on the wire, the one place the unknown was flattened
+/// into `false`.
+///
+/// Reads the old `true`/`false` too, so a gateway on 0.4 understands an agent
+/// that is not; an absent field is [`RebootRequired::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebootRequired {
+    Yes,
+    No,
+    /// No mechanism on this host could answer. Never to be read as `No`.
+    #[default]
+    Unknown,
+}
+
+impl RebootRequired {
+    #[must_use]
+    pub fn is_yes(self) -> bool {
+        self == Self::Yes
+    }
+
+    #[must_use]
+    pub fn is_known(self) -> bool {
+        self != Self::Unknown
+    }
+
+    /// `Some` when the host could say, which is how the database stores it.
+    #[must_use]
+    pub const fn known(self) -> Option<bool> {
+        match self {
+            Self::Yes => Some(true),
+            Self::No => Some(false),
+            Self::Unknown => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RebootRequired {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            /// An agent before 0.4.
+            Bool(bool),
+            Word(String),
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Bool(true) => Self::Yes,
+            Wire::Bool(false) => Self::No,
+            Wire::Word(w) => match w.as_str() {
+                "yes" => Self::Yes,
+                "no" => Self::No,
+                // Including a word from a newer agent: not knowing what it
+                // means is not knowing.
+                _ => Self::Unknown,
+            },
+        })
+    }
+}
+
+/// Whether the host can take snapshots before a change, and roll back to
+/// them (DAWG-115). Detected by the agent at start.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SnapshotSupport {
+    /// The provider in use, e.g. `snapper`. `None`: this host cannot take
+    /// snapshots, and [`SnapshotSupport::reason`] says why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Cheap state, small enough to send every time.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HostStateReport {
-    pub reboot_required: bool,
+    #[serde(default)]
+    pub reboot_required: RebootRequired,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services_need_restart: Vec<String>,
     pub pending_updates: u32,
@@ -74,6 +151,10 @@ pub struct CheckinRequest {
     /// that way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_policy: Option<LocalPolicy>,
+    /// Whether this host can take snapshots (DAWG-115). `None` means an agent
+    /// too old to say, which is not the same as a host that cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<SnapshotSupport>,
 }
 
 impl CheckinRequest {
@@ -133,6 +214,7 @@ mod tests {
             running_job_ids: vec![],
             max_hold_s: None,
             local_policy: None,
+            snapshots: None,
         }
     }
 
@@ -192,6 +274,54 @@ mod tests {
         value["something_from_the_future"] = serde_json::json!("hello");
         let back: CheckinRequest = serde_json::from_value(value).unwrap();
         assert_eq!(back.max_hold_s, Some(30));
+    }
+
+    /// DAWG-210: an agent before 0.4 sends a bool, and one that says nothing
+    /// is one that could not tell.
+    #[test]
+    fn reboot_required_reads_the_old_bool_and_the_new_words() {
+        let read = |v: serde_json::Value| -> RebootRequired {
+            let mut state = serde_json::json!({"pending_updates": 0, "security_updates": 0});
+            if !v.is_null() {
+                state["reboot_required"] = v;
+            }
+            serde_json::from_value::<HostStateReport>(state)
+                .unwrap()
+                .reboot_required
+        };
+        assert_eq!(read(serde_json::json!(true)), RebootRequired::Yes);
+        assert_eq!(read(serde_json::json!(false)), RebootRequired::No);
+        assert_eq!(read(serde_json::json!("yes")), RebootRequired::Yes);
+        assert_eq!(read(serde_json::json!("no")), RebootRequired::No);
+        assert_eq!(read(serde_json::json!("unknown")), RebootRequired::Unknown);
+        assert_eq!(read(serde_json::json!("perhaps")), RebootRequired::Unknown);
+        assert_eq!(read(serde_json::Value::Null), RebootRequired::Unknown);
+        assert_eq!(
+            serde_json::to_value(RebootRequired::Unknown).unwrap(),
+            "unknown"
+        );
+        assert_eq!(RebootRequired::Unknown.known(), None);
+        assert_eq!(RebootRequired::No.known(), Some(false));
+    }
+
+    #[test]
+    fn snapshot_support_says_which_or_why_not() {
+        let none = SnapshotSupport {
+            provider: None,
+            reason: Some("snapper is not installed".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&none).unwrap(),
+            serde_json::json!({"reason": "snapper is not installed"})
+        );
+        let mut req = request();
+        req.snapshots = Some(SnapshotSupport {
+            provider: Some("snapper".into()),
+            reason: None,
+        });
+        let back: CheckinRequest =
+            serde_json::from_str(&serde_json::to_string(&req).unwrap()).unwrap();
+        assert_eq!(back.snapshots.unwrap().provider.as_deref(), Some("snapper"));
     }
 
     #[test]

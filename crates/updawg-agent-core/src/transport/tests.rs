@@ -313,6 +313,7 @@ fn inventory_upload() -> updawg_protocol::InventoryUpload {
                     version: "1.2.3-0ubuntu4".into(),
                     arch: "amd64".into(),
                     repo: Some("noble-updates".into()),
+                    source: None,
                 })
                 .collect(),
             removed: vec![],

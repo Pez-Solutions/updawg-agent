@@ -41,6 +41,7 @@ fn pkg(name: &str, version: &str) -> InstalledPackage {
         version: version.into(),
         arch: "amd64".into(),
         repo: None,
+        source: None,
     }
 }
 

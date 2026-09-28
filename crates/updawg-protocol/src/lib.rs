@@ -94,7 +94,9 @@ pub mod releases;
 pub mod sign;
 
 pub use cert::{CertRenewRequest, CertRenewResponse};
-pub use checkin::{CheckinRequest, CheckinResponse, HostMetrics, HostStateReport};
+pub use checkin::{
+    CheckinRequest, CheckinResponse, HostMetrics, HostStateReport, RebootRequired, SnapshotSupport,
+};
 pub use config::{AgentMode, LocalPolicy, ServerConfig};
 pub use endorsement::{EndorsedKey, Endorsement, EndorsementStatement};
 pub use enroll::{
@@ -104,7 +106,8 @@ pub use error::ApiError;
 pub use ids::{HostId, JobId, OrgId, SigningKeyId};
 pub use inventory::{
     AdvisoryHint, AvailableUpdate, Ecosystem, InstalledPackage, InventoryKind, InventoryUpload,
-    PackageDelta, PendingRemoval, RemovedPackage, Replacement, Repository, SystemFacts,
+    PackageDelta, PendingRemoval, RemovedPackage, Replacement, Repository, SourcePackage,
+    SystemFacts,
 };
 pub use job::{
     ApplyUpdates, DistUpgrade, HealthCheckReport, Job, JobAck, JobComplete, JobKind, JobSpec,

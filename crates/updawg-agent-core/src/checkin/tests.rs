@@ -102,7 +102,8 @@ async fn the_check_in_carries_what_the_collectors_found() {
     assert_eq!(seen[0].path, "/agent/v1/checkin");
     assert_eq!(body["boot_id"], "b81e5c7a-1f2d-4c3b-9a8e-0d1f2a3b4c5d");
     assert_eq!(body["uptime_s"], 864_000);
-    assert_eq!(body["state"]["reboot_required"], false);
+    // A word since protocol 0.4 (DAWG-210): a Debian host with no flag file.
+    assert_eq!(body["state"]["reboot_required"], "no");
     // 16 GB total, 12 GB available.
     assert!((body["metrics"]["mem_used_pct"].as_f64().unwrap() - 25.0).abs() < 0.01);
 }

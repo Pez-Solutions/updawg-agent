@@ -18,28 +18,10 @@ use crate::{Collector, Result, StateCollector as StateCollectorTrait, platform};
 use async_trait::async_trait;
 use platform::Root;
 use updawg_protocol::HostMetrics;
-
-/// Whether this host needs a reboot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RebootRequired {
-    Yes,
-    No,
-    /// No mechanism on this host could answer. Must not be reported as `No`.
-    #[default]
-    Unknown,
-}
-
-impl RebootRequired {
-    #[must_use]
-    pub fn is_yes(self) -> bool {
-        self == Self::Yes
-    }
-
-    #[must_use]
-    pub fn is_known(self) -> bool {
-        self != Self::Unknown
-    }
-}
+/// Whether this host needs a reboot: the wire's own three values since
+/// protocol 0.4 (DAWG-210), so nothing between here and the database
+/// flattens `Unknown`.
+pub use updawg_protocol::RebootRequired;
 
 /// Cheap state, collected on every check-in.
 #[derive(Debug, Clone)]

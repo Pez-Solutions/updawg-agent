@@ -64,7 +64,10 @@ impl PackageBackend for AptBackend {
             &[
                 "-W",
                 "-f",
-                "${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n",
+                // The source's name and version last (DAWG-212), so output
+                // without them — the captured fixtures — still parses. Both
+                // fields exist in dpkg as old as Ubuntu 20.04's 1.19.7.
+                "${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\t${source:Package}\t${source:Version}\n",
             ],
         )
         .await?;
@@ -172,7 +175,8 @@ impl PackageBackend for AptBackend {
 
 /* ------------------------------------------------------------- the parsers */
 
-/// `dpkg-query -W` output: name, version, architecture, status.
+/// `dpkg-query -W` output: name, version, architecture, status, and, when
+/// asked for, the source package's name and version.
 ///
 /// **Only `installed` counts.** dpkg also knows `config-files` (purged but
 /// configuration left behind), `half-configured`, `unpacked` and several others.
@@ -190,6 +194,15 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
             if status.trim() != "installed" || name.is_empty() || version.is_empty() {
                 return None;
             }
+            let source = match (fields.next(), fields.next()) {
+                (Some(n), Some(v)) if !n.trim().is_empty() && !v.trim().is_empty() => {
+                    Some(updawg_protocol::SourcePackage {
+                        name: n.trim().to_owned(),
+                        version: v.trim().to_owned(),
+                    })
+                }
+                _ => None,
+            };
             Some(InstalledPackage {
                 name: name.to_owned(),
                 version: version.to_owned(),
@@ -198,6 +211,7 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
                 // is apt's view, and it is only true for packages still
                 // available. Left absent rather than guessed.
                 repo: None,
+                source,
             })
         })
         .collect()

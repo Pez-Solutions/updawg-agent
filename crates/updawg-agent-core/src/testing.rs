@@ -384,6 +384,7 @@ pub(crate) fn checkin_request() -> CheckinRequest {
         running_job_ids: vec![],
         max_hold_s: None,
         local_policy: None,
+        snapshots: None,
     }
 }
 

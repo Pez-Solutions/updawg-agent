@@ -739,3 +739,36 @@ fn a_line_that_ends_in_a_carriage_return_keeps_what_came_before_it() {
     let shown: Vec<&str> = updawg_backends::apt::as_shown("Progress: [ 50%]\r\n").collect();
     assert_eq!(shown, ["Progress: [ 50%]"]);
 }
+
+/// DAWG-212: the source package's name and version, from `dpkg-query` on
+/// Debian 13 (captured 2026-09-28). `bash` is a binNMU — its source version is
+/// not its own — and `login` is built from `util-linux`, not `shadow`: neither
+/// could be worked out from the binary.
+#[test]
+fn the_source_package_comes_with_its_own_version() {
+    use updawg_protocol::SourcePackage;
+    let out = "bash\t5.2.37-2+b10\tamd64\tinstalled\tbash\t5.2.37-2\n\
+               login\t1:4.16.0-2+really2.41.5-0+deb13u1\tamd64\tinstalled\tutil-linux\t2.41.5-0+deb13u1\n\
+               libc6\t2.41-12+deb13u4\tamd64\tinstalled\tglibc\t2.41-12+deb13u4\n\
+               old\t1.0\tamd64\tinstalled\n";
+    let packages = parse_installed(out);
+    let source = |name: &str| {
+        packages
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap()
+            .source
+            .clone()
+    };
+    assert_eq!(
+        source("bash"),
+        Some(SourcePackage {
+            name: "bash".into(),
+            version: "5.2.37-2".into()
+        })
+    );
+    assert_eq!(source("login").unwrap().name, "util-linux");
+    assert_eq!(source("libc6").unwrap().name, "glibc");
+    // Output without the fields, as the fixtures were captured.
+    assert_eq!(source("old"), None);
+}

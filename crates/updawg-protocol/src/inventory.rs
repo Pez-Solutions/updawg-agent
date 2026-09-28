@@ -46,6 +46,20 @@ pub struct InstalledPackage {
     pub arch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// The source package it was built from, where the package manager says
+    /// (DAWG-212). Advisories and Debian's list of unfixed vulnerabilities
+    /// are per source package, and its **version**, not the binary's, is what
+    /// they compare: a binNMU or an epoch makes the two differ, so the name
+    /// alone cannot be mapped back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourcePackage>,
+}
+
+/// A source package, by name and version (DAWG-212).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourcePackage {
+    pub name: String,
+    pub version: String,
 }
 
 /// Enough to identify a package being removed, without repeating everything.

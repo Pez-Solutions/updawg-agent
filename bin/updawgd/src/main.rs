@@ -305,6 +305,9 @@ fn build_checkin(
     // refused with that reason, rather than failing halfway.
     let backend: Option<Arc<dyn updawg_backends::PackageBackend>> =
         updawg_backends::detect().ok().map(Arc::from);
+    // Told to the server on every check-in, so the portal can say when a
+    // rollback is not possible here (DAWG-115).
+    let support = updawg_agent_core::jobs::snapshot_support(&snapshots);
     // Verified, permission-checked and run (DAWG-38, DAWG-102). Observe mode
     // refuses every job that changes the host, and says so to the server.
     let jobs = Arc::new(
@@ -325,15 +328,18 @@ fn build_checkin(
         async move { jobs.resume_after_reboot().await }
     });
 
-    Some(Arc::new(GatewayCheckIn::new(
-        transport,
-        state.clone(),
-        collector,
-        jobs,
-        // What this file permits, reported on every check-in so the server can
-        // narrow against it rather than guess (DAWG-223).
-        config.local_policy(),
-    )))
+    Some(Arc::new(
+        GatewayCheckIn::new(
+            transport,
+            state.clone(),
+            collector,
+            jobs,
+            // What this file permits, reported on every check-in so the server
+            // can narrow against it rather than guess (DAWG-223).
+            config.local_policy(),
+        )
+        .with_snapshots(support),
+    ))
 }
 
 /// Wire up inventory collection and upload, if this host can do it (DAWG-36).

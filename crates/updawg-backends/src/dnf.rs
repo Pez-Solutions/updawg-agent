@@ -297,6 +297,9 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
                 // baked into an image. Left absent rather than guessed, as with
                 // dpkg.
                 repo: None,
+                // rpm's SOURCERPM is a file name, not a name and version; not
+                // needed until the RHEL family has unfixed advisories too.
+                source: None,
             })
         })
         .collect()

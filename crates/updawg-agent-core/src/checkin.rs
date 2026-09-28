@@ -45,7 +45,7 @@ use std::{
     sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
-use updawg_collectors::{RebootRequired, StateCollector, SystemState};
+use updawg_collectors::{StateCollector, SystemState};
 use updawg_protocol::{CheckinRequest, HostStateReport, Job, LocalPolicy};
 
 /// A poll that survived at least this long was doing its job.
@@ -102,6 +102,8 @@ pub struct GatewayCheckIn {
     /// disk nine hundred times a second across a fleet would be a strange thing
     /// to build.
     policy: LocalPolicy,
+    /// Whether this host can take snapshots, detected at start (DAWG-115).
+    snapshots: Option<updawg_protocol::SnapshotSupport>,
     /// The shortest a poll has survived before being cut off, if it ever has.
     ///
     /// Recorded rather than acted on: see the module docs. It is what turns
@@ -134,8 +136,16 @@ impl GatewayCheckIn {
             collector,
             jobs,
             policy,
+            snapshots: None,
             observed_idle_limit: RwLock::new(None),
         }
+    }
+
+    /// Report this snapshot support on every check-in (DAWG-115).
+    #[must_use]
+    pub fn with_snapshots(mut self, snapshots: updawg_protocol::SnapshotSupport) -> Self {
+        self.snapshots = Some(snapshots);
+        self
     }
 
     /// How long one poll is allowed to run.
@@ -205,7 +215,6 @@ impl GatewayCheckIn {
             tracing::warn!(%error, "could not read host state; checking in without it");
             updawg_collectors::HostState::default()
         });
-        note_unknown_reboot_state(state.reboot_required);
 
         // Zero before the first inventory, which is honest: nothing has counted
         // yet. It is not "no updates" — the server knows this host has no
@@ -225,11 +234,8 @@ impl GatewayCheckIn {
                 .unwrap_or_default()
                 .unwrap_or_default(),
             state: HostStateReport {
-                // Unknown is reported as false, because the wire type is a
-                // bool — but it is logged on the way past, so the gap is
-                // visible rather than silently absorbed. Widening the wire
-                // type is a protocol change (DAWG-210).
-                reboot_required: state.reboot_required.is_yes(),
+                // Three-valued on the wire since protocol 0.4 (DAWG-210).
+                reboot_required: state.reboot_required,
                 services_need_restart: state.services_needing_restart,
                 // From the last inventory collection, not from the package
                 // manager. These are package questions and answering them
@@ -252,6 +258,7 @@ impl GatewayCheckIn {
             // should not read as last week's configuration until it is
             // re-enrolled (DAWG-223).
             local_policy: Some(self.policy.clone()),
+            snapshots: self.snapshots.clone(),
         }
     }
 }
@@ -305,19 +312,6 @@ impl CheckIn for GatewayCheckIn {
             next_checkin: Duration::from_secs(response.next_checkin_s),
             inventory_requested: response.inventory_requested,
         })
-    }
-}
-
-/// Log the gap between what the host knows and what the wire can say.
-///
-/// Kept as a free function so the one place that flattens `Unknown` into
-/// `false` is greppable.
-pub fn note_unknown_reboot_state(reboot: RebootRequired) {
-    if !reboot.is_known() {
-        tracing::debug!(
-            "cannot tell whether this host needs a reboot; reporting false, which is not the \
-             same thing"
-        );
     }
 }
 
