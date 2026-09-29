@@ -223,59 +223,80 @@ fn print_pinned(org_keys: &[String]) {
     }
 }
 
+/// One line into a buffer that is emitted whole (see [`emit`]).
+macro_rules! say {
+    ($out:ident, $($arg:tt)*) => {{
+        let _ = writeln!($out, $($arg)*);
+    }};
+}
+
 fn status(cli: &Cli, state: &LocalState) -> Result<()> {
-    println!("updawgctl {VERSION}");
-    println!("config:    {}", cli.config);
-    println!("state dir: {}", state.root().display());
+    // Written to a buffer and emitted at once, so `updawgctl status | head`
+    // ends quietly instead of panicking on the closed pipe.
+    let mut out = String::new();
+    say!(out, "updawgctl {VERSION}");
+    say!(out, "config:    {}", cli.config);
+    say!(out, "state dir: {}", state.root().display());
 
     match state.identity().context("reading identity")? {
         None => {
-            println!("enrolled:  no");
-            println!("           run `updawgctl enroll --token ...`");
+            say!(out, "enrolled:  no");
+            say!(out, "           run `updawgctl enroll --token ...`");
         }
         Some(identity) => {
-            println!("enrolled:  yes");
-            println!("host id:   {}", identity.host_id);
-            println!("since:     {}", identity.enrolled_at);
-            println!("key file:  {}", state.root().join(KEY_FILE).display());
+            say!(out, "enrolled:  yes");
+            say!(out, "host id:   {}", identity.host_id);
+            say!(out, "since:     {}", identity.enrolled_at);
+            say!(out, "key file:  {}", state.root().join(KEY_FILE).display());
             match ClientCertificate::from_pem(&identity.certificate) {
                 Ok(cert) => {
-                    println!("cert:      {} (serial {})", cert.subject(), cert.serial());
+                    say!(
+                        out,
+                        "cert:      {} (serial {})",
+                        cert.subject(),
+                        cert.serial()
+                    );
                     match cert.remaining(SystemTime::now()) {
-                        Some(left) => println!("expires:   in {} days", left.as_secs() / 86_400),
+                        Some(left) => say!(out, "expires:   in {} days", left.as_secs() / 86_400),
                         // Not a footnote: an expired certificate means every
                         // request is already being refused.
-                        None => println!("expires:   EXPIRED — re-enroll with --force"),
+                        None => say!(out, "expires:   EXPIRED — re-enroll with --force"),
                     }
                 }
-                Err(e) => println!("cert:      UNREADABLE — {e}"),
+                Err(e) => say!(out, "cert:      UNREADABLE — {e}"),
             }
             match PinnedKeys::from_wire(&identity.org_signing_keys) {
-                Ok(pinned) => print_pinned(&pinned.describe()),
+                Ok(pinned) => {
+                    say!(out, "Pinned organization signing keys:");
+                    for key in pinned.describe() {
+                        say!(out, "  {key}");
+                    }
+                }
                 // Worth surfacing rather than hiding: an identity whose pinned
                 // keys no longer parse cannot verify a job, and the host would
                 // otherwise look healthy until one arrived.
-                Err(e) => println!("org keys:  UNUSABLE — {e}"),
+                Err(e) => say!(out, "org keys:  UNUSABLE — {e}"),
             }
         }
     }
 
     let now = chrono::Utc::now();
     match state.last_checkin() {
-        Ok(Some(last)) => println!("{}", describe_checkin(&last, now)),
+        Ok(Some(last)) => say!(out, "{}", describe_checkin(&last, now)),
         // Not enrolled: there is nothing to check in as, and "is updawgd
         // running?" would send somebody looking for the wrong problem.
-        Ok(None) if !state.is_enrolled() => println!("check-in:  none: this host is not enrolled"),
-        Ok(None) => println!("check-in:  none recorded yet (is updawgd running?)"),
-        Err(e) => println!("check-in:  UNREADABLE — {e}"),
+        Ok(None) if !state.is_enrolled() => say!(out, "check-in:  none: this host is not enrolled"),
+        Ok(None) => say!(out, "check-in:  none recorded yet (is updawgd running?)"),
+        Err(e) => say!(out, "check-in:  UNREADABLE — {e}"),
     }
     match state.pending_reboot() {
-        Ok(Some(pending)) => println!(
+        Ok(Some(pending)) => say!(
+            out,
             "reboot:    pending for job {}, asked for by this agent; it finishes the job when the host is back",
             pending.job.id
         ),
         Ok(None) => {}
-        Err(e) => println!("reboot:    record UNREADABLE — {e}"),
+        Err(e) => say!(out, "reboot:    record UNREADABLE — {e}"),
     }
     let running: Vec<_> = state
         .job_history()
@@ -284,13 +305,13 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
         .filter(|j| j.status == "running" || j.status == "rebooting")
         .collect();
     if running.is_empty() {
-        println!("jobs:      none running");
+        say!(out, "jobs:      none running");
     } else {
         for job in running {
-            println!("job:       {} {} ({})", job.id, job.kind, job.status);
+            say!(out, "job:       {} {} ({})", job.id, job.kind, job.status);
         }
     }
-    Ok(())
+    emit(&out)
 }
 
 /// One line about the last check-in, for a person: when, and whether the
