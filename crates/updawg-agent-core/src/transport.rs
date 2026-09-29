@@ -94,6 +94,11 @@ pub enum TransportError {
     #[error("could not understand the response from {url}: {detail}")]
     BadResponse { url: String, detail: String },
 
+    /// 429: this host is over its rate limit (DAWG-131), and the gateway said
+    /// how long to wait.
+    #[error("{url} is rate limiting this host; waiting {}s before asking again", retry_after.as_secs())]
+    RateLimited { url: String, retry_after: Duration },
+
     #[error("the agent server address must be https; `{url}` is not")]
     NotHttps { url: String },
 
@@ -104,6 +109,15 @@ pub enum TransportError {
 }
 
 impl TransportError {
+    /// How long the gateway asked this host to wait, when it did (DAWG-131).
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::RateLimited { retry_after, .. } => Some(*retry_after),
+            _ => None,
+        }
+    }
+
     /// Whether the gateway refused an inventory delta because it does not hold
     /// the base it was computed against.
     ///
@@ -124,6 +138,27 @@ impl TransportError {
 }
 
 pub type Result<T> = std::result::Result<T, TransportError>;
+
+/// A 429, as the error that says how long to wait (DAWG-131).
+///
+/// From `Retry-After` in seconds, which the gateway always sends with one. A
+/// 429 without it is still a request to slow down, so it waits a minute
+/// rather than retrying at once.
+fn rate_limited(url: &str, response: &reqwest::Response) -> Option<TransportError> {
+    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    let seconds = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(60);
+    Some(TransportError::RateLimited {
+        url: url.to_owned(),
+        retry_after: Duration::from_secs(seconds.clamp(1, 3600)),
+    })
+}
 
 #[async_trait]
 pub trait Transport: Send + Sync {
@@ -480,6 +515,9 @@ impl MtlsTransport {
             .send()
             .await
             .map_err(|e| self.connection_error(&url, &e))?;
+        if let Some(limited) = rate_limited(&url, &response) {
+            return Err(limited);
+        }
         let status = response.status().as_u16();
         match status {
             401 | 403 => Err(self.certificate_rejected()),
@@ -515,6 +553,9 @@ impl MtlsTransport {
         let status = response.status();
         if status.as_u16() == 401 || status.as_u16() == 403 {
             return Err(self.certificate_rejected());
+        }
+        if let Some(limited) = rate_limited(&url, &response) {
+            return Err(limited);
         }
         if status.as_u16() == 409 {
             return Ok(JobAnswer::AlreadyMoved);
@@ -553,6 +594,9 @@ impl MtlsTransport {
         let status = response.status();
         if status.as_u16() == 401 || status.as_u16() == 403 {
             return Err(self.certificate_rejected());
+        }
+        if let Some(limited) = rate_limited(&url, &response) {
+            return Err(limited);
         }
         if !status.is_success() {
             let detail = response
@@ -617,6 +661,9 @@ impl MtlsTransport {
         let status = response.status();
         if status.as_u16() == 401 || status.as_u16() == 403 {
             return Err(self.certificate_rejected());
+        }
+        if let Some(limited) = rate_limited(&url, &response) {
+            return Err(limited);
         }
         if !status.is_success() {
             let detail = response

@@ -244,6 +244,32 @@ async fn a_server_error_is_reported_with_its_problem_detail() {
     assert!(err.to_string().contains("The gateway is draining."));
 }
 
+/// A 429 is a request to slow down, not a failure to report (DAWG-131). This
+/// stub sends no `Retry-After`, so the agent waits the minute it assumes.
+#[tokio::test]
+async fn a_rate_limited_check_in_says_how_long_to_wait() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::new(&ca, THIRTY_DAYS);
+    let gateway = TestGateway::start(
+        &ca,
+        vec![(
+            429,
+            r#"{"code":"rate_limited","message":"slow down","retry_after_s":3}"#.into(),
+        )],
+    )
+    .await;
+
+    let err = transport(&host, &gateway, &ca)
+        .check_in(&checkin_request(), LONG_POLL)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.retry_after(),
+        Some(Duration::from_secs(60)),
+        "got {err:?}"
+    );
+}
+
 #[test]
 fn a_host_that_has_not_enrolled_says_so() {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);

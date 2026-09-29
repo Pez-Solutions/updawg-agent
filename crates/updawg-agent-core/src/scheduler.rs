@@ -75,6 +75,16 @@ fn jittered(interval: Duration) -> Duration {
 /// half of what the backoff says, which quietly makes a long outage four times
 /// noisier than intended. Half to full keeps the backoff meaningful while still
 /// breaking up the herd.
+/// How long to wait after a failed check-in: the backoff, or longer when the
+/// gateway said how long (DAWG-131). Never shorter than it asked.
+fn wait_after(error: &anyhow::Error, backoff: Duration) -> Duration {
+    error
+        .chain()
+        .find_map(|e| e.downcast_ref::<crate::transport::TransportError>())
+        .and_then(crate::transport::TransportError::retry_after)
+        .map_or(backoff, |asked| asked.max(backoff))
+}
+
 fn with_jitter(base: Duration) -> Duration {
     base.mul_f64(0.5 + jitter_fraction() / 2.0)
 }
@@ -296,7 +306,7 @@ async fn checkin_loop(
                 // gateway coming back from an outage is met by a fleet that
                 // has been failing in lockstep, and retrying in lockstep is
                 // how it goes down again immediately.
-                let wait = with_jitter(backoff);
+                let wait = wait_after(&error, with_jitter(backoff));
                 tracing::warn!(
                     %error,
                     backoff_s = backoff.as_secs(),
@@ -480,6 +490,34 @@ refresh_metadata = "{refresh}"
             counters.refreshes.load(Ordering::SeqCst) >= 1,
             "metadata refresh never ran"
         );
+    }
+
+    #[test]
+    fn a_rate_limited_check_in_waits_at_least_as_long_as_it_was_asked() {
+        let limited = || crate::transport::TransportError::RateLimited {
+            url: "https://agents.updawg.net/agent/v1/checkin".into(),
+            retry_after: Duration::from_secs(30),
+        };
+        let backoff = Duration::from_secs(2);
+        assert_eq!(
+            wait_after(&anyhow::Error::from(limited()), backoff),
+            Duration::from_secs(30)
+        );
+        // Through a context, as the check-in wraps it.
+        assert_eq!(
+            wait_after(
+                &anyhow::Error::from(limited()).context("checking in"),
+                backoff
+            ),
+            Duration::from_secs(30)
+        );
+        // A longer backoff already is not cut short.
+        assert_eq!(
+            wait_after(&anyhow::Error::from(limited()), Duration::from_secs(120)),
+            Duration::from_secs(120)
+        );
+        // Anything else is the backoff.
+        assert_eq!(wait_after(&anyhow::anyhow!("refused"), backoff), backoff);
     }
 
     #[tokio::test]
