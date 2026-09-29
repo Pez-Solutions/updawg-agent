@@ -252,6 +252,9 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
     let now = chrono::Utc::now();
     match state.last_checkin() {
         Ok(Some(last)) => println!("{}", describe_checkin(&last, now)),
+        // Not enrolled: there is nothing to check in as, and "is updawgd
+        // running?" would send somebody looking for the wrong problem.
+        Ok(None) if !state.is_enrolled() => println!("check-in:  none: this host is not enrolled"),
         Ok(None) => println!("check-in:  none recorded yet (is updawgd running?)"),
         Err(e) => println!("check-in:  UNREADABLE — {e}"),
     }
