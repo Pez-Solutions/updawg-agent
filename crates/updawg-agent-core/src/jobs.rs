@@ -291,6 +291,21 @@ impl Executor {
             log.agent("rebooted; running the health checks again");
             done.health_checks = checks_reported(&job, &self.checks(), &log).await;
         }
+        // A release upgrade the reboot carried out (DAWG-152): only now is
+        // there an outcome to report.
+        match self.state.take_release_check() {
+            Ok(Some(check)) if check.job == job.id && done.status == JobStatus::Succeeded => {
+                self.finish_release(&check, &mut done, &log).await;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(job = %job.id, %error, "cannot read what to check after the upgrade");
+                done.status = JobStatus::Failed;
+                done.error = Some(format!(
+                    "the agent could not read what to check after the upgrade: {error}"
+                ));
+            }
+        }
         log.finish().await;
         done.reboot_required = self.rebooter.reboot_required().await;
         done.finished_at = Utc::now();
@@ -302,6 +317,51 @@ impl Executor {
             && let Err(error) = inventory.collect_and_upload().await
         {
             tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not upload the inventory after the reboot");
+        }
+    }
+
+    /// Whether the reboot carried the release upgrade out: the host says it
+    /// is on the target, and what changed is what the package manager says
+    /// now against what it said before.
+    async fn finish_release(
+        &self,
+        check: &crate::state::ReleaseCheck,
+        done: &mut JobComplete,
+        log: &JobLog,
+    ) {
+        let host = updawg_backends::release::this_host();
+        match host {
+            Ok(host) if updawg_backends::leapp_upgrade::arrived(&host, &check.release) => {
+                if let Some(backend) = &self.backend {
+                    match backend.installed().await {
+                        Ok(after) => done.changes = package_changes(&check.before, &after),
+                        Err(error) => log.agent(format!(
+                            "could not list what is installed now, so the report names no changes: {error}"
+                        )),
+                    }
+                }
+                log.agent(format!(
+                    "now {} {}: {} package(s) changed",
+                    host.id,
+                    host.version,
+                    done.changes.len()
+                ));
+            }
+            Ok(host) => {
+                let why = format!(
+                    "the host came back on {} {}, not {}: the upgrade did not complete, and /var/log/leapp/leapp-upgrade.log says why",
+                    host.id, host.version, check.release
+                );
+                log.agent(&why);
+                done.status = JobStatus::Failed;
+                done.error = Some(why);
+            }
+            Err(error) => {
+                let why = format!("cannot tell which release the host came back on: {error}");
+                log.agent(&why);
+                done.status = JobStatus::Failed;
+                done.error = Some(why);
+            }
         }
     }
 
@@ -808,11 +868,14 @@ async fn perform(
         Work::DistUpgrade(target, backend, policy, snapshot) => {
             upgrade_release(
                 job,
-                target,
-                backend.as_ref(),
-                *policy,
-                snapshot.as_ref(),
+                Upgrade {
+                    target,
+                    backend: backend.as_ref(),
+                    policy: *policy,
+                    snapshot: snapshot.as_ref(),
+                },
                 checks,
+                state,
                 room,
                 log,
             )
@@ -884,21 +947,52 @@ async fn perform(
     }
 }
 
+/// A release upgrade, as its job describes it.
+struct Upgrade<'a> {
+    target: &'a str,
+    backend: &'a dyn PackageBackend,
+    policy: RebootPolicy,
+    snapshot: Option<&'a SnapshotFirst>,
+}
+
 /// A release upgrade (DAWG-151): snapshot first where asked, the backend's
 /// upgrade, then the host's checks — as an install, with a release for a
 /// package list.
-#[allow(clippy::too_many_arguments)]
+///
+/// One the reboot carries out (leapp, DAWG-152) is refused whole when the job
+/// may not reboot, and its checks and its release wait for the host to come
+/// back: [`Executor::resume_after_reboot`] reads the [`ReleaseCheck`] left
+/// here.
+///
+/// [`ReleaseCheck`]: crate::state::ReleaseCheck
 async fn upgrade_release(
     job: &Job,
-    target: &str,
-    backend: &dyn PackageBackend,
-    policy: RebootPolicy,
-    snapshot: Option<&SnapshotFirst>,
+    upgrade: Upgrade<'_>,
     checks: &[Check],
+    state: &LocalState,
     room: Room,
     log: &JobLog,
 ) -> (JobComplete, RebootPolicy) {
+    let Upgrade {
+        target,
+        backend,
+        policy,
+        snapshot,
+    } = upgrade;
     let started_at = Utc::now();
+    if backend.upgrade_finishes_at_reboot() && policy == RebootPolicy::Never {
+        let why = "this release upgrade is carried out by the reboot that follows it, and the job may not reboot, so nothing was changed";
+        log.agent(why);
+        return (
+            failed(
+                JobStatus::RejectedByHost,
+                started_at,
+                Utc::now(),
+                why.into(),
+            ),
+            RebootPolicy::Never,
+        );
+    }
     let taken = match snapshot_first(job, snapshot, room, log).await {
         Ok(taken) => taken,
         Err(why) => {
@@ -910,12 +1004,31 @@ async fn upgrade_release(
     };
     log.agent(format!("upgrading this host to release {target}"));
     let outcome = backend.dist_upgrade(target, log).await;
+    let after = outcome.as_ref().ok().and_then(|o| o.after_reboot.clone());
     let mut done = report(job, started_at, outcome);
+    done.snapshot_id = taken;
+    if let Some(after) = after {
+        // Nothing has changed yet: the checks and the release are for after.
+        let check = crate::state::ReleaseCheck {
+            job: job.id.clone(),
+            release: after.release,
+            before: after.before,
+        };
+        if let Err(error) = state.set_release_check(&check) {
+            let why = format!(
+                "the upgrade is prepared and could not be recorded for checking after the reboot ({error}), so the agent did not reboot; the next reboot carries it out"
+            );
+            log.agent(&why);
+            done.status = JobStatus::Failed;
+            done.error = Some(why);
+            return (done, RebootPolicy::Never);
+        }
+        return (done, policy);
+    }
     if done.status != JobStatus::RejectedByHost {
         done.health_checks = checks_reported(job, checks, log).await;
         done.finished_at = Utc::now();
     }
-    done.snapshot_id = taken;
     (done, policy)
 }
 
@@ -1380,6 +1493,9 @@ mod tests {
         applied: AtomicUsize,
         /// What `installed` answers.
         packages: std::sync::Mutex<Vec<InstalledPackage>>,
+        /// A release upgrade the reboot carries out, like leapp's, to this
+        /// release; `None` for one this backend does not do.
+        upgrades_at_reboot: std::sync::Mutex<Option<String>>,
     }
 
     #[async_trait]
@@ -1419,6 +1535,27 @@ mod tests {
             log.line("Setting up openssl (3.5.1-2) ...");
             (self.outcome)(plan)
         }
+        fn upgrade_finishes_at_reboot(&self) -> bool {
+            self.upgrades_at_reboot.lock().unwrap().is_some()
+        }
+        async fn dist_upgrade(
+            &self,
+            target: &str,
+            _log: &dyn LogSink,
+        ) -> updawg_backends::Result<ApplyOutcome> {
+            let Some(release) = self.upgrades_at_reboot.lock().unwrap().clone() else {
+                return Err(BackendError::Refused("not built".into()));
+            };
+            assert_eq!(release, target);
+            Ok(ApplyOutcome {
+                changed: vec![],
+                reboot_required: true,
+                after_reboot: Some(updawg_backends::leapp_upgrade::AfterReboot {
+                    release,
+                    before: self.packages.lock().unwrap().clone(),
+                }),
+            })
+        }
     }
 
     // Must match `Backend::outcome`'s signature, which the refusing case needs.
@@ -1436,6 +1573,7 @@ mod tests {
                 })
                 .collect(),
             reboot_required: false,
+            after_reboot: None,
         })
     }
 
@@ -1512,6 +1650,7 @@ mod tests {
             outcome,
             applied: AtomicUsize::new(0),
             packages: std::sync::Mutex::default(),
+            upgrades_at_reboot: std::sync::Mutex::default(),
         });
         let executor = Executor::new(
             Arc::clone(&gateway) as Arc<dyn Reporter>,
@@ -1803,6 +1942,98 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         // And only once.
         w.executor.resume_after_reboot().await;
         assert_eq!(w.gateway.completes.lock().unwrap().len(), 1);
+    }
+
+    /// A release upgrade the reboot carries out (leapp, DAWG-152), as a
+    /// signed job to `release`.
+    fn upgrading_at_reboot(w: &World, release: &str, policy: RebootPolicy) -> Job {
+        *w.backend.upgrades_at_reboot.lock().unwrap() = Some(release.to_owned());
+        job(w, |j| {
+            j.spec = JobSpec::DistUpgrade(updawg_protocol::job::DistUpgrade {
+                target_release: release.to_owned(),
+                snapshot: SnapshotPolicy::Never,
+                reboot: policy,
+                timeout_s: 14_400,
+            });
+        })
+    }
+
+    const ALLOW_UPGRADE: &str = "\"dist_upgrade\", \"reboot\"";
+
+    #[tokio::test]
+    async fn a_release_upgrade_the_reboot_carries_out_is_refused_when_the_job_may_not_reboot() {
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", succeeds, "", ALLOW_UPGRADE);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(upgrading_at_reboot(&w, "99", RebootPolicy::Never))
+            .await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::RejectedByHost);
+        assert!(done.error.unwrap().contains("may not reboot"));
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_release_upgrade_the_reboot_carries_out_is_judged_once_the_host_is_back() {
+        // Back on the old release: the upgrade did not happen.
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", succeeds, CHECKS, ALLOW_UPGRADE);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        w.executor
+            .deliver(upgrading_at_reboot(&w, "99", RebootPolicy::IfRequired))
+            .await;
+        settled(&w, &rebooter).await;
+        assert_eq!(rebooter.requested.load(Ordering::SeqCst), 1);
+        assert!(
+            w.gateway.completes.lock().unwrap().is_empty(),
+            "nothing to report until the host is back"
+        );
+        *rebooter.boot_id.lock().unwrap() = "boot-2".into();
+        w.executor.resume_after_reboot().await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Failed);
+        assert!(done.error.unwrap().contains("not 99"));
+        assert_eq!(done.health_checks.len(), 2, "checked after the reboot");
+
+        // On the target: succeeded, and what changed is what moved. The
+        // target is this machine's own release, which is the one thing a test
+        // can be sure a host "came back on".
+        let Ok(here) = updawg_backends::release::this_host() else {
+            return;
+        };
+        let major = here.version.split('.').next().unwrap().to_owned();
+        let rebooter = FakeRebooter::new();
+        let mut w = world_allowing("managed", succeeds, "", ALLOW_UPGRADE);
+        w.executor = w
+            .executor
+            .with_rebooter(Arc::clone(&rebooter) as Arc<dyn Rebooter>);
+        let package = |version: &str| InstalledPackage {
+            name: "bash".into(),
+            version: version.into(),
+            arch: "x86_64".into(),
+            repo: None,
+            source: None,
+        };
+        *w.backend.packages.lock().unwrap() = vec![package("4.4")];
+        w.executor
+            .deliver(upgrading_at_reboot(&w, &major, RebootPolicy::IfRequired))
+            .await;
+        settled(&w, &rebooter).await;
+        *w.backend.packages.lock().unwrap() = vec![package("5.1")];
+        *rebooter.boot_id.lock().unwrap() = "boot-2".into();
+        w.executor.resume_after_reboot().await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Succeeded, "{:?}", done.error);
+        assert_eq!(done.changes.len(), 1);
+        assert_eq!(
+            (done.changes[0].from.as_str(), done.changes[0].to.as_str()),
+            ("4.4", "5.1")
+        );
     }
 
     #[tokio::test]

@@ -19,6 +19,7 @@
 pub mod apt;
 pub mod debian_upgrade;
 pub mod dnf;
+pub mod leapp_upgrade;
 pub mod release;
 pub mod ubuntu_upgrade;
 
@@ -90,6 +91,10 @@ pub struct Change {
 pub struct ApplyOutcome {
     pub changed: Vec<Change>,
     pub reboot_required: bool,
+    /// A release upgrade that happens during the reboot (leapp, DAWG-152):
+    /// what to check once the host is back. `None` for everything else,
+    /// whose outcome is known when it returns.
+    pub after_reboot: Option<leapp_upgrade::AfterReboot>,
 }
 
 /// What the package manager would do if asked to upgrade everything.
@@ -208,9 +213,16 @@ pub trait PackageBackend: Send + Sync {
         ])
     }
 
+    /// Whether this backend's release upgrade is finished by the reboot
+    /// that follows it (leapp), so a job that may not reboot must not start
+    /// one.
+    fn upgrade_finishes_at_reboot(&self) -> bool {
+        false
+    }
+
     /// Upgrade the host to release `target` (`13`, `24.04`): a `dist_upgrade`
     /// job (DAWG-150, 151, 152). Debian's is [`debian_upgrade`], Ubuntu's
-    /// [`ubuntu_upgrade`].
+    /// [`ubuntu_upgrade`], the RHEL family's [`leapp_upgrade`].
     ///
     /// # Errors
     /// [`BackendError::Refused`] when nothing was changed; anything else once

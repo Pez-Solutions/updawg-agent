@@ -64,7 +64,8 @@ pub struct Host {
     pub codename: String,
 }
 
-/// `ID`, `VERSION_ID` and `VERSION_CODENAME`, where all three are there.
+/// `ID` and `VERSION_ID`, where both are there, and `VERSION_CODENAME`,
+/// empty where there is none.
 #[must_use]
 pub fn read_os_release(text: &str) -> Option<Host> {
     let value = |key: &str| {
@@ -78,7 +79,8 @@ pub fn read_os_release(text: &str) -> Option<Host> {
     Some(Host {
         id: value("ID")?,
         version: value("VERSION_ID")?,
-        codename: value("VERSION_CODENAME")?,
+        // The RHEL family names no codename.
+        codename: value("VERSION_CODENAME").unwrap_or_default(),
     })
 }
 

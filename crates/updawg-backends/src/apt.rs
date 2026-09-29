@@ -191,6 +191,7 @@ impl PackageBackend for AptBackend {
             return Ok(ApplyOutcome {
                 changed: vec![],
                 reboot_required: reboot_required(),
+                after_reboot: None,
             });
         }
 
@@ -221,6 +222,7 @@ impl PackageBackend for AptBackend {
         Ok(ApplyOutcome {
             changed,
             reboot_required: reboot_required(),
+            after_reboot: None,
         })
     }
 }

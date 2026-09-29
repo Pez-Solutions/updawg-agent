@@ -490,6 +490,7 @@ pub async fn upgrade(
     Ok(crate::ApplyOutcome {
         changed,
         reboot_required: true,
+        after_reboot: None,
     })
 }
 

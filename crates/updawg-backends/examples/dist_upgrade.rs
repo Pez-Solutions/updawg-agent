@@ -4,7 +4,7 @@
 //! does. `dist_upgrade --check 24.04` changes nothing and prints what a
 //! preflight's `release_upgrade` check would.
 
-use updawg_backends::{LogSink, PackageBackend, apt::AptBackend};
+use updawg_backends::LogSink;
 
 struct Print;
 
@@ -25,8 +25,15 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    let backend = match updawg_backends::detect() {
+        Ok(backend) => backend,
+        Err(error) => {
+            println!("{error}");
+            std::process::exit(1);
+        }
+    };
     if check {
-        match AptBackend::new().release_upgrade_blockers(&target).await {
+        match backend.release_upgrade_blockers(&target).await {
             Ok(none) if none.is_empty() => println!("nothing stands in the way"),
             Ok(found) => {
                 for why in found {
@@ -41,11 +48,16 @@ async fn main() {
         }
         return;
     }
-    match AptBackend::new().dist_upgrade(&target, &Print).await {
+    match backend.dist_upgrade(&target, &Print).await {
         Ok(done) => println!(
-            "succeeded: {} package(s) changed, reboot required: {}",
+            "succeeded: {} package(s) changed, reboot required: {}{}",
             done.changed.len(),
-            done.reboot_required
+            done.reboot_required,
+            if done.after_reboot.is_some() {
+                "; the reboot carries the upgrade out"
+            } else {
+                ""
+            }
         ),
         Err(error) => {
             println!("{error}");

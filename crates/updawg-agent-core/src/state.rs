@@ -80,6 +80,17 @@ pub struct PendingReboot {
     pub boot_id_before: String,
 }
 
+/// A release upgrade that the reboot carries out (leapp, DAWG-152): what the
+/// agent checks once the host is back, for the job that asked.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseCheck {
+    pub job: JobId,
+    /// The major release the host should be on now (`9`).
+    pub release: String,
+    /// What was installed before, to report what changed.
+    pub before: Vec<updawg_protocol::InstalledPackage>,
+}
+
 /// Replay protection. Bounded: an agent running for years must not accumulate
 /// an unbounded file of job ids.
 const SEEN_JOBS_CAPACITY: usize = 2048;
@@ -322,6 +333,29 @@ impl LocalState {
             source,
         })?;
         self.write_atomic("pending-reboot.json", &bytes)
+    }
+
+    /// Record what to check after the reboot that finishes a release
+    /// upgrade.
+    pub fn set_release_check(&self, check: &ReleaseCheck) -> Result<()> {
+        let bytes = serde_json::to_vec(check).map_err(|source| StateError::Corrupt {
+            path: "release-check.json".into(),
+            source,
+        })?;
+        self.write_atomic("release-check.json", &bytes)
+    }
+
+    /// Read and clear it: it is checked once, after the reboot.
+    pub fn take_release_check(&self) -> Result<Option<ReleaseCheck>> {
+        let check: Option<ReleaseCheck> = self.read_json("release-check.json")?;
+        if check.is_some() {
+            let path = self.path("release-check.json");
+            fs::remove_file(&path).map_err(|source| StateError::Write {
+                path: path.display().to_string(),
+                source,
+            })?;
+        }
+        Ok(check)
     }
 
     /// Read and clear the pending reboot record.

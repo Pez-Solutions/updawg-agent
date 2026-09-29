@@ -209,6 +209,20 @@ impl PackageBackend for DnfBackend {
     /// 3. **Do it**, with the same command line and `-y`. Weak dependencies
     ///    are off on both, so a recommended package is never pulled in.
     /// 4. **What is installed after.** Each pin must now be at its `to`.
+    /// Leapp (DAWG-152): see [`crate::leapp_upgrade`].
+    fn upgrade_finishes_at_reboot(&self) -> bool {
+        true
+    }
+
+    async fn release_upgrade_blockers(&self, target: &str) -> Result<Vec<String>> {
+        let host = crate::release::this_host()?;
+        crate::leapp_upgrade::blockers(self, &host, target).await
+    }
+
+    async fn dist_upgrade(&self, target: &str, log: &dyn LogSink) -> Result<ApplyOutcome> {
+        crate::leapp_upgrade::upgrade(self, target, log).await
+    }
+
     async fn check_pins(&self, pins: &[Pin]) -> Result<Vec<String>> {
         let before = installed_versions(pins).await?;
         let todo = still_to_do(pins, &before)?;
@@ -228,6 +242,7 @@ impl PackageBackend for DnfBackend {
             return Ok(ApplyOutcome {
                 changed: vec![],
                 reboot_required: reboot_required().await,
+                after_reboot: None,
             });
         }
 
@@ -258,6 +273,7 @@ impl PackageBackend for DnfBackend {
         Ok(ApplyOutcome {
             changed,
             reboot_required: reboot_required().await,
+            after_reboot: None,
         })
     }
 }

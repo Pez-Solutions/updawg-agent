@@ -126,7 +126,7 @@ fn said(out: &str) -> String {
 }
 
 /// Run `program` and keep what it printed. Reads only.
-async fn read(program: &'static str, args: &[&str]) -> Result<(i32, String)> {
+pub(crate) async fn read(program: &'static str, args: &[&str]) -> Result<(i32, String)> {
     let out = tokio::process::Command::new(program)
         .args(args)
         .env("LC_ALL", "C")
@@ -304,6 +304,7 @@ pub async fn upgrade(
     Ok(crate::ApplyOutcome {
         changed,
         reboot_required: true,
+        after_reboot: None,
     })
 }
 

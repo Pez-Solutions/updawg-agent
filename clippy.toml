@@ -4,3 +4,7 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+
+# Distribution and project names that are words, not code. `..` keeps
+# clippy's own list.
+doc-valid-idents = ["AlmaLinux", "ELevate", "CentOS", "SELinux", ".."]
