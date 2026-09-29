@@ -6,8 +6,8 @@ server = "https://agents.updawg.net"
 mode = "managed"
 
 [permissions]
-allow = ["refresh", "preflight", "apply_patch", "reboot", "snapshot"]
-deny  = ["dist_upgrade"]
+allow = ["refresh", "preflight", "apply_patch", "dist_upgrade", "reboot", "snapshot", "self_update"]
+deny  = []
 
 [schedule]
 inventory_interval = "6h"

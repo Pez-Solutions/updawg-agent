@@ -93,12 +93,14 @@ server = "https://agents.updawg.net"
 mode = "managed"
 
 [permissions]
-# Not "reboot" (add it when this host may be rebooted by an approved job) and
-# not "dist_upgrade" (moving to a new release is always your call, on the host).
-allow = ["refresh", "preflight", "apply_patch", "snapshot"]
-deny  = ["dist_upgrade"]
+# Every kind of job. Each one still has to be approved and signed by your
+# organization first. Take a kind out, or add it to deny, to keep this host
+# from ever doing it whatever is approved: "reboot" for a host nobody may
+# restart, "dist_upgrade" for one that stays on its release.
+allow = ["refresh", "preflight", "apply_patch", "dist_upgrade", "reboot", "snapshot", "self_update"]
+deny  = []
 TOML
-  say "wrote $CONF (managed: applies approved updates; no reboots, no release upgrades)"
+  say "wrote $CONF (managed: runs any approved job, reboots included)"
 fi
 
 # ------------------------------------------------------------------ enroll

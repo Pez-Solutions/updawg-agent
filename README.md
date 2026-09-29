@@ -59,9 +59,11 @@ cargo run --bin updawgctl -- status
 Permissions also **fail closed**: an empty allow list permits nothing, so a
 truncated or malformed config leaves the agent reporting rather than acting.
 `mode` defaults to `managed` — an agent is installed to act on what its
-organization approves — and `install.sh` writes `managed` with `refresh`,
-`preflight`, `apply_patch` and `snapshot` allowed (no `reboot`, no
-`dist_upgrade`). Set `mode = "observe"` for a host that must only report.
+organization approves — and `install.sh` writes `managed` with every
+permission allowed, `reboot` and `dist_upgrade` included: what a host does is
+decided by what its organization approves and signs. Narrow the allow list, or
+add to `deny`, for a host that must never reboot or change release, and set
+`mode = "observe"` for one that must only report.
 
 ## Why the backends shell out
 
