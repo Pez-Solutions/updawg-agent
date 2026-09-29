@@ -2060,6 +2060,8 @@ dependencies = [
  "updawg-backends",
  "updawg-collectors",
  "updawg-crypto",
+ "updawg-protocol",
+ "updawg-snapshots",
 ]
 
 [[package]]

@@ -24,6 +24,11 @@
 //! | `dkms_modules` | — | modules to rebuild for a new kernel |
 //! | `snapshot` | — | no snapshot provider, so no rollback |
 //! | `reboot` | — | the change needs a reboot, or the host already does |
+//! | `third_party_repos` (a release upgrade only) | a third-party repository publishes nothing for the target | one could not be asked |
+//!
+//! `third_party_repos` ([`crate::readiness`], DAWG-149) is the one check that
+//! goes off the host: it reads each third-party repository's index for the
+//! target release over HTTP.
 //!
 //! A check that cannot find out says `warn`, with why. Never `pass`.
 
@@ -50,6 +55,9 @@ pub struct Facts {
     /// The snapshot provider, or why there is none.
     pub snapshots: Result<String, String>,
     pub reboot_now: RebootRequired,
+    /// For a release upgrade: its target, and what each third-party
+    /// repository has for it (DAWG-149).
+    pub third_party: Option<(String, Result<Vec<crate::readiness::Repo>, String>)>,
 }
 
 /// Nothing known: every "could not tell" is a warning, so this is the
@@ -66,6 +74,7 @@ impl Default for Facts {
             dkms: None,
             snapshots: Err("not looked at".into()),
             reboot_now: RebootRequired::Unknown,
+            third_party: None,
         }
     }
 }
@@ -123,14 +132,18 @@ fn mib(bytes: u64) -> String {
 /// Decide every check from what was gathered.
 #[must_use]
 pub fn evaluate(f: &Facts) -> Vec<PreflightCheck> {
-    vec![
+    let mut checks = vec![
         disk_space(f),
         held_packages(f),
         modified_conffiles(f),
         dkms_modules(f),
         snapshot(f),
         reboot(f),
-    ]
+    ];
+    if let Some((target, found)) = &f.third_party {
+        checks.push(crate::readiness::check(target, found));
+    }
+    checks
 }
 
 fn disk_space(f: &Facts) -> PreflightCheck {
@@ -357,7 +370,15 @@ pub async fn gather(
         Some(updawg_protocol::Ecosystem::Rpm) => rpm_modified_conffiles(&planned).await,
         _ => Err("no package manager to ask".into()),
     };
+    let third_party = match &preflight.target_release {
+        Some(target) => Some((
+            target.clone(),
+            crate::readiness::gather(backend, target).await,
+        )),
+        None => None,
+    };
     Facts {
+        third_party,
         release_upgrade: preflight.target_release.is_some(),
         planned,
         root_free,
@@ -526,6 +547,22 @@ mod tests {
             reboot_now: RebootRequired::No,
             ..Facts::default()
         }
+    }
+
+    #[test]
+    fn only_a_release_upgrade_asks_about_third_party_repositories() {
+        let names =
+            |f: &Facts| -> Vec<String> { evaluate(f).into_iter().map(|c| c.name).collect() };
+        assert!(!names(&facts()).contains(&"third_party_repos".to_owned()));
+        let upgrade = Facts {
+            release_upgrade: true,
+            third_party: Some(("14".into(), Ok(vec![]))),
+            ..facts()
+        };
+        assert_eq!(
+            names(&upgrade).last().map(String::as_str),
+            Some("third_party_repos")
+        );
     }
 
     fn status(checks: &[PreflightCheck], name: &str) -> CheckStatus {

@@ -15,6 +15,7 @@ pub mod joblog;
 pub mod jobs;
 pub mod logging;
 pub mod preflight;
+pub mod readiness;
 pub mod scheduler;
 pub mod state;
 

@@ -161,7 +161,31 @@ pub trait PackageBackend: Send + Sync {
     /// `apt-get -s dist-upgrade`, which is most of the cost of a pass.
     async fn security_updates(&self, updates: &[AvailableUpdate]) -> Result<BTreeSet<String>>;
 
+    /// Every repository with its location, and what is installed from each
+    /// (DAWG-149): what a release-upgrade preflight asks about. Read-only.
+    ///
+    /// Not answered by default: a family that cannot say must not be read as
+    /// one with no third-party repositories.
+    async fn release_sources(&self) -> Result<Vec<RepoSource>> {
+        Err(BackendError::Refused(
+            "listing repository locations is not built for this package manager yet".into(),
+        ))
+    }
+
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;
+}
+
+/// Where one repository is, for asking whether it publishes a release
+/// (DAWG-149), and which installed packages came from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoSource {
+    /// The base URL apt fetches from: `https://packages.cloud.google.com/apt`.
+    pub uri: String,
+    /// The directory under `dists/`: `cloud-sdk-trixie`, `noble-updates`.
+    pub suite: String,
+    pub third_party: bool,
+    /// Installed packages whose installed version this repository carries.
+    pub packages: Vec<String>,
 }
 
 /// Pick the backend for the host we are running on.

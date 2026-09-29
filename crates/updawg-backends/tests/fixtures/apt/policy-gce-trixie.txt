@@ -1,0 +1,24 @@
+Package files:
+ 100 /var/lib/dpkg/status
+     release a=now
+ 500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main all Packages
+     release o=cloud-sdk-trixie,a=cloud-sdk-trixie,n=cloud-sdk-trixie,l=cloud-sdk-trixie,c=main,b=all
+     origin packages.cloud.google.com
+ 500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     release o=cloud-sdk-trixie,a=cloud-sdk-trixie,n=cloud-sdk-trixie,l=cloud-sdk-trixie,c=main,b=amd64
+     origin packages.cloud.google.com
+ 500 https://packages.cloud.google.com/apt google-compute-engine-trixie-stable/main all Packages
+     release o=google-compute-engine-trixie-stable,a=google-compute-engine-trixie-stable,n=google-compute-engine-trixie-stable,l=google-compute-engine-trixie-stable,c=main,b=all
+     origin packages.cloud.google.com
+ 500 https://packages.cloud.google.com/apt google-compute-engine-trixie-stable/main amd64 Packages
+     release o=google-compute-engine-trixie-stable,a=google-compute-engine-trixie-stable,n=google-compute-engine-trixie-stable,l=google-compute-engine-trixie-stable,c=main,b=amd64
+     origin packages.cloud.google.com
+ 500 mirror+file:/etc/apt/mirrors/debian-security.list trixie-security/main amd64 Packages
+     release v=13,o=Debian,a=stable-security,n=trixie-security,l=Debian-Security,c=main,b=amd64
+ 100 mirror+file:/etc/apt/mirrors/debian.list trixie-backports/main amd64 Packages
+     release o=Debian Backports,a=stable-backports,n=trixie-backports,l=Debian Backports,c=main,b=amd64
+ 500 mirror+file:/etc/apt/mirrors/debian.list trixie-updates/main amd64 Packages
+     release v=13-updates,o=Debian,a=stable-updates,n=trixie-updates,l=Debian,c=main,b=amd64
+ 500 mirror+file:/etc/apt/mirrors/debian.list trixie/main amd64 Packages
+     release v=13.7,o=Debian,a=stable,n=trixie,l=Debian,c=main,b=amd64
+Pinned packages:

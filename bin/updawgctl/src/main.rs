@@ -126,6 +126,16 @@ enum Command {
     },
     /// Show recent jobs recorded on this host.
     Jobs,
+    /// Run the preflight checks here, and change nothing (DAWG-147, DAWG-149).
+    ///
+    /// Without --release it checks the host as a package change would; with
+    /// it, as an upgrade to that release (`14`, `24.04` or a codename),
+    /// including whether each third-party repository publishes for it.
+    Preflight {
+        /// The release to check an upgrade to.
+        #[arg(long)]
+        release: Option<String>,
+    },
     /// Sign an approved job with a customer-held key (Enterprise).
     Sign {
         /// Path to the job envelope to sign.
@@ -161,6 +171,7 @@ async fn main() -> Result<()> {
         Command::Status => status(&cli, &state)?,
         Command::PrintInventory { json } => print_inventory(&cli.config, json).await?,
         Command::Jobs => jobs(&state)?,
+        Command::Preflight { release } => preflight(&cli.config, release).await?,
         Command::Sign { .. } => println!("sign: not implemented yet (DAWG-148)"),
     }
     Ok(())
@@ -465,6 +476,43 @@ fn plural(n: usize, noun: &str, verb: &str) -> String {
 /// tidiness — this is the binary a customer audits. So the output is built up
 /// and written once, and a broken pipe ends the process the way the signal would
 /// have.
+/// The checks a `run_preflight` job would report, run here and printed.
+async fn preflight(config_path: &str, release: Option<String>) -> Result<()> {
+    let backend = updawg_backends::detect().ok();
+    let wanted = AgentConfig::load(config_path).map_or(updawg_snapshots::Provider::Auto, |c| {
+        c.snapshots.provider.provider()
+    });
+    let snapshots = updawg_snapshots::detect(wanted)
+        .await
+        .map(|p| p.provider().name().to_owned());
+    // Debian and Ubuntu say so in a file; elsewhere this cannot tell, and says
+    // that rather than guessing.
+    let reboot_now = if std::path::Path::new("/run/reboot-required").exists() {
+        updawg_protocol::RebootRequired::Yes
+    } else {
+        updawg_protocol::RebootRequired::Unknown
+    };
+    let job = updawg_protocol::job::Preflight {
+        target_release: release,
+        packages: vec![],
+    };
+    let facts =
+        updawg_agent_core::preflight::gather(&job, backend.as_deref(), snapshots, reboot_now).await;
+    let mut out = String::new();
+    for c in updawg_agent_core::preflight::evaluate(&facts) {
+        let status = match c.status {
+            updawg_protocol::CheckStatus::Pass => "pass",
+            updawg_protocol::CheckStatus::Warn => "WARN",
+            updawg_protocol::CheckStatus::Fail => "FAIL",
+        };
+        let _ = writeln!(out, "{status:<5} {:<19} {}", c.name, c.summary);
+        for item in &c.items {
+            let _ = writeln!(out, "      {:<19} {item}", "");
+        }
+    }
+    emit(&out)
+}
+
 fn emit(text: &str) -> Result<()> {
     use std::io::Write as _;
     match std::io::stdout().write_all(text.as_bytes()) {

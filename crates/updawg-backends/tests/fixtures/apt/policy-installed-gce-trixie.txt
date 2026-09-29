@@ -1,0 +1,119 @@
+google-cloud-cli:
+  Installed: 586.0.0-0
+  Candidate: 586.0.0-0
+  Version table:
+ *** 586.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+        100 /var/lib/dpkg/status
+     585.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     584.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     583.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     582.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     581.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     580.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     579.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     578.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     577.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     576.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     575.0.1-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     575.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     574.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     573.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     572.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     571.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     570.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     569.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     568.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     567.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     566.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     565.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     564.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     563.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     562.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     561.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     560.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     559.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     558.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     557.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     556.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     555.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     554.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     553.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     552.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     551.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     550.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     549.0.1-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     549.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     548.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     547.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     546.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     545.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     544.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     543.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     542.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+     541.0.0-0 500
+        500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+bind9-host:
+  Installed: 1:9.20.29-1~deb13u1
+  Candidate: 1:9.20.29-1~deb13u1
+  Version table:
+ *** 1:9.20.29-1~deb13u1 500
+        500 mirror+file:/etc/apt/mirrors/debian-security.list trixie-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+     1:9.20.26-1~deb13u1 500
+        500 mirror+file:/etc/apt/mirrors/debian.list trixie/main amd64 Packages
+google-guest-agent:
+  Installed: 1:20260903.00-g1
+  Candidate: 1:20260903.00-g1
+  Version table:
+ *** 1:20260903.00-g1 500
+        500 https://packages.cloud.google.com/apt google-compute-engine-trixie-stable/main amd64 Packages
+        100 /var/lib/dpkg/status
+     20211116.00-7+b3 500
+        500 mirror+file:/etc/apt/mirrors/debian.list trixie/main amd64 Packages

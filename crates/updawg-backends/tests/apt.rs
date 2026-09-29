@@ -31,8 +31,8 @@
 )]
 
 use updawg_backends::apt::{
-    distro_origin, is_security_archive, parse_holds, parse_installed, parse_removals,
-    parse_repositories, parse_updates,
+    distro_origin, is_security_archive, parse_holds, parse_installed, parse_installed_from,
+    parse_removals, parse_repositories, parse_sources, parse_updates,
 };
 
 /// The five distributions, and the origin each one's own repositories carry.
@@ -771,4 +771,67 @@ fn the_source_package_comes_with_its_own_version() {
     assert_eq!(source("libc6").unwrap().name, "glibc");
     // Output without the fields, as the fixtures were captured.
     assert_eq!(source("old"), None);
+}
+
+/// Where each repository is (DAWG-149), from a GCE Debian 13 host: two Google
+/// repositories named after the release, and Debian's own behind mirror
+/// lists. One entry per URL and suite, whatever its architectures.
+#[test]
+fn sources_carry_their_location_and_whose_they_are() {
+    let sources = parse_sources(&fixture("policy-gce-trixie"), Some("Debian"));
+    let seen: Vec<(&str, &str, bool)> = sources
+        .iter()
+        .map(|s| (s.uri.as_str(), s.suite.as_str(), s.third_party))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (
+                "https://packages.cloud.google.com/apt",
+                "cloud-sdk-trixie",
+                true
+            ),
+            (
+                "https://packages.cloud.google.com/apt",
+                "google-compute-engine-trixie-stable",
+                true
+            ),
+            (
+                "mirror+file:/etc/apt/mirrors/debian-security.list",
+                "trixie-security",
+                false
+            ),
+            (
+                "mirror+file:/etc/apt/mirrors/debian.list",
+                "trixie-backports",
+                false
+            ),
+            (
+                "mirror+file:/etc/apt/mirrors/debian.list",
+                "trixie-updates",
+                false
+            ),
+            ("mirror+file:/etc/apt/mirrors/debian.list", "trixie", false),
+        ]
+    );
+}
+
+/// Each package is tied to the repository its **installed** version came
+/// from: google-guest-agent is also in Debian's archive at an older version,
+/// and it is Google's repository that matters to an upgrade.
+#[test]
+fn a_package_belongs_to_the_repository_of_its_installed_version() {
+    let found = parse_installed_from(&fixture("policy-installed-gce-trixie"));
+    let found: Vec<(&str, &str)> = found
+        .iter()
+        .map(|(p, _, suite)| (p.as_str(), suite.as_str()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("google-cloud-cli", "cloud-sdk-trixie"),
+            ("bind9-host", "trixie-security"),
+            ("google-guest-agent", "google-compute-engine-trixie-stable"),
+        ]
+    );
 }

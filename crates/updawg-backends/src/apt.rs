@@ -99,6 +99,29 @@ impl PackageBackend for AptBackend {
         Ok(parse_repositories(&out, self.origin.as_deref()))
     }
 
+    async fn release_sources(&self) -> Result<Vec<crate::RepoSource>> {
+        let out = run("apt-cache", &["policy"]).await?;
+        let mut sources = parse_sources(&out, self.origin.as_deref());
+        let names = run("dpkg-query", &["-W", "-f", "${Package}\n"]).await?;
+        let names: Vec<&str> = names.lines().filter(|l| !l.is_empty()).collect();
+        if names.is_empty() {
+            return Ok(sources);
+        }
+        let mut args = vec!["policy"];
+        args.extend(names);
+        let per_package = run("apt-cache", &args).await?;
+        for (package, uri, suite) in parse_installed_from(&per_package) {
+            if let Some(s) = sources
+                .iter_mut()
+                .find(|s| s.uri == uri && s.suite == suite)
+                && !s.packages.contains(&package)
+            {
+                s.packages.push(package);
+            }
+        }
+        Ok(sources)
+    }
+
     async fn held_packages(&self) -> Result<Vec<String>> {
         let out = run("apt-mark", &["showhold"]).await?;
         Ok(parse_holds(&out))
@@ -423,6 +446,98 @@ pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Reposit
     }
 
     repos
+}
+
+/// Repositories with their locations, from `apt-cache policy` (DAWG-149).
+///
+/// The priority line carries the base URL and `suite/component`; the
+/// `release` line under it carries the origin, which decides third-party the
+/// same way [`parse_repositories`] does. One entry per URL and suite: the
+/// components of one suite are published together.
+///
+/// ```text
+///  500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+///      release o=cloud-sdk-trixie,a=cloud-sdk-trixie,n=cloud-sdk-trixie,c=main,b=amd64
+/// ```
+#[must_use]
+pub fn parse_sources(out: &str, distro_origin: Option<&str>) -> Vec<crate::RepoSource> {
+    let mut sources: Vec<crate::RepoSource> = Vec::new();
+    let mut pending: Option<(String, String)> = None;
+    for line in out.lines() {
+        let trimmed = line.trim();
+        if let Some(fields) = trimmed.strip_prefix("release ") {
+            let Some((uri, suite)) = pending.take() else {
+                continue;
+            };
+            let origin = fields
+                .split(',')
+                .find_map(|pair| pair.trim().strip_prefix("o="));
+            if sources.iter().any(|s| s.uri == uri && s.suite == suite) {
+                continue;
+            }
+            sources.push(crate::RepoSource {
+                uri,
+                suite,
+                third_party: !matches!((origin, distro_origin), (Some(o), Some(d)) if origin_is_distro(o, d)),
+                packages: vec![],
+            });
+        } else if let Some(location) = source_line(trimmed) {
+            pending = Some(location);
+        }
+    }
+    sources
+}
+
+/// `500 https://host/path suite/component arch Packages` → (URL, suite).
+fn source_line(line: &str) -> Option<(String, String)> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.len() < 4 || tokens.last() != Some(&"Packages") || tokens[0].parse::<i32>().is_err() {
+        return None;
+    }
+    let suite = tokens[2].split('/').next().unwrap_or(tokens[2]);
+    Some((tokens[1].trim_end_matches('/').to_owned(), suite.to_owned()))
+}
+
+/// Which repository each package's **installed** version came from, from
+/// `apt-cache policy <package>...` (DAWG-149): the source lines under the
+/// `***` version. A version only `/var/lib/dpkg/status` knows — its
+/// repository no longer carries it — names nothing.
+///
+/// ```text
+/// google-cloud-cli:
+///   Installed: 586.0.0-0
+///   Version table:
+///  *** 586.0.0-0 500
+///         500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
+///         100 /var/lib/dpkg/status
+/// ```
+#[must_use]
+pub fn parse_installed_from(out: &str) -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    let mut package: Option<String> = None;
+    let mut installed = false;
+    for line in out.lines() {
+        if !line.starts_with(' ') && line.ends_with(':') {
+            package = Some(line.trim_end_matches(':').to_owned());
+            installed = false;
+            continue;
+        }
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("*** ") {
+            installed = rest.split_whitespace().count() == 2;
+            continue;
+        }
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        // Another version of the same package: `1:9.20.26-1~deb13u1 500`.
+        if tokens.len() == 2 && tokens[1].parse::<i32>().is_ok() && !trimmed.contains('/') {
+            installed = false;
+            continue;
+        }
+        if installed && let (Some(p), Some((uri, suite))) = (&package, source_line(trimmed)) {
+            found.push((p.clone(), uri, suite));
+        }
+    }
+    found
 }
 
 /// Whether an apt origin belongs to the distribution the host is running.
