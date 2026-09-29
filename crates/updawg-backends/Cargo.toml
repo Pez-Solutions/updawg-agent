@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 updawg-protocol.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "io-util"] }
 thiserror.workspace = true
 tracing.workspace = true
 

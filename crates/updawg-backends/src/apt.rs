@@ -157,6 +157,10 @@ impl PackageBackend for AptBackend {
     ///    fighting `unattended-upgrades` for it.
     /// 4. **What is installed after.** Each pin must now be at its `to`. The
     ///    changes reported are what dpkg says, not what was asked for.
+    async fn dist_upgrade(&self, target: &str, log: &dyn LogSink) -> Result<ApplyOutcome> {
+        crate::debian_upgrade::upgrade(self, target, log).await
+    }
+
     async fn check_pins(&self, pins: &[Pin]) -> Result<Vec<String>> {
         let before = installed_versions(pins).await?;
         let todo = still_to_do(pins, &before)?;

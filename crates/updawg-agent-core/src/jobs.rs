@@ -344,8 +344,8 @@ impl Executor {
                 )
             });
         }
-        if let JobSpec::ApplyUpdates(apply) = &job.spec
-            && apply.reboot != RebootPolicy::Never
+        if let Some((reboot, _)) = changes_packages(&job.spec)
+            && reboot != RebootPolicy::Never
             && !self.config.admits(JobKind::Reboot, None)
         {
             return Some(
@@ -355,8 +355,8 @@ impl Executor {
         }
         // The same for a snapshot the job cannot do without: refused whole,
         // before anything changes (DAWG-119).
-        if let JobSpec::ApplyUpdates(apply) = &job.spec
-            && apply.snapshot == SnapshotPolicy::Required
+        if let Some((_, snapshot)) = changes_packages(&job.spec)
+            && snapshot == SnapshotPolicy::Required
         {
             if !self.config.admits(JobKind::Snapshot, None) {
                 return Some(
@@ -383,6 +383,22 @@ impl Executor {
         })
     }
 
+    /// The snapshot a change takes first under `policy`, if any.
+    ///
+    /// `if_available` on a host that does not permit snapshots goes without,
+    /// like one with no provider: it is the host's call (DAWG-38). `required`
+    /// was refused already, in [`Self::not_permitted`].
+    fn snapshot_first(&self, policy: SnapshotPolicy) -> Option<SnapshotFirst> {
+        match (policy, &self.snapshots) {
+            (SnapshotPolicy::Never, _) | (_, Err(_)) => None,
+            (_, Ok(_)) if !self.config.admits(JobKind::Snapshot, None) => None,
+            (policy, Ok(provider)) => Some(SnapshotFirst {
+                provider: Arc::clone(provider),
+                required: policy == SnapshotPolicy::Required,
+            }),
+        }
+    }
+
     /// What a verified, permitted job is to do, or why this host cannot.
     fn work_for(&self, job: &Job) -> std::result::Result<Work, String> {
         Ok(match &job.spec {
@@ -406,17 +422,20 @@ impl Executor {
                     },
                     backend,
                     apply.reboot,
-                    // `if_available` on a host that does not permit snapshots
-                    // goes without, like one with no provider: it is the
-                    // host's call (DAWG-38). `required` was refused already.
-                    match (apply.snapshot, &self.snapshots) {
-                        (SnapshotPolicy::Never, _) | (_, Err(_)) => None,
-                        (_, Ok(_)) if !self.config.admits(JobKind::Snapshot, None) => None,
-                        (policy, Ok(provider)) => Some(SnapshotFirst {
-                            provider: Arc::clone(provider),
-                            required: policy == SnapshotPolicy::Required,
-                        }),
-                    },
+                    self.snapshot_first(apply.snapshot),
+                )
+            }
+            // DAWG-151: the backend knows its distribution's way, and refuses
+            // one it does not.
+            JobSpec::DistUpgrade(upgrade) => {
+                let Some(backend) = self.backend.clone() else {
+                    return Err("this host has no package manager the agent can drive".into());
+                };
+                Work::DistUpgrade(
+                    upgrade.target_release.clone(),
+                    backend,
+                    upgrade.reboot,
+                    self.snapshot_first(upgrade.snapshot),
                 )
             }
             // Permission was checked already: `reboot` is its own kind, and
@@ -546,6 +565,14 @@ enum Work {
         RebootPolicy,
         Option<SnapshotFirst>,
     ),
+    /// Move to this release (DAWG-151), then reboot as the policy says, after
+    /// a snapshot if one is to be taken.
+    DistUpgrade(
+        String,
+        Arc<dyn PackageBackend>,
+        RebootPolicy,
+        Option<SnapshotFirst>,
+    ),
     /// Reboot and nothing else — the one a rule wanted in its window, after
     /// an install that ran outside it (DAWG-103).
     Reboot(RebootPolicy),
@@ -565,6 +592,16 @@ enum Work {
         Option<Arc<dyn PackageBackend>>,
         std::result::Result<String, String>,
     ),
+}
+
+/// A job that changes packages: its reboot and snapshot policies. The same
+/// local refusals apply to both (DAWG-103, DAWG-119).
+fn changes_packages(spec: &JobSpec) -> Option<(RebootPolicy, SnapshotPolicy)> {
+    match spec {
+        JobSpec::ApplyUpdates(apply) => Some((apply.reboot, apply.snapshot)),
+        JobSpec::DistUpgrade(upgrade) => Some((upgrade.reboot, upgrade.snapshot)),
+        _ => None,
+    }
 }
 
 /// A snapshot to take before an install.
@@ -768,6 +805,19 @@ async fn perform(
                 }
             }
         }
+        Work::DistUpgrade(target, backend, policy, snapshot) => {
+            upgrade_release(
+                job,
+                target,
+                backend.as_ref(),
+                *policy,
+                snapshot.as_ref(),
+                checks,
+                room,
+                log,
+            )
+            .await
+        }
         Work::Reboot(policy) => (reboot_only(rebooter, log).await, *policy),
         Work::Snapshot(provider, description) => {
             let started_at = Utc::now();
@@ -832,6 +882,41 @@ async fn perform(
             (done, RebootPolicy::Never)
         }
     }
+}
+
+/// A release upgrade (DAWG-151): snapshot first where asked, the backend's
+/// upgrade, then the host's checks — as an install, with a release for a
+/// package list.
+#[allow(clippy::too_many_arguments)]
+async fn upgrade_release(
+    job: &Job,
+    target: &str,
+    backend: &dyn PackageBackend,
+    policy: RebootPolicy,
+    snapshot: Option<&SnapshotFirst>,
+    checks: &[Check],
+    room: Room,
+    log: &JobLog,
+) -> (JobComplete, RebootPolicy) {
+    let started_at = Utc::now();
+    let taken = match snapshot_first(job, snapshot, room, log).await {
+        Ok(taken) => taken,
+        Err(why) => {
+            return (
+                failed(JobStatus::RejectedByHost, started_at, Utc::now(), why),
+                RebootPolicy::Never,
+            );
+        }
+    };
+    log.agent(format!("upgrading this host to release {target}"));
+    let outcome = backend.dist_upgrade(target, log).await;
+    let mut done = report(job, started_at, outcome);
+    if done.status != JobStatus::RejectedByHost {
+        done.health_checks = checks_reported(job, checks, log).await;
+        done.finished_at = Utc::now();
+    }
+    done.snapshot_id = taken;
+    (done, policy)
 }
 
 /// The snapshot an install takes first, if it takes one.

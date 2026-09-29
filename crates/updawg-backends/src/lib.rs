@@ -17,7 +17,9 @@
 //! same to the server.
 
 pub mod apt;
+pub mod debian_upgrade;
 pub mod dnf;
+pub mod release;
 
 use async_trait::async_trait;
 use std::collections::BTreeSet;
@@ -190,6 +192,19 @@ pub trait PackageBackend: Send + Sync {
     }
 
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;
+
+    /// Upgrade the host to release `target` (`13`, `24.04`): a `dist_upgrade`
+    /// job (DAWG-150, 151, 152). Debian's is [`debian_upgrade`].
+    ///
+    /// # Errors
+    /// [`BackendError::Refused`] when nothing was changed; anything else once
+    /// the upgrade has begun.
+    async fn dist_upgrade(&self, target: &str, log: &dyn LogSink) -> Result<ApplyOutcome> {
+        let _ = (target, log);
+        Err(BackendError::Refused(
+            "release upgrades are not built for this package manager yet".into(),
+        ))
+    }
 }
 
 /// Where one repository is, for asking whether it publishes a release
