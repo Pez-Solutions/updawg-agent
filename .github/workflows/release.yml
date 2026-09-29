@@ -7,10 +7,19 @@ name: Release
 # Two architectures (DAWG-41). x86_64's files stay at the top of the artifact,
 # where every install.sh already in the world looks for them; aarch64's go in
 # `aarch64/`, and one SHA256SUMS covers both.
+#
+# And the same binaries as .deb and .rpm (DAWG-42), tested through install,
+# upgrade and removal on each distribution. On a pull request only when the
+# packaging or this workflow changes: that is when there is something new to
+# test.
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 env:
@@ -152,3 +161,126 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+  packages:
+    name: .deb and .rpm
+    needs: [x86_64, aarch64]
+    runs-on: [self-hosted, copenhagen]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64
+          path: bin/amd64/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-aarch64
+          path: bin/arm64/
+
+      - name: Install nfpm
+        env:
+          NFPM: "2.47.0"
+          NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+        run: |
+          curl -fsSLo nfpm.tgz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM}/nfpm_${NFPM}_Linux_x86_64.tar.gz"
+          echo "${NFPM_SHA256}  nfpm.tgz" | sha256sum -c -
+          mkdir -p .nfpm && tar -xzf nfpm.tgz -C .nfpm nfpm
+
+      # install.sh carries the default agent.toml inline, being one file piped
+      # to a shell; the packages carry packaging/agent.toml. The same file.
+      - name: agent.toml matches install.sh
+        run: |
+          sed -n '/^  cat > "\$CONF" <<.TOML.$/,/^TOML$/p' packaging/install.sh | sed '1d;$d' \
+            | diff - packaging/agent.toml
+
+      # A tag is its version, release 1. Anything else is the workspace
+      # version, released as the commit's UTC time and hash, so every build
+      # of main sorts after the one before it for apt and dnf alike.
+      - name: build
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            VERSION="${GITHUB_REF_NAME#v}"; RELEASE=1
+          else
+            VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+            RELEASE="$(TZ=UTC0 git log -1 --date=format-local:%Y%m%d%H%M%S --format=%cd).g$(git rev-parse --short=7 HEAD)"
+          fi
+          echo "version ${VERSION}, release ${RELEASE}"
+          export VERSION
+          stage() {
+            rm -rf stage && mkdir stage
+            install -m 0755 "bin/$1/updawgd" "bin/$1/updawgctl" stage/
+            sed 's|^ExecStart=/usr/local/bin/updawgd$|ExecStart=/usr/bin/updawgd|' \
+              packaging/systemd/updawgd.service > stage/updawgd.service
+            grep -q '^ExecStart=/usr/bin/updawgd$' stage/updawgd.service
+          }
+          mkdir -p out next
+          for ARCH in amd64 arm64; do
+            stage $ARCH
+            for fmt in deb rpm; do
+              ARCH=$ARCH RELEASE=$RELEASE .nfpm/nfpm package -f packaging/nfpm/nfpm.yaml -p $fmt -t out/
+            done
+          done
+          # The same, one release on, for the upgrade test and nothing else.
+          stage amd64
+          for fmt in deb rpm; do
+            ARCH=amd64 RELEASE="${RELEASE}.1" .nfpm/nfpm package -f packaging/nfpm/nfpm.yaml -p $fmt -t next/
+          done
+          (cd out && sha256sum * > SHA256SUMS)
+          ls -l out next
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updawg-agent-packages
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-next
+          path: next/
+          if-no-files-found: error
+          retention-days: 1
+
+  packages-test:
+    name: packages on ${{ matrix.image }}
+    needs: packages
+    runs-on: [self-hosted, copenhagen]
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:12
+          - debian:13
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - rockylinux/rockylinux:9
+          - almalinux:8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: updawg-agent-packages
+          path: out/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages-next
+          path: next/
+
+      - name: install, upgrade, remove
+        run: |
+          case "${{ matrix.image }}" in
+            debian* | ubuntu*) old=$(ls out/*_amd64.deb); new=$(ls next/*_amd64.deb) ;;
+            *) old=$(ls out/*.x86_64.rpm); new=$(ls next/*.x86_64.rpm) ;;
+          esac
+          docker run --rm -v "$PWD:/w" -w /w "${{ matrix.image }}" \
+            sh packaging/nfpm/test.sh "$old" "$new"

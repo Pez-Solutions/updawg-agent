@@ -82,7 +82,8 @@ if [ -e "$CONF" ]; then
 else
   install -d -m 0755 /etc/updawg
   cat > "$CONF" <<'TOML'
-# Updawg agent configuration. Written once by install.sh and never again.
+# Updawg agent configuration. Your edits are kept: neither install.sh nor a
+# package upgrade ever rewrites this file.
 #
 # Local configuration always wins: the server can narrow what this agent does,
 # never widen it past this file.

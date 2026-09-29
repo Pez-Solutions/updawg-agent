@@ -1,0 +1,18 @@
+# Updawg agent configuration. Your edits are kept: neither install.sh nor a
+# package upgrade ever rewrites this file.
+#
+# Local configuration always wins: the server can narrow what this agent does,
+# never widen it past this file.
+#
+# `managed` runs jobs your organization approved and signed, but only the
+# kinds allowed below. For a host that must only report, set mode = "observe".
+server = "https://agents.updawg.net"
+mode = "managed"
+
+[permissions]
+# Every kind of job. Each one still has to be approved and signed by your
+# organization first. Take a kind out, or add it to deny, to keep this host
+# from ever doing it whatever is approved: "reboot" for a host nobody may
+# restart, "dist_upgrade" for one that stays on its release.
+allow = ["refresh", "preflight", "apply_patch", "dist_upgrade", "reboot", "snapshot", "self_update"]
+deny  = []

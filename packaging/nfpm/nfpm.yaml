@@ -1,0 +1,48 @@
+# The agent as .deb and .rpm (DAWG-42): one definition, both formats, both
+# architectures. Built by the Release workflow:
+#
+#   ARCH=amd64 VERSION=0.1.0 RELEASE=20260929211500.g1154729 \
+#     nfpm package -f packaging/nfpm/nfpm.yaml -p deb -t out/
+#
+# stage/ holds updawgd and updawgctl for ARCH, and updawgd.service with
+# ExecStart at /usr/bin (the workflow rewrites install.sh's /usr/local/bin:
+# a package installs under /usr, install.sh under /usr/local). A fixed
+# directory, because nfpm expands the environment in fields like version and
+# arch but not in a file's source path.
+name: updawg-agent
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: ${RELEASE}
+version_schema: none
+section: admin
+priority: optional
+maintainer: Pez Solutions <hello@updawg.net>
+vendor: Pez Solutions
+homepage: https://updawg.net
+description: |-
+  Updawg agent: reports this host's packages and runs the patch jobs
+  your organization approved and signed.
+  updawgd is the daemon and updawgctl enrols the host and shows its state.
+
+contents:
+  - src: stage/updawgd
+    dst: /usr/bin/updawgd
+    file_info: { mode: 0755 }
+  - src: stage/updawgctl
+    dst: /usr/bin/updawgctl
+    file_info: { mode: 0755 }
+  - src: stage/updawgd.service
+    dst: /usr/lib/systemd/system/updawgd.service
+    file_info: { mode: 0644 }
+  # A conffile (deb) and %config(noreplace) (rpm): an edited agent.toml is
+  # never replaced by an upgrade. Local configuration always wins.
+  - src: packaging/agent.toml
+    dst: /etc/updawg/agent.toml
+    type: config|noreplace
+    file_info: { mode: 0644 }
+
+scripts:
+  postinstall: packaging/nfpm/postinstall.sh
+  preremove: packaging/nfpm/preremove.sh
+  postremove: packaging/nfpm/postremove.sh

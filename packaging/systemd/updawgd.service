@@ -1,5 +1,6 @@
-# The Updawg agent. Installed by install.sh (DAWG-44), and by the packages when
-# there are packages (DAWG-42).
+# The Updawg agent. Installed by install.sh (DAWG-44), which runs it from
+# /usr/local/bin, and by the .deb and .rpm (DAWG-42), whose build rewrites
+# ExecStart to /usr/bin.
 [Unit]
 Description=Updawg agent
 Documentation=https://github.com/Pez-Solutions/updawg-agent
