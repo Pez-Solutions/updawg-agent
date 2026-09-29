@@ -694,6 +694,8 @@ pub fn parse_repositories(out: &str, distro: Option<&str>) -> Vec<Repository> {
             kind: "rpm".to_owned(),
             third_party: !distro.is_some_and(|d| repo_is_distro(&b.name, d)),
             enabled: b.enabled,
+            // Not sent from dnf yet (DAWG-149): leapp checks its own.
+            url: None,
         })
         .collect()
 }

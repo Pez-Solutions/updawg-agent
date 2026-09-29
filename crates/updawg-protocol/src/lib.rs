@@ -107,7 +107,7 @@ pub use ids::{HostId, JobId, OrgId, SigningKeyId};
 pub use inventory::{
     AdvisoryHint, AvailableUpdate, Ecosystem, InstalledPackage, InventoryKind, InventoryUpload,
     PackageDelta, PendingRemoval, RemovedPackage, Replacement, Repository, SourcePackage,
-    SystemFacts,
+    SystemFacts, public_url,
 };
 pub use job::{
     ApplyUpdates, CheckStatus, DistUpgrade, HealthCheckReport, Job, JobAck, JobComplete, JobKind,

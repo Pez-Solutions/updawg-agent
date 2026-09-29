@@ -122,6 +122,7 @@ fn the_hash_ignores_everything_except_packages() {
         kind: "deb".into(),
         third_party: false,
         enabled: true,
+        url: None,
     }];
     a.held = vec!["linux-image-generic".into()];
     assert_eq!(a.hash(), b.hash());

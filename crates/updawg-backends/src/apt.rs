@@ -402,11 +402,17 @@ pub fn is_security_archive(archive: &str) -> bool {
 #[must_use]
 pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Repository> {
     let mut repos: Vec<Repository> = Vec::new();
+    // The priority line above each `release` line says where it is.
+    let mut uri: Option<String> = None;
 
     for line in out.lines() {
         let Some(fields) = line.trim().strip_prefix("release ") else {
+            if let Some((location, _)) = source_line(line.trim()) {
+                uri = Some(location);
+            }
             continue;
         };
+        let location = uri.take();
         let mut origin = None;
         let mut archive = None;
         let mut component = None;
@@ -434,14 +440,20 @@ pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Reposit
             continue;
         }
 
+        // Absent origin counts as third-party: an unsigned or hand-rolled
+        // repository often has none, and those are exactly the ones that
+        // break a dist-upgrade. Unknown provenance is not the distribution's.
+        let third_party =
+            !matches!((origin, distro_origin), (Some(o), Some(d)) if origin_is_distro(o, d));
         repos.push(Repository {
             id,
             kind: "deb".to_owned(),
-            // Absent origin counts as third-party: an unsigned or hand-rolled
-            // repository often has none, and those are exactly the ones that
-            // break a dist-upgrade. Unknown provenance is not the distribution's.
-            third_party: !matches!((origin, distro_origin), (Some(o), Some(d)) if origin_is_distro(o, d)),
+            third_party,
             enabled: true,
+            // Only a third-party one's, and without credentials (DAWG-149).
+            url: location
+                .filter(|_| third_party)
+                .and_then(|u| updawg_protocol::public_url(&u)),
         });
     }
 

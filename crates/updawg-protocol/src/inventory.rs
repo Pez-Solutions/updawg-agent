@@ -186,6 +186,39 @@ pub struct Repository {
     pub third_party: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Where a third-party repository is fetched from, so the server can ask
+    /// whether it publishes the next release (DAWG-149, protocol 0.6).
+    ///
+    /// **Without credentials**: no user name, password, query or fragment —
+    /// see [`public_url`]. `None` for a distribution repository (the upgrade
+    /// rewrites those itself), for one not reached over HTTP, and from agents
+    /// before 0.6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// `uri` as it may leave the host (DAWG-149): `http` or `https` only, with
+/// any `user:password@`, `?query` and `#fragment` removed, and no trailing
+/// slash. `None` for anything else — `file:`, `cdrom:`, `mirror+file:`,
+/// `tor+https:`.
+///
+/// A secret written into the **path** (`https://host/<token>/deb`) cannot be
+/// told from a directory name and is sent as it is; that is documented where
+/// repositories are described.
+#[must_use]
+pub fn public_url(uri: &str) -> Option<String> {
+    let (scheme, rest) = uri.split_once("://")?;
+    if !(scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")) {
+        return None;
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if host.is_empty() {
+        return None;
+    }
+    let url = format!("{}://{host}/{path}", scheme.to_ascii_lowercase());
+    Some(url.trim_end_matches('/').to_owned())
 }
 
 const fn default_true() -> bool {
@@ -293,6 +326,47 @@ mod tests {
 #[cfg(test)]
 mod wire_tests {
     use super::*;
+
+    #[test]
+    fn a_repository_url_leaves_the_host_without_its_credentials() {
+        let cases = [
+            (
+                "https://packages.cloud.google.com/apt",
+                Some("https://packages.cloud.google.com/apt"),
+            ),
+            (
+                "https://user:s3cret@repo.example.com/deb/",
+                Some("https://repo.example.com/deb"),
+            ),
+            (
+                "https://TOKEN:@packagecloud.io/acme/app/debian/",
+                Some("https://packagecloud.io/acme/app/debian"),
+            ),
+            (
+                "http://repo.example.com/deb?token=abc#x",
+                Some("http://repo.example.com/deb"),
+            ),
+            ("HTTPS://Repo.example.com", Some("https://Repo.example.com")),
+            ("mirror+file:/etc/apt/mirrors/debian.list", None),
+            ("file:/srv/repo", None),
+            ("tor+https://example.onion/deb", None),
+            ("https://", None),
+        ];
+        for (uri, want) in cases {
+            assert_eq!(public_url(uri).as_deref(), want, "{uri}");
+        }
+    }
+
+    #[test]
+    fn a_repository_without_a_url_reads_as_before() {
+        let old: Repository = serde_json::from_str(
+            r#"{"id":"cloud-sdk-trixie/main","kind":"deb","third_party":true}"#,
+        )
+        .expect("0.5 shape");
+        assert_eq!(old.url, None);
+        let json = serde_json::to_string(&old).expect("serialise");
+        assert!(!json.contains("url"), "{json}");
+    }
 
     fn update() -> AvailableUpdate {
         AvailableUpdate {

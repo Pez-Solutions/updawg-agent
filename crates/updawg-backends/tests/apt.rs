@@ -835,3 +835,31 @@ fn a_package_belongs_to_the_repository_of_its_installed_version() {
         ]
     );
 }
+
+/// A third-party repository says where it is, without credentials, and a
+/// distribution one does not (DAWG-149).
+#[test]
+fn a_third_party_repository_carries_its_url_and_the_distributions_do_not() {
+    let repos = parse_repositories(&fixture("policy-gce-trixie"), Some("Debian"));
+    let seen: Vec<(&str, Option<&str>)> = repos
+        .iter()
+        .map(|r| (r.id.as_str(), r.url.as_deref()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (
+                "cloud-sdk-trixie/main",
+                Some("https://packages.cloud.google.com/apt")
+            ),
+            (
+                "google-compute-engine-trixie-stable/main",
+                Some("https://packages.cloud.google.com/apt")
+            ),
+            ("stable-security/main", None),
+            ("stable-backports/main", None),
+            ("stable-updates/main", None),
+            ("stable/main", None),
+        ]
+    );
+}

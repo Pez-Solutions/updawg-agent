@@ -256,6 +256,13 @@ available updates, configured repositories and held packages are all
 means `apt-mark showhold` on one family and `dnf versionlock` on another, and
 splitting that across two crates would mean maintaining it twice.
 
+A third-party repository also carries its URL (protocol 0.6, DAWG-149), so the
+server can ask each day whether it publishes the next release. It leaves the
+host as `updawg_protocol::public_url` makes it: `http`/`https` only, with any
+`user:password@`, query string and fragment removed. A secret written into the
+URL's **path** cannot be told from a directory name and is sent as it is.
+Distribution repositories send no URL.
+
 ### "I could not tell" is a third answer
 
 Whether a reboot is pending is the most consequential thing collected, and the
