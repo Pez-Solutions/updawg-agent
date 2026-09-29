@@ -158,7 +158,20 @@ impl PackageBackend for AptBackend {
     /// 4. **What is installed after.** Each pin must now be at its `to`. The
     ///    changes reported are what dpkg says, not what was asked for.
     async fn dist_upgrade(&self, target: &str, log: &dyn LogSink) -> Result<ApplyOutcome> {
-        crate::debian_upgrade::upgrade(self, target, log).await
+        if crate::release::this_host()?.id == "ubuntu" {
+            crate::ubuntu_upgrade::upgrade(self, target, log).await
+        } else {
+            crate::debian_upgrade::upgrade(self, target, log).await
+        }
+    }
+
+    async fn release_upgrade_blockers(&self, target: &str) -> Result<Vec<String>> {
+        let host = crate::release::this_host()?;
+        if host.id == "ubuntu" {
+            crate::ubuntu_upgrade::blockers(self, &host, target).await
+        } else {
+            crate::debian_upgrade::blockers(self, &host, target).await
+        }
     }
 
     async fn check_pins(&self, pins: &[Pin]) -> Result<Vec<String>> {

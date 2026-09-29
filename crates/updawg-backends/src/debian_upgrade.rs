@@ -1,8 +1,9 @@
 //! A Debian release upgrade (DAWG-151): the sources rewritten, then
 //! `apt full-upgrade`, as Debian's release notes lay it out.
 //!
-//! 1. **Refuse what the release notes say not to do.** Debian only (Ubuntu
-//!    has its own tool, DAWG-150); one release at a time, 12 to 13 and never
+//! 1. **Refuse what the release notes say not to do** ([`blockers`], which
+//!    a preflight asks too). Debian only (Ubuntu has its own tool:
+//!    [`crate::ubuntu_upgrade`]); one release at a time, 12 to 13 and never
 //!    12 to 14; nothing held; nothing half-installed (`dpkg --audit`).
 //! 2. **Rewrite the sources.** Every suite that names this release —
 //!    `bookworm`, `bookworm-updates`, `bookworm-security`,
@@ -28,6 +29,7 @@
 //! there is a half-upgraded host, which is what the snapshot taken before the
 //! job is for (the executor's, as for an install).
 
+pub use crate::release::{Host, read_os_release};
 use crate::{BackendError, Change, LogSink, Result, release};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -39,32 +41,6 @@ const BACKUPS: &str = "/var/backups";
 
 /// The first release with a `non-free-firmware` component.
 const FIRMWARE_FROM: u32 = 12;
-
-/// This host's release, from `/etc/os-release`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Host {
-    pub id: String,
-    pub version: String,
-    pub codename: String,
-}
-
-/// `ID`, `VERSION_ID` and `VERSION_CODENAME`, where all three are there.
-#[must_use]
-pub fn read_os_release(text: &str) -> Option<Host> {
-    let value = |key: &str| {
-        text.lines().find_map(|l| {
-            l.strip_prefix(key)
-                .and_then(|v| v.strip_prefix('='))
-                .map(|v| v.trim().trim_matches('"').to_owned())
-                .filter(|v| !v.is_empty())
-        })
-    };
-    Some(Host {
-        id: value("ID")?,
-        version: value("VERSION_ID")?,
-        codename: value("VERSION_CODENAME")?,
-    })
-}
 
 /// Whether this host may be upgraded to `target`, and the target's
 /// codename.
@@ -279,6 +255,54 @@ struct Kept {
     text: String,
 }
 
+/// Why this host would refuse to be upgraded to `target`, found without
+/// changing anything: [`plan`], held packages, `dpkg --audit`. What
+/// [`upgrade`] checks before it begins, and what a preflight asks ahead of
+/// time. Empty when nothing stands in the way.
+///
+/// # Errors
+/// When the package manager could not be asked.
+pub async fn blockers(
+    backend: &dyn crate::PackageBackend,
+    host: &Host,
+    target: &str,
+) -> Result<Vec<String>> {
+    if let Err(BackendError::Refused(why)) = plan(host, target) {
+        return Ok(vec![why]);
+    }
+    let mut out = Vec::new();
+    out.extend(held(backend).await?);
+    out.extend(half_installed().await?);
+    Ok(out)
+}
+
+/// Held packages, as a refusal.
+pub(crate) async fn held(backend: &dyn crate::PackageBackend) -> Result<Option<String>> {
+    let held = backend.held_packages().await?;
+    Ok((!held.is_empty()).then(|| {
+        format!(
+            "held packages stay behind in a release upgrade and can break it; release them first: {}",
+            held.join(", ")
+        )
+    }))
+}
+
+/// Anything `dpkg --audit` reports, as a refusal.
+pub(crate) async fn half_installed() -> Result<Option<String>> {
+    let audit = tokio::process::Command::new("dpkg")
+        .arg("--audit")
+        .env("LC_ALL", "C")
+        .output()
+        .await?;
+    let audit = String::from_utf8_lossy(&audit.stdout);
+    Ok((!audit.trim().is_empty()).then(|| {
+        format!(
+            "dpkg reports packages half-installed or half-configured; sort those out first: {}",
+            audit.lines().next().unwrap_or_default()
+        )
+    }))
+}
+
 /// Rewrite every sources file, keeping copies in `/var/backups`. Returns the
 /// originals of the files it changed.
 fn rewrite_all(host: &Host, target: &str, codename: &str, log: &dyn LogSink) -> Result<Vec<Kept>> {
@@ -326,7 +350,7 @@ fn put_back(kept: &[Kept], log: &dyn LogSink) {
 }
 
 /// `apt-get` with the options every step takes, streaming its output.
-async fn apt(args: &[&str], log: &dyn LogSink) -> Result<i32> {
+pub(crate) async fn apt(args: &[&str], log: &dyn LogSink) -> Result<i32> {
     let mut all: Vec<&str> = vec![
         "-y",
         "-q",
@@ -342,7 +366,11 @@ async fn apt(args: &[&str], log: &dyn LogSink) -> Result<i32> {
 }
 
 /// Run `tool`, sending each line it prints to `log` as it prints it.
-async fn streamed(tool: &'static str, args: &[&str], log: &dyn LogSink) -> Result<i32> {
+///
+/// The environment is every release upgrade's: nothing asks a question, and
+/// Ubuntu's upgrader neither buffers its output nor moves into `screen`,
+/// where the job could no longer hear it.
+pub(crate) async fn streamed(tool: &'static str, args: &[&str], log: &dyn LogSink) -> Result<i32> {
     log.line(&format!("$ {tool} {}", args.join(" ")));
     let mut child = tokio::process::Command::new(tool)
         .args(args)
@@ -352,6 +380,8 @@ async fn streamed(tool: &'static str, args: &[&str], log: &dyn LogSink) -> Resul
         .env("NEEDRESTART_MODE", "l")
         .env("LC_ALL", "C")
         .env("LANG", "C")
+        .env("PYTHONUNBUFFERED", "1")
+        .env("RELEASE_UPGRADER_NO_SCREEN", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -400,35 +430,16 @@ pub async fn upgrade(
     target: &str,
     log: &dyn LogSink,
 ) -> Result<crate::ApplyOutcome> {
-    let os = std::fs::read_to_string("/etc/os-release")?;
-    let host = read_os_release(&os).ok_or_else(|| {
-        BackendError::Refused("/etc/os-release does not say which release this is".into())
-    })?;
+    let host = release::this_host()?;
     let codename = plan(&host, target)?;
+    let refused = blockers(backend, &host, target).await?;
+    if !refused.is_empty() {
+        return Err(BackendError::Refused(refused.join("; ")));
+    }
     log.line(&format!(
         "upgrading Debian {} ({}) to {target} ({codename})",
         host.version, host.codename
     ));
-
-    let held = backend.held_packages().await?;
-    if !held.is_empty() {
-        return Err(BackendError::Refused(format!(
-            "held packages stay behind in a release upgrade and can break it; release them first: {}",
-            held.join(", ")
-        )));
-    }
-    let audit = tokio::process::Command::new("dpkg")
-        .arg("--audit")
-        .env("LC_ALL", "C")
-        .output()
-        .await?;
-    let audit = String::from_utf8_lossy(&audit.stdout);
-    if !audit.trim().is_empty() {
-        return Err(BackendError::Refused(format!(
-            "dpkg reports packages half-installed or half-configured; sort those out first: {}",
-            audit.lines().next().unwrap_or_default()
-        )));
-    }
 
     let before = backend.installed().await?;
     let kept = rewrite_all(&host, target, &codename, log)?;

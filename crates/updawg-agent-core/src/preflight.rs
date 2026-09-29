@@ -24,6 +24,7 @@
 //! | `dkms_modules` | — | modules to rebuild for a new kernel |
 //! | `snapshot` | — | no snapshot provider, so no rollback |
 //! | `reboot` | — | the change needs a reboot, or the host already does |
+//! | `release_upgrade` (a release upgrade only) | the upgrade would refuse to begin: a newer release that is not the target, updates not installed, a reboot owed (Ubuntu) | the host could not be asked |
 //! | `third_party_repos` (a release upgrade only) | a third-party repository publishes nothing for the target | one could not be asked |
 //! | `approved_only` (a package change only) | installing it would change something nobody approved, or cannot be done | the package manager could not be asked |
 //!
@@ -31,6 +32,10 @@
 //! ([`updawg_backends::PackageBackend::check_pins`]), so what a preflight
 //! passes, the install does not refuse (2026-09-29: a kernel update passed
 //! every check and was then refused for the new ABI package it installs).
+//!
+//! `release_upgrade` asks the backend the questions the upgrade itself asks
+//! before it begins ([`updawg_backends::PackageBackend::release_upgrade_blockers`]),
+//! for the same reason.
 //!
 //! `third_party_repos` ([`crate::readiness`], DAWG-149) is the one check that
 //! goes off the host: it reads each third-party repository's index for the
@@ -66,6 +71,8 @@ pub struct Facts {
     pub third_party: Option<(String, Result<Vec<crate::readiness::Repo>, String>)>,
     /// For a package change: what simulating the install said.
     pub simulation: Option<Simulated>,
+    /// For a release upgrade: why it would refuse to begin (DAWG-150).
+    pub blockers: Option<Result<Vec<String>, String>>,
 }
 
 /// What simulating the approved install said.
@@ -96,6 +103,7 @@ impl Default for Facts {
             reboot_now: RebootRequired::Unknown,
             third_party: None,
             simulation: None,
+            blockers: None,
         }
     }
 }
@@ -161,6 +169,9 @@ pub fn evaluate(f: &Facts) -> Vec<PreflightCheck> {
         snapshot(f),
         reboot(f),
     ];
+    if let Some(blockers) = &f.blockers {
+        checks.push(release_upgrade(blockers));
+    }
     if let Some((target, found)) = &f.third_party {
         checks.push(crate::readiness::check(target, found));
     }
@@ -197,6 +208,29 @@ fn approved_only(simulated: &Simulated) -> PreflightCheck {
             "approved_only",
             CheckStatus::Warn,
             format!("Could not simulate the install: {why}."),
+            vec![],
+        ),
+    }
+}
+
+fn release_upgrade(blockers: &Result<Vec<String>, String>) -> PreflightCheck {
+    match blockers {
+        Ok(none) if none.is_empty() => check(
+            "release_upgrade",
+            CheckStatus::Pass,
+            "Nothing the upgrade checks before it begins stands in the way.",
+            vec![],
+        ),
+        Ok(found) => check(
+            "release_upgrade",
+            CheckStatus::Fail,
+            "The upgrade would refuse to begin, and change nothing.",
+            found.clone(),
+        ),
+        Err(why) => check(
+            "release_upgrade",
+            CheckStatus::Warn,
+            format!("Could not ask what the upgrade would refuse: {why}."),
             vec![],
         ),
     }
@@ -457,8 +491,20 @@ pub async fn gather(
         )),
         None => None,
     };
+    let blockers = match (&preflight.target_release, backend) {
+        (Some(target), Some(b)) => Some(
+            b.release_upgrade_blockers(target)
+                .await
+                .map_err(|e| e.to_string()),
+        ),
+        (Some(_), None) => Some(Err(
+            "this host has no package manager the agent can drive".into()
+        )),
+        (None, _) => None,
+    };
     Facts {
         third_party,
+        blockers,
         release_upgrade: preflight.target_release.is_some(),
         planned,
         root_free,
@@ -643,6 +689,31 @@ mod tests {
         assert_eq!(
             names(&upgrade).last().map(String::as_str),
             Some("third_party_repos")
+        );
+    }
+
+    #[test]
+    fn a_release_upgrade_that_would_refuse_to_begin_fails_before_anyone_approves_it() {
+        let with = |b: Result<Vec<String>, String>| {
+            evaluate(&Facts {
+                release_upgrade: true,
+                blockers: Some(b),
+                ..facts()
+            })
+            .into_iter()
+            .find(|c| c.name == "release_upgrade")
+            .unwrap()
+        };
+        assert_eq!(with(Ok(vec![])).status, CheckStatus::Pass);
+        let refused = with(Ok(vec!["a reboot is owed for libc6".into()]));
+        assert_eq!(refused.status, CheckStatus::Fail);
+        assert_eq!(refused.items, ["a reboot is owed for libc6"]);
+        assert_eq!(with(Err("no python3".into())).status, CheckStatus::Warn);
+        assert!(
+            !evaluate(&facts())
+                .iter()
+                .any(|c| c.name == "release_upgrade"),
+            "a package change has no such check"
         );
     }
 

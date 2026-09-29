@@ -20,6 +20,7 @@ pub mod apt;
 pub mod debian_upgrade;
 pub mod dnf;
 pub mod release;
+pub mod ubuntu_upgrade;
 
 use async_trait::async_trait;
 use std::collections::BTreeSet;
@@ -193,8 +194,23 @@ pub trait PackageBackend: Send + Sync {
 
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;
 
+    /// Why a `dist_upgrade` to `target` would be refused, found without
+    /// changing anything: what the upgrade checks before it begins, asked
+    /// ahead of time by a preflight, so what a preflight passes, the upgrade
+    /// does not refuse. Empty when nothing stands in the way.
+    ///
+    /// # Errors
+    /// When the host could not be asked.
+    async fn release_upgrade_blockers(&self, target: &str) -> Result<Vec<String>> {
+        let _ = target;
+        Ok(vec![
+            "release upgrades are not built for this package manager yet".into(),
+        ])
+    }
+
     /// Upgrade the host to release `target` (`13`, `24.04`): a `dist_upgrade`
-    /// job (DAWG-150, 151, 152). Debian's is [`debian_upgrade`].
+    /// job (DAWG-150, 151, 152). Debian's is [`debian_upgrade`], Ubuntu's
+    /// [`ubuntu_upgrade`].
     ///
     /// # Errors
     /// [`BackendError::Refused`] when nothing was changed; anything else once

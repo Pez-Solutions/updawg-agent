@@ -2,7 +2,8 @@
 //! release to the next. Shared by the release-upgrade preflight
 //! (`updawg-agent-core`'s readiness, DAWG-149) and the Debian upgrade itself
 //! ([`crate::debian_upgrade`], DAWG-151), so the suite a preflight asks a
-//! repository about is the suite the upgrade writes.
+//! repository about is the suite the upgrade writes. And which release this
+//! host is on ([`Host`]), which both upgrades start from.
 
 /// The codename of a release named by version (`13`, `24.04`) or already by
 /// codename (`forky`). `None` for a version this build does not know.
@@ -53,4 +54,42 @@ pub fn target_suite(suite: &str, current: &str, target: &str) -> Option<String> 
         })
         .collect();
     renamed.then(|| words.join("-"))
+}
+
+/// This host's release, from `/etc/os-release`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Host {
+    pub id: String,
+    pub version: String,
+    pub codename: String,
+}
+
+/// `ID`, `VERSION_ID` and `VERSION_CODENAME`, where all three are there.
+#[must_use]
+pub fn read_os_release(text: &str) -> Option<Host> {
+    let value = |key: &str| {
+        text.lines().find_map(|l| {
+            l.strip_prefix(key)
+                .and_then(|v| v.strip_prefix('='))
+                .map(|v| v.trim().trim_matches('"').to_owned())
+                .filter(|v| !v.is_empty())
+        })
+    };
+    Some(Host {
+        id: value("ID")?,
+        version: value("VERSION_ID")?,
+        codename: value("VERSION_CODENAME")?,
+    })
+}
+
+/// This host's release, read now.
+///
+/// # Errors
+/// Reading the file, or [`crate::BackendError::Refused`] when it does not
+/// say which release this is.
+pub fn this_host() -> crate::Result<Host> {
+    let text = std::fs::read_to_string("/etc/os-release")?;
+    read_os_release(&text).ok_or_else(|| {
+        crate::BackendError::Refused("/etc/os-release does not say which release this is".into())
+    })
 }
