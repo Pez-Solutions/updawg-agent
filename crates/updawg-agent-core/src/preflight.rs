@@ -24,7 +24,7 @@
 //! | `dkms_modules` | — | modules to rebuild for a new kernel |
 //! | `snapshot` | — | no snapshot provider, so no rollback |
 //! | `reboot` | — | the change needs a reboot, or the host already does |
-//! | `release_upgrade` (a release upgrade only) | the upgrade would refuse to begin: a newer release that is not the target, updates not installed, a reboot owed (Ubuntu) | the host could not be asked |
+//! | `release_upgrade` (a release upgrade only) | the upgrade would refuse to begin: a newer release that is not the target, updates not installed, a reboot owed (Ubuntu) | the host could not be asked, or its package lists are over a day old |
 //! | `third_party_repos` (a release upgrade only) | a third-party repository publishes nothing for the target | one could not be asked |
 //! | `approved_only` (a package change only) | installing it would change something nobody approved, or cannot be done | the package manager could not be asked |
 //!
@@ -73,6 +73,10 @@ pub struct Facts {
     pub simulation: Option<Simulated>,
     /// For a release upgrade: why it would refuse to begin (DAWG-150).
     pub blockers: Option<Result<Vec<String>, String>>,
+    /// How old the package lists those answers came from are, where the
+    /// agent can tell (apt). A preflight does not refresh them; the upgrade
+    /// does, and can find an update they did not know about.
+    pub lists_age: Option<std::time::Duration>,
 }
 
 /// What simulating the approved install said.
@@ -104,6 +108,7 @@ impl Default for Facts {
             third_party: None,
             simulation: None,
             blockers: None,
+            lists_age: None,
         }
     }
 }
@@ -170,7 +175,7 @@ pub fn evaluate(f: &Facts) -> Vec<PreflightCheck> {
         reboot(f),
     ];
     if let Some(blockers) = &f.blockers {
-        checks.push(release_upgrade(blockers));
+        checks.push(release_upgrade(blockers, f.lists_age));
     }
     if let Some((target, found)) = &f.third_party {
         checks.push(crate::readiness::check(target, found));
@@ -213,14 +218,40 @@ fn approved_only(simulated: &Simulated) -> PreflightCheck {
     }
 }
 
-fn release_upgrade(blockers: &Result<Vec<String>, String>) -> PreflightCheck {
+/// Package lists older than this make a passing `release_upgrade` a warning.
+const STALE_LISTS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+fn release_upgrade(
+    blockers: &Result<Vec<String>, String>,
+    lists_age: Option<std::time::Duration>,
+) -> PreflightCheck {
     match blockers {
-        Ok(none) if none.is_empty() => check(
-            "release_upgrade",
-            CheckStatus::Pass,
-            "Nothing the upgrade checks before it begins stands in the way.",
-            vec![],
-        ),
+        Ok(none) if none.is_empty() => match lists_age {
+            Some(age) if age > STALE_LISTS => check(
+                "release_upgrade",
+                CheckStatus::Warn,
+                format!(
+                    "Nothing stands in the way as of this host's package lists, which are {} hours old. The upgrade refreshes them first, and an update published since would stop it: run apt-get update (or wait for apt's daily refresh) and preflight again.",
+                    age.as_secs() / 3600
+                ),
+                vec![],
+            ),
+            Some(age) => check(
+                "release_upgrade",
+                CheckStatus::Pass,
+                format!(
+                    "Nothing the upgrade checks before it begins stands in the way, as of package lists {} old.",
+                    ago(age)
+                ),
+                vec![],
+            ),
+            None => check(
+                "release_upgrade",
+                CheckStatus::Pass,
+                "Nothing the upgrade checks before it begins stands in the way.",
+                vec![],
+            ),
+        },
         Ok(found) => check(
             "release_upgrade",
             CheckStatus::Fail,
@@ -233,6 +264,16 @@ fn release_upgrade(blockers: &Result<Vec<String>, String>) -> PreflightCheck {
             format!("Could not ask what the upgrade would refuse: {why}."),
             vec![],
         ),
+    }
+}
+
+/// `40 minutes`, `5 hours`.
+fn ago(age: std::time::Duration) -> String {
+    let minutes = age.as_secs() / 60;
+    if minutes < 120 {
+        format!("{minutes} minutes")
+    } else {
+        format!("{} hours", minutes / 60)
     }
 }
 
@@ -502,9 +543,14 @@ pub async fn gather(
         )),
         (None, _) => None,
     };
+    let lists_age = match (&blockers, ecosystem) {
+        (Some(_), Some(updawg_protocol::Ecosystem::Deb)) => apt_lists_age().await,
+        _ => None,
+    };
     Facts {
         third_party,
         blockers,
+        lists_age,
         release_upgrade: preflight.target_release.is_some(),
         planned,
         root_free,
@@ -516,6 +562,24 @@ pub async fn gather(
         reboot_now,
         simulation,
     }
+}
+
+/// How long ago apt last fetched a repository's index: the newest `Release`
+/// or `InRelease` under `/var/lib/apt/lists`. `None` when there are none.
+async fn apt_lists_age() -> Option<std::time::Duration> {
+    let mut dir = tokio::fs::read_dir("/var/lib/apt/lists").await.ok()?;
+    let mut newest: Option<std::time::SystemTime> = None;
+    while let Ok(Some(entry)) = dir.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.ends_with("_InRelease") || name.ends_with("_Release")) {
+            continue;
+        }
+        if let Ok(modified) = entry.metadata().await.and_then(|m| m.modified()) {
+            newest = Some(newest.map_or(modified, |n| n.max(modified)));
+        }
+    }
+    newest.and_then(|n| n.elapsed().ok())
 }
 
 async fn read(program: &str, args: &[&str]) -> Option<(bool, String)> {
@@ -709,6 +773,25 @@ mod tests {
         assert_eq!(refused.status, CheckStatus::Fail);
         assert_eq!(refused.items, ["a reboot is owed for libc6"]);
         assert_eq!(with(Err("no python3".into())).status, CheckStatus::Warn);
+
+        // Passing against lists over a day old is a warning: the upgrade
+        // refreshes them and can find an update they did not know of.
+        let aged = |hours: u64| {
+            evaluate(&Facts {
+                release_upgrade: true,
+                blockers: Some(Ok(vec![])),
+                lists_age: Some(std::time::Duration::from_secs(hours * 3600)),
+                ..facts()
+            })
+            .into_iter()
+            .find(|c| c.name == "release_upgrade")
+            .unwrap()
+        };
+        assert_eq!(aged(3).status, CheckStatus::Pass);
+        assert!(aged(3).summary.contains("3 hours"), "{}", aged(3).summary);
+        let stale = aged(30);
+        assert_eq!(stale.status, CheckStatus::Warn);
+        assert!(stale.summary.contains("30 hours old"), "{}", stale.summary);
         assert!(
             !evaluate(&facts())
                 .iter()
