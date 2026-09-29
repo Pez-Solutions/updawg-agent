@@ -209,6 +209,17 @@ impl PackageBackend for DnfBackend {
     /// 3. **Do it**, with the same command line and `-y`. Weak dependencies
     ///    are off on both, so a recommended package is never pulled in.
     /// 4. **What is installed after.** Each pin must now be at its `to`.
+    async fn check_pins(&self, pins: &[Pin]) -> Result<Vec<String>> {
+        let before = installed_versions(pins).await?;
+        let todo = still_to_do(pins, &before)?;
+        if todo.is_empty() {
+            return Ok(vec![]);
+        }
+        let simulated = run_status("dnf", &simulate_args(&todo)).await?;
+        check_transaction(&todo, &simulated)?;
+        Ok(vec![])
+    }
+
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome> {
         let before = installed_versions(&plan.packages).await?;
         let todo = still_to_do(&plan.packages, &before)?;

@@ -25,6 +25,12 @@
 //! | `snapshot` | — | no snapshot provider, so no rollback |
 //! | `reboot` | — | the change needs a reboot, or the host already does |
 //! | `third_party_repos` (a release upgrade only) | a third-party repository publishes nothing for the target | one could not be asked |
+//! | `approved_only` (a package change only) | installing it would change something nobody approved, or cannot be done | the package manager could not be asked |
+//!
+//! `approved_only` runs the simulation the install itself runs first
+//! ([`updawg_backends::PackageBackend::check_pins`]), so what a preflight
+//! passes, the install does not refuse (2026-09-29: a kernel update passed
+//! every check and was then refused for the new ABI package it installs).
 //!
 //! `third_party_repos` ([`crate::readiness`], DAWG-149) is the one check that
 //! goes off the host: it reads each third-party repository's index for the
@@ -58,6 +64,20 @@ pub struct Facts {
     /// For a release upgrade: its target, and what each third-party
     /// repository has for it (DAWG-149).
     pub third_party: Option<(String, Result<Vec<crate::readiness::Repo>, String>)>,
+    /// For a package change: what simulating the install said.
+    pub simulation: Option<Simulated>,
+}
+
+/// What simulating the approved install said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Simulated {
+    /// It changes only what was approved, and installs these alongside
+    /// (built from the same source upload), as `name version`.
+    Clean(Vec<String>),
+    /// The install would be refused, and why.
+    Refused(String),
+    /// The package manager could not be asked.
+    Unknown(String),
 }
 
 /// Nothing known: every "could not tell" is a warning, so this is the
@@ -75,6 +95,7 @@ impl Default for Facts {
             snapshots: Err("not looked at".into()),
             reboot_now: RebootRequired::Unknown,
             third_party: None,
+            simulation: None,
         }
     }
 }
@@ -143,7 +164,42 @@ pub fn evaluate(f: &Facts) -> Vec<PreflightCheck> {
     if let Some((target, found)) = &f.third_party {
         checks.push(crate::readiness::check(target, found));
     }
+    if let Some(simulated) = &f.simulation {
+        checks.push(approved_only(simulated));
+    }
     checks
+}
+
+fn approved_only(simulated: &Simulated) -> PreflightCheck {
+    match simulated {
+        Simulated::Clean(alongside) if alongside.is_empty() => check(
+            "approved_only",
+            CheckStatus::Pass,
+            "Installing it changes exactly what was approved.",
+            vec![],
+        ),
+        Simulated::Clean(alongside) => check(
+            "approved_only",
+            CheckStatus::Pass,
+            format!(
+                "Installing it changes what was approved, and installs {} new package(s) built from the same source upload.",
+                alongside.len()
+            ),
+            alongside.clone(),
+        ),
+        Simulated::Refused(why) => check(
+            "approved_only",
+            CheckStatus::Fail,
+            format!("The install would be refused: {why}."),
+            vec![],
+        ),
+        Simulated::Unknown(why) => check(
+            "approved_only",
+            CheckStatus::Warn,
+            format!("Could not simulate the install: {why}."),
+            vec![],
+        ),
+    }
 }
 
 fn disk_space(f: &Facts) -> PreflightCheck {
@@ -370,6 +426,30 @@ pub async fn gather(
         Some(updawg_protocol::Ecosystem::Rpm) => rpm_modified_conffiles(&planned).await,
         _ => Err("no package manager to ask".into()),
     };
+    let simulation = if preflight.packages.is_empty() {
+        None
+    } else {
+        let pins: Vec<updawg_backends::Pin> = preflight
+            .packages
+            .iter()
+            .map(|p| updawg_backends::Pin {
+                name: p.name.clone(),
+                arch: p.arch.clone(),
+                from: p.from.clone(),
+                to: p.to.clone(),
+            })
+            .collect();
+        Some(match backend {
+            Some(b) => match b.check_pins(&pins).await {
+                Ok(alongside) => Simulated::Clean(alongside),
+                Err(updawg_backends::BackendError::Refused(why)) => Simulated::Refused(why),
+                Err(e) => Simulated::Unknown(e.to_string()),
+            },
+            None => {
+                Simulated::Unknown("this host has no package manager the agent can drive".into())
+            }
+        })
+    };
     let third_party = match &preflight.target_release {
         Some(target) => Some((
             target.clone(),
@@ -388,6 +468,7 @@ pub async fn gather(
         dkms: dkms_modules_installed().await,
         snapshots,
         reboot_now,
+        simulation,
     }
 }
 
@@ -563,6 +644,36 @@ mod tests {
             names(&upgrade).last().map(String::as_str),
             Some("third_party_repos")
         );
+    }
+
+    #[test]
+    fn a_change_the_install_would_refuse_fails_before_anyone_approves_it() {
+        let with = |s: Simulated| {
+            let checks = evaluate(&Facts {
+                planned: vec!["linux-image-cloud-amd64".into()],
+                simulation: Some(s),
+                ..facts()
+            });
+            checks
+                .into_iter()
+                .find(|c| c.name == "approved_only")
+                .unwrap()
+        };
+        assert_eq!(with(Simulated::Clean(vec![])).status, CheckStatus::Pass);
+        let kernel = with(Simulated::Clean(vec![
+            "linux-image-6.12.111+deb13-cloud-amd64 6.12.111-1".into(),
+        ]));
+        assert_eq!(kernel.status, CheckStatus::Pass);
+        assert_eq!(kernel.items.len(), 1);
+        let refused = with(Simulated::Refused("it would remove libfoo".into()));
+        assert_eq!(refused.status, CheckStatus::Fail);
+        assert!(refused.summary.contains("remove libfoo"));
+        assert_eq!(
+            with(Simulated::Unknown("no apt".into())).status,
+            CheckStatus::Warn
+        );
+        // A release upgrade names no packages, and has no such check.
+        assert!(!evaluate(&facts()).iter().any(|c| c.name == "approved_only"));
     }
 
     fn status(checks: &[PreflightCheck], name: &str) -> CheckStatus {

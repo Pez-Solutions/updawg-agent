@@ -556,8 +556,8 @@ mod apply {
     use updawg_backends::{
         BackendError, Pin,
         apt::{
-            Ran, changes, check_simulation, install_args, parse_versions, simulate_args,
-            still_to_do,
+            Ran, Sources, changes, check_simulation, install_args, parse_uploads, parse_versions,
+            simulate_args, still_to_do, unpinned_new_installs,
         },
     };
 
@@ -649,7 +649,7 @@ mod apply {
         let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
         let todo: Vec<&Pin> = pins.iter().collect();
         let out = "Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])\nConf openssl (3.5.1-2 Debian-Security:13/stable-security [amd64])\n";
-        check_simulation(&todo, &sim(out)).unwrap();
+        check_simulation(&todo, &sim(out), &Sources::new()).unwrap();
     }
 
     /// Each of these is a change nobody approved, and refused before anything
@@ -663,19 +663,22 @@ mod apply {
         let why = refused(check_simulation(
             &todo,
             &sim(&format!("Remv libfoo [1.0]\n{ok}")),
+            &Sources::new(),
         ));
         assert!(why.contains("remove libfoo"), "{why}");
         let why = refused(check_simulation(
             &todo,
             &sim(&format!("{ok}Inst libnew (2.0 Debian:13/stable [amd64])\n")),
+            &Sources::new(),
         ));
         assert!(why.contains("also install libnew"), "{why}");
         let why = refused(check_simulation(
             &todo,
             &sim("Inst openssl [3.5.1-1] (3.5.1-3 Debian:13/stable [amd64])\n"),
+            &Sources::new(),
         ));
         assert!(why.contains("3.5.1-3"), "{why}");
-        let why = refused(check_simulation(&todo, &sim("")));
+        let why = refused(check_simulation(&todo, &sim(""), &Sources::new()));
         assert!(why.contains("held"), "{why}");
         // The archive moved on and the approved version is gone.
         let gone = Ran {
@@ -683,8 +686,75 @@ mod apply {
             stdout: String::new(),
             stderr: "E: Version '3.5.1-2' for 'openssl' was not found\n".into(),
         };
-        let why = refused(check_simulation(&todo, &gone));
+        let why = refused(check_simulation(&todo, &gone, &Sources::new()));
         assert!(why.contains("was not found"), "{why}");
+    }
+
+    /// updawg-throwaway-6, 2026-09-29: the kernel metapackage's upgrade
+    /// installs the new ABI's image, a package nobody could have pinned.
+    const KERNEL: &str = "Inst linux-image-6.12.111+deb13-cloud-amd64 (6.12.111-1 Debian-Security:13/stable-security [amd64])\nInst linux-image-cloud-amd64 [6.12.107-1] (6.12.111-1 Debian-Security:13/stable-security [amd64])\n";
+
+    const SHOW: &str = "Package: linux-image-cloud-amd64\nSource: linux-signed-amd64 (6.12.111+1)\nVersion: 6.12.111-1\nArchitecture: amd64\n\nPackage: linux-image-6.12.111+deb13-cloud-amd64\nSource: linux-signed-amd64 (6.12.111+1)\nVersion: 6.12.111-1\nArchitecture: amd64\n\nPackage: libnew\nVersion: 2.0\n\nPackage: openssl\nSource: openssl\nVersion: 3.5.1-2\n";
+
+    #[test]
+    fn a_source_is_read_as_apt_cache_show_writes_it() {
+        let sources = parse_uploads(SHOW);
+        let upload = |p: &str, v: &str| sources.get(&(p.to_owned(), v.to_owned())).cloned();
+        assert_eq!(
+            upload("linux-image-cloud-amd64", "6.12.111-1"),
+            Some(("linux-signed-amd64".to_owned(), "6.12.111+1".to_owned()))
+        );
+        // No `Source:` is a source named as the binary; no version is the binary's.
+        assert_eq!(
+            upload("libnew", "2.0"),
+            Some(("libnew".to_owned(), "2.0".to_owned()))
+        );
+        assert_eq!(
+            upload("openssl", "3.5.1-2"),
+            Some(("openssl".to_owned(), "3.5.1-2".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_new_kernel_from_the_same_upload_as_the_approved_one_goes_along() {
+        let pins = [pin("linux-image-cloud-amd64", "6.12.107-1", "6.12.111-1")];
+        let todo: Vec<&Pin> = pins.iter().collect();
+        assert_eq!(
+            unpinned_new_installs(&todo, &sim(KERNEL)),
+            [(
+                "linux-image-6.12.111+deb13-cloud-amd64".to_owned(),
+                "6.12.111-1".to_owned()
+            )]
+        );
+        let alongside = check_simulation(&todo, &sim(KERNEL), &parse_uploads(SHOW)).unwrap();
+        assert_eq!(
+            alongside,
+            ["linux-image-6.12.111+deb13-cloud-amd64 6.12.111-1"]
+        );
+        // Without knowing where it came from, it is refused, as before.
+        let why = refused(check_simulation(&todo, &sim(KERNEL), &Sources::new()));
+        assert!(why.contains("also install linux-image-6.12.111"), "{why}");
+    }
+
+    #[test]
+    fn a_new_package_from_another_upload_is_still_refused() {
+        let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
+        let todo: Vec<&Pin> = pins.iter().collect();
+        let out = "Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])\nInst libnew (2.0 Debian:13/stable [amd64])\n";
+        let why = refused(check_simulation(&todo, &sim(out), &parse_uploads(SHOW)));
+        assert!(why.contains("also install libnew"), "{why}");
+        // An upgrade of something installed is never excused by its source.
+        let pins = [pin("linux-image-cloud-amd64", "6.12.107-1", "6.12.111-1")];
+        let todo: Vec<&Pin> = pins.iter().collect();
+        let upgrade = format!(
+            "{KERNEL}Inst linux-image-6.12.111+deb13-cloud-amd64 [6.12.107-1] (6.12.111-1 Debian:13/stable [amd64])\n"
+        );
+        let why = refused(check_simulation(
+            &todo,
+            &sim(&upgrade),
+            &parse_uploads(SHOW),
+        ));
+        assert!(why.contains("which nobody approved"), "{why}");
     }
 
     #[test]

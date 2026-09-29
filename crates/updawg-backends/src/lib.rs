@@ -172,6 +172,23 @@ pub trait PackageBackend: Send + Sync {
         ))
     }
 
+    /// Whether installing exactly `pins` would change only what they name —
+    /// on apt, and packages not installed yet built from the same source
+    /// upload as one of them (a new kernel's ABI package). Read-only: the
+    /// simulation [`PackageBackend::apply`] runs before it touches anything,
+    /// asked ahead of time by a preflight. Ok carries what it would install
+    /// alongside, as `name version`.
+    ///
+    /// # Errors
+    /// [`BackendError::Refused`] naming what the install would do that was
+    /// not approved, or why it cannot be installed.
+    async fn check_pins(&self, pins: &[Pin]) -> Result<Vec<String>> {
+        let _ = pins;
+        Err(BackendError::Refused(
+            "simulating an install is not built for this package manager yet".into(),
+        ))
+    }
+
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;
 }
 

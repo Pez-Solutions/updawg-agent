@@ -2458,7 +2458,9 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
                 "modified_conffiles",
                 "dkms_modules",
                 "snapshot",
-                "reboot"
+                "reboot",
+                // Simulated, never installed: `applied` stays at 0 below.
+                "approved_only"
             ]
         );
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);

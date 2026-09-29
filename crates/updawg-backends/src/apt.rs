@@ -157,6 +157,15 @@ impl PackageBackend for AptBackend {
     ///    fighting `unattended-upgrades` for it.
     /// 4. **What is installed after.** Each pin must now be at its `to`. The
     ///    changes reported are what dpkg says, not what was asked for.
+    async fn check_pins(&self, pins: &[Pin]) -> Result<Vec<String>> {
+        let before = installed_versions(pins).await?;
+        let todo = still_to_do(pins, &before)?;
+        if todo.is_empty() {
+            return Ok(vec![]);
+        }
+        simulate(&todo).await
+    }
+
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome> {
         let before = installed_versions(&plan.packages).await?;
         let todo = still_to_do(&plan.packages, &before)?;
@@ -168,8 +177,11 @@ impl PackageBackend for AptBackend {
             });
         }
 
-        let simulated = run_status("apt-get", &simulate_args(&todo)).await?;
-        check_simulation(&todo, &simulated)?;
+        for extra in simulate(&todo).await? {
+            log.line(&format!(
+                "also installing {extra}, from the same source upload as an approved package"
+            ));
+        }
 
         log.line(&format!(
             "installing {} package(s) at their approved versions",
@@ -703,11 +715,67 @@ pub struct Ran {
     pub stderr: String,
 }
 
-/// Whether apt's simulation does exactly what was approved and nothing else.
+/// Which source upload built a binary: `(source package, source version)`,
+/// keyed by `(package, version)` as apt names them.
+pub type Sources = std::collections::BTreeMap<(String, String), (String, String)>;
+
+/// Packages the simulation would install that are **not installed at all**
+/// and nobody pinned: `Inst name (version …)`, with no `[old]`. The ones whose
+/// source is worth asking about.
+#[must_use]
+pub fn unpinned_new_installs(todo: &[&Pin], simulated: &Ran) -> Vec<(String, String)> {
+    simulated
+        .stdout
+        .lines()
+        .filter_map(inst)
+        .filter(|(name, old, _)| {
+            old.is_none()
+                && !todo
+                    .iter()
+                    .any(|p| &p.name == name || &qualified(p) == name)
+        })
+        .map(|(name, _, new)| (name, new))
+        .collect()
+}
+
+/// An `Inst` line: name, the version it replaces, and the new version.
+/// `Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])`
+fn inst(line: &str) -> Option<(String, Option<String>, String)> {
+    let rest = line.strip_prefix("Inst ")?;
+    let name = rest.split_whitespace().next()?.to_owned();
+    let old = rest
+        .split_whitespace()
+        .nth(1)
+        .and_then(|w| w.strip_prefix('['))
+        .and_then(|w| w.strip_suffix(']'))
+        .map(str::to_owned);
+    let new = line
+        .split('(')
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .unwrap_or("")
+        .to_owned();
+    Some((name, old, new))
+}
+
+/// Whether apt's simulation does exactly what was approved and nothing else
+/// — apart from packages **not installed yet** that are built from the same
+/// source upload as one that was approved.
+///
+/// That exception is the kernel (Pez, 2026-09-29): upgrading
+/// `linux-image-cloud-amd64` to 6.12.111-1 installs
+/// `linux-image-6.12.111+deb13-cloud-amd64`, a package with a new name every
+/// ABI, and so one no inventory ever lists as an upgrade. Both come from
+/// `linux-signed-amd64` at one version: the same upload, which is what the
+/// approver looked at. A new package from any other source is refused, as is
+/// every removal and any version other than the approved one.
+///
+/// `sources` says which upload built each binary; see [`parse_uploads`]. Ok
+/// carries what it would install alongside, as `name version`.
 ///
 /// # Errors
 /// [`BackendError::Refused`] naming what differs.
-pub fn check_simulation(todo: &[&Pin], simulated: &Ran) -> Result<()> {
+pub fn check_simulation(todo: &[&Pin], simulated: &Ran, sources: &Sources) -> Result<Vec<String>> {
     if simulated.code != 0 {
         // Almost always "Version 'x' for 'y' was not found": the archive moved
         // on and the approved version is gone.
@@ -724,29 +792,19 @@ pub fn check_simulation(todo: &[&Pin], simulated: &Ran) -> Result<()> {
     }
     let mut upgraded = std::collections::BTreeMap::new();
     for line in simulated.stdout.lines() {
-        let mut words = line.split_whitespace();
-        match words.next() {
-            Some("Remv") => {
-                let name = words.next().unwrap_or("?");
-                return Err(BackendError::Refused(format!(
-                    "installing the approved versions would remove {name}, which nobody approved"
-                )));
-            }
-            Some("Inst") => {
-                let name = words.next().unwrap_or("?").to_owned();
-                // `Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])`
-                let new = line
-                    .split('(')
-                    .nth(1)
-                    .and_then(|rest| rest.split_whitespace().next())
-                    .unwrap_or("")
-                    .to_owned();
-                upgraded.insert(name, new);
-            }
-            _ => {}
+        if let Some(name) = line.strip_prefix("Remv ") {
+            let name = name.split_whitespace().next().unwrap_or("?");
+            return Err(BackendError::Refused(format!(
+                "installing the approved versions would remove {name}, which nobody approved"
+            )));
+        }
+        if let Some((name, old, new)) = inst(line) {
+            upgraded.insert(name, (old, new));
         }
     }
-    for (name, version) in &upgraded {
+    let upload = |name: &str, version: &str| sources.get(&(name.to_owned(), version.to_owned()));
+    let mut alongside = Vec::new();
+    for (name, (old, version)) in &upgraded {
         let approved = todo
             .iter()
             .find(|p| &p.name == name || &qualified(p) == name);
@@ -757,6 +815,13 @@ pub fn check_simulation(todo: &[&Pin], simulated: &Ran) -> Result<()> {
                     "apt would install {name} {version}, and {} was approved",
                     p.to
                 )));
+            }
+            None if old.is_none()
+                && upload(name, version).is_some_and(|built| {
+                    todo.iter().any(|p| upload(&p.name, &p.to) == Some(built))
+                }) =>
+            {
+                alongside.push(format!("{name} {version}"));
             }
             None => {
                 return Err(BackendError::Refused(format!(
@@ -774,7 +839,74 @@ pub fn check_simulation(todo: &[&Pin], simulated: &Ran) -> Result<()> {
             missing.name
         )));
     }
-    Ok(())
+    Ok(alongside)
+}
+
+/// `apt-cache show name=version …`: which source upload built each stanza.
+/// `Source:` is absent when the source is named as the binary, and carries
+/// `(version)` only when its version differs from the binary's.
+#[must_use]
+pub fn parse_uploads(show: &str) -> Sources {
+    let mut out = Sources::new();
+    for stanza in show.split("\n\n") {
+        let field = |key: &str| {
+            stanza
+                .lines()
+                .find_map(|l| l.strip_prefix(key).map(|v| v.trim().to_owned()))
+        };
+        let (Some(package), Some(version)) = (field("Package:"), field("Version:")) else {
+            continue;
+        };
+        let (source, source_version) = match field("Source:") {
+            Some(src) => match src.split_once(' ') {
+                Some((name, v)) => (
+                    name.to_owned(),
+                    v.trim_start_matches('(').trim_end_matches(')').to_owned(),
+                ),
+                None => (src, version.clone()),
+            },
+            None => (package.clone(), version.clone()),
+        };
+        out.entry((package, version))
+            .or_insert((source, source_version));
+    }
+    out
+}
+
+/// Which upload built each package the simulation would install new, and
+/// each pinned target — asked only when there is a new package to explain.
+async fn sources_for(todo: &[&Pin], simulated: &Ran) -> Result<Sources> {
+    let new = unpinned_new_installs(todo, simulated);
+    if new.is_empty() {
+        return Ok(Sources::new());
+    }
+    let mut args = vec!["show".to_owned()];
+    args.extend(todo.iter().map(|p| format!("{}={}", p.name, p.to)));
+    args.extend(new.iter().map(|(name, version)| {
+        let bare = name.split(':').next().unwrap_or(name);
+        format!("{bare}={version}")
+    }));
+    // Exits 100 if any one is missing; what it did find is still an answer,
+    // and a package it could not describe is refused by the check.
+    let shown = run_status("apt-cache", &args).await?;
+    let mut sources = parse_uploads(&shown.stdout);
+    // The simulation may name a new package `name:arch`; describe it both ways.
+    for (name, version) in &new {
+        let bare = name.split(':').next().unwrap_or(name).to_owned();
+        if let Some(built) = sources.get(&(bare, version.clone())).cloned() {
+            sources.insert((name.clone(), version.clone()), built);
+        }
+    }
+    Ok(sources)
+}
+
+/// Simulate installing `pins` and check it does only what they approve.
+/// Read-only: it is the first half of [`AptBackend::apply`], and what a
+/// preflight runs.
+async fn simulate(todo: &[&Pin]) -> Result<Vec<String>> {
+    let simulated = run_status("apt-get", &simulate_args(todo)).await?;
+    let sources = sources_for(todo, &simulated).await?;
+    check_simulation(todo, &simulated, &sources)
 }
 
 /// What changed, from dpkg's own account afterwards.

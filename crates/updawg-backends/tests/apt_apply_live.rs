@@ -23,7 +23,8 @@
 use updawg_backends::{
     BackendError, Pin,
     apt::{
-        Ran, changes, check_simulation, install_args, parse_versions, simulate_args, still_to_do,
+        Ran, Sources, changes, check_simulation, install_args, parse_versions, simulate_args,
+        still_to_do,
     },
 };
 
@@ -148,7 +149,7 @@ fn the_approved_version_is_installed_and_not_the_newest() {
         let before = c.versions(&["updawgtest"]);
         let todo = still_to_do(&pins, &before).expect("at its from version");
         let simulated = c.exec("apt-get", &simulate_args(&todo));
-        check_simulation(&todo, &simulated)
+        check_simulation(&todo, &simulated, &Sources::new())
             .unwrap_or_else(|e| panic!("{image}: {e}\n{}", simulated.stdout));
 
         let installed = c.exec("apt-get", &install_args(&todo));
@@ -180,7 +181,11 @@ fn what_apt_would_do_beyond_the_approval_is_refused_before_anything_changes() {
         // The approved version is not in the archive.
         let gone = [pin("updawgtest", "1.0", "4.0")];
         let todo = still_to_do(&gone, &c.versions(&["updawgtest"])).expect("todo");
-        match check_simulation(&todo, &c.exec("apt-get", &simulate_args(&todo))) {
+        match check_simulation(
+            &todo,
+            &c.exec("apt-get", &simulate_args(&todo)),
+            &Sources::new(),
+        ) {
             Err(BackendError::Refused(why)) => {
                 assert!(why.contains("cannot be installed"), "{image}: {why}");
             }
@@ -190,7 +195,11 @@ fn what_apt_would_do_beyond_the_approval_is_refused_before_anything_changes() {
         // The upgrade drags in a package nobody approved.
         let pulls = [pin("updawgpulls", "1.0", "2.0")];
         let todo = still_to_do(&pulls, &c.versions(&["updawgpulls"])).expect("todo");
-        match check_simulation(&todo, &c.exec("apt-get", &simulate_args(&todo))) {
+        match check_simulation(
+            &todo,
+            &c.exec("apt-get", &simulate_args(&todo)),
+            &Sources::new(),
+        ) {
             Err(BackendError::Refused(why)) => {
                 assert!(why.contains("updawgdep"), "{image}: {why}");
             }
