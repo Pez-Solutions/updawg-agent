@@ -1,0 +1,60 @@
+WARNING:
+  A newer release of "Amazon Linux" is available.
+
+  Available Versions:
+
+  Version 2023.10.20260105:
+    Run the following command to upgrade to 2023.10.20260105:
+
+      dnf upgrade --releasever=2023.10.20260105
+
+    Release notes:
+     https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-2023.10.20260105.html
+
+  Version 2023.10.20260120:
+    Run the following command to upgrade to 2023.10.20260120:
+
+      dnf upgrade --releasever=2023.10.20260120
+
+    Release notes:
+     https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-2023.10.20260120.html
+
+  Version 2023.10.20260202:
+    Run the following command to upgrade to 2023.10.20260202:
+
+      dnf upgrade --releasever=2023.10.20260202
+
+    Release notes:
+     https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-2023.10.20260202.html
+
+  Version 2023.10.20260216:
+    Run the following command to upgrade to 2023.10.20260216:
+
+      dnf upgrade --releasever=2023.10.20260216
+
+    Release notes:
+     https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-2023.10.20260216.html
+
+  Version 2023.10.20260302:
+    Run the following command to upgrade to 2023.10.20260302:
+
+      dnf upgrade --releasever=2023.10.20260302
+
+    Release notes:
+     https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-2023.10.20260302.html
+
+  Version 2023.10.20260325:
+    Run the following command to upgrade to 2023.10.20260325:
+
+      dnf upgrade --releasever=2023.10.20260325
+
+    Release notes:
+     https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-2023.10.20260325.html
+
+  Version 2023.10.20260330:
+    Run the following command to upgrade to 2023.10.20260330:
+
+      dnf upgrade --releasever=2023.10.20260330
+
+    Release notes:
+     https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-2023.10.20260330.html

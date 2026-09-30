@@ -276,6 +276,59 @@ pub struct InventoryUpload {
     /// package manager would do now, not what changed since last time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removals: Vec<PendingRemoval>,
+    /// The host's package sources are pinned in time (DAWG-233, protocol
+    /// 0.8), so [`updates`](InventoryUpload::updates) is measured against a
+    /// snapshot that does not move: "nothing to install" says nothing about
+    /// how current it is.
+    ///
+    /// Current state, sent on a delta as well. `None` when nothing pins it,
+    /// and from agents before 0.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen: Option<Frozen>,
+}
+
+/// What pins a host's package sources in time (DAWG-233).
+///
+/// Amazon Linux 2023 pins every host to a dated release unless told
+/// otherwise; `/etc/dnf/vars/releasever` does the same to any dnf host (a
+/// RHEL minor release, say); an apt host whose distribution sources are all
+/// on snapshot.debian.org or snapshot.ubuntu.com is frozen at that moment.
+/// A private mirror that has stopped syncing looks exactly like a live one
+/// from the host and is not reported: there is nothing on the host to tell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Frozen {
+    pub kind: FrozenKind,
+    /// What it is pinned to, as the host names it: `2023.5.20240805`, `9.2`,
+    /// `20240101T000000Z`.
+    pub pinned: String,
+    /// The newest release the host is offered, where the agent can find out
+    /// without changing anything (`dnf check-release-update` on Amazon
+    /// Linux, which offers newer releases but not always the very newest).
+    /// The same as `pinned` when nothing newer is offered; `None` when the
+    /// agent cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrozenKind {
+    /// dnf's `$releasever` is fixed to a release.
+    Releasever,
+    /// The distribution's sources are a dated archive snapshot.
+    Snapshot,
+    /// A kind this version does not know, from a newer agent. Still a pin:
+    /// read as one rather than refusing the inventory it came in.
+    #[serde(other)]
+    Other,
+}
+
+impl Frozen {
+    /// Whether the host is known to be behind what it could move to.
+    #[must_use]
+    pub fn behind(&self) -> bool {
+        self.latest.as_ref().is_some_and(|l| *l != self.pinned)
+    }
 }
 
 impl InventoryUpload {
@@ -308,7 +361,45 @@ mod tests {
             repositories: vec![],
             held_packages: vec![],
             removals: vec![],
+            frozen: None,
         }
+    }
+
+    #[test]
+    fn frozen_says_whether_it_is_behind_only_when_it_knows() {
+        let at = |latest: Option<&str>| Frozen {
+            kind: FrozenKind::Releasever,
+            pinned: "2023.5.20240805".into(),
+            latest: latest.map(Into::into),
+        };
+        assert!(at(Some("2023.9.20250929")).behind());
+        assert!(!at(Some("2023.5.20240805")).behind());
+        assert!(!at(None).behind());
+
+        let json = serde_json::to_value(at(None)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "releasever", "pinned": "2023.5.20240805"})
+        );
+    }
+
+    #[test]
+    fn a_kind_from_a_newer_agent_is_still_a_pin() {
+        let frozen: Frozen = serde_json::from_value(
+            serde_json::json!({"kind": "mirror_stopped", "pinned": "2026-01-01"}),
+        )
+        .unwrap();
+        assert_eq!(frozen.kind, FrozenKind::Other);
+    }
+
+    #[test]
+    fn an_upload_from_before_0_8_is_not_frozen() {
+        let old = serde_json::json!({
+            "type": "full", "hash": "sha256:1", "collected_at": "2026-09-30T00:00:00Z",
+            "packages": {}
+        });
+        let upload: InventoryUpload = serde_json::from_value(old).unwrap();
+        assert_eq!(upload.frozen, None);
     }
 
     #[test]

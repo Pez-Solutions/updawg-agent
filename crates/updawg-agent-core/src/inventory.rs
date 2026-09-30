@@ -57,6 +57,8 @@ pub struct Collected {
     /// a count on the heartbeat, and the server decides what a security update
     /// really is against advisory data.
     pub security: BTreeSet<String>,
+    /// What pins the host's sources in time, if anything does (DAWG-233).
+    pub frozen: Option<updawg_protocol::Frozen>,
 }
 
 impl Collected {
@@ -87,6 +89,12 @@ impl Collected {
             security,
             repositories: backend.repositories().await?,
             held: backend.held_packages().await?,
+            // A hint about the updates, like an update's source: failing to
+            // read it costs the hint, not the inventory.
+            frozen: backend.frozen().await.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "could not tell whether the package sources are pinned");
+                None
+            }),
         })
     }
 
@@ -188,6 +196,9 @@ impl Collected {
             // describes what the package manager would do now rather than what
             // changed since the last pass.
             removals: self.removals.clone(),
+            // Current state too: a pin is lifted by editing a file, which no
+            // package delta would show.
+            frozen: self.frozen.clone(),
         }
     }
 }

@@ -66,6 +66,7 @@ fn collected(packages: Vec<InstalledPackage>) -> Collected {
         security: std::collections::BTreeSet::new(),
         repositories: vec![],
         held: vec![],
+        frozen: None,
     }
 }
 

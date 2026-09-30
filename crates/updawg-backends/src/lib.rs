@@ -152,6 +152,13 @@ pub trait PackageBackend: Send + Sync {
     /// stays vulnerable while the dashboard says it was patched.
     async fn held_packages(&self) -> Result<Vec<String>>;
 
+    /// What pins this host's package sources in time, if anything does
+    /// (DAWG-233): see [`updawg_protocol::Frozen`]. Read-only. `None` by
+    /// default, for a family that has not been taught to look.
+    async fn frozen(&self) -> Result<Option<updawg_protocol::Frozen>> {
+        Ok(None)
+    }
+
     /// Which of `updates` the package manager itself calls a security fix.
     ///
     /// A local hint for the heartbeat, not a classification — the authoritative

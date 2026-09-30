@@ -163,6 +163,49 @@ impl PackageBackend for DnfBackend {
         Ok(parse_repositories(&out, self.distro.as_deref()))
     }
 
+    /// `/etc/dnf/vars/releasever`, where it fixes the release; on Amazon
+    /// Linux 2023 the installed release otherwise, which is where every host
+    /// is pinned unless told `latest`, and `dnf check-release-update` for
+    /// what it could move to (DAWG-233).
+    async fn frozen(&self) -> Result<Option<updawg_protocol::Frozen>> {
+        let file = std::fs::read_to_string(RELEASEVER)
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty());
+        if file.as_deref() == Some("latest") {
+            return Ok(None);
+        }
+        let amazon = crate::release::this_host()
+            .is_ok_and(|h| h.id == "amzn" && h.version.starts_with("2023"));
+        if !amazon {
+            return Ok(file.map(|pinned| updawg_protocol::Frozen {
+                kind: updawg_protocol::FrozenKind::Releasever,
+                pinned,
+                latest: None,
+            }));
+        }
+        let pinned = match file {
+            Some(pinned) => pinned,
+            None => run("rpm", &["-q", "--qf", "%{VERSION}", "system-release"])
+                .await?
+                .trim()
+                .to_owned(),
+        };
+        // Metadata for releases other than the pinned one, read and not
+        // installed. Unanswered, the pin is still reported: that it is pinned
+        // is known, how far behind is not.
+        let asked = run_status("dnf", &["check-release-update".to_owned()]).await?;
+        let latest = (asked.code == 0).then(|| {
+            newest_release(&format!("{}{}", asked.stdout, asked.stderr))
+                .map_or_else(|| pinned.clone(), str::to_owned)
+        });
+        Ok(Some(updawg_protocol::Frozen {
+            kind: updawg_protocol::FrozenKind::Releasever,
+            pinned,
+            latest,
+        }))
+    }
+
     async fn held_packages(&self) -> Result<Vec<String>> {
         match run("dnf", &["-q", "versionlock", "list"]).await {
             Ok(out) => Ok(parse_holds(&out)),
@@ -1141,6 +1184,22 @@ async fn run_status(tool: &'static str, args: &[String]) -> Result<Ran> {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+/// Where dnf's `$releasever` is fixed, when something fixes it.
+const RELEASEVER: &str = "/etc/dnf/vars/releasever";
+
+/// The newest release `dnf check-release-update` offers, from its
+/// `Version 2023.6.20241010:` lines. `None` when it offers none, which is
+/// what it prints for a host that is current.
+#[must_use]
+pub fn newest_release(out: &str) -> Option<&str> {
+    let numeric = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    out.lines()
+        .filter_map(|l| l.trim().strip_prefix("Version "))
+        .map(|v| v.trim_end_matches(':').trim())
+        .filter(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+        .max_by_key(|v| numeric(v))
 }
 
 /* ------------------------------------------------------------- the shelling */

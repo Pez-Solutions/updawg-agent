@@ -4,7 +4,7 @@ description = "Wire types for the Updawg agent API: the contract between the Upd
 # Versioned independently of the agent: this crate is published to crates.io
 # and consumed by updawg-server, so it moves at the wire format's pace, not the
 # agent's.
-version = "0.7.0"
+version = "0.8.0"
 edition.workspace = true
 # Its own floor, not the agent's. The agent needs 1.88 for a build-time
 # dependency this crate does not have; inheriting that silently stopped

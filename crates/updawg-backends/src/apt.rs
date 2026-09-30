@@ -124,6 +124,11 @@ impl PackageBackend for AptBackend {
         Ok(sources)
     }
 
+    async fn frozen(&self) -> Result<Option<updawg_protocol::Frozen>> {
+        let out = run("apt-cache", &["policy"]).await?;
+        Ok(frozen_sources(&parse_sources(&out, self.origin.as_deref())))
+    }
+
     async fn held_packages(&self) -> Result<Vec<String>> {
         let out = run("apt-mark", &["showhold"]).await?;
         Ok(parse_holds(&out))
@@ -533,6 +538,48 @@ pub fn parse_sources(out: &str, distro_origin: Option<&str>) -> Vec<crate::RepoS
         }
     }
     sources
+}
+
+/// Frozen when **every** distribution source is a dated snapshot
+/// (DAWG-233), pinned at the oldest of them. One live source — a
+/// security pocket left pointing at the mirror — means updates still
+/// arrive, and the host is not reported frozen. Third-party repositories
+/// do not count either way.
+#[must_use]
+pub fn frozen_sources(sources: &[crate::RepoSource]) -> Option<updawg_protocol::Frozen> {
+    let distro: Vec<&crate::RepoSource> = sources.iter().filter(|s| !s.third_party).collect();
+    if distro.is_empty() {
+        return None;
+    }
+    let mut stamps = Vec::new();
+    for source in distro {
+        stamps.push(snapshot_stamp(&source.uri)?);
+    }
+    stamps.sort_unstable();
+    Some(updawg_protocol::Frozen {
+        kind: updawg_protocol::FrozenKind::Snapshot,
+        pinned: (*stamps.first()?).to_owned(),
+        latest: None,
+    })
+}
+
+/// `https://snapshot.debian.org/archive/debian/20240101T000000Z` →
+/// `20240101T000000Z`: the moment a snapshot service's URL is fixed to, on
+/// snapshot.debian.org and snapshot.ubuntu.com (where apt's own `Snapshot`
+/// option points too).
+fn snapshot_stamp(uri: &str) -> Option<&str> {
+    let (_, rest) = uri.split_once("://")?;
+    let (host, path) = rest.split_once('/')?;
+    if !matches!(host, "snapshot.debian.org" | "snapshot.ubuntu.com") {
+        return None;
+    }
+    let stamp = path.trim_end_matches('/').rsplit('/').next()?;
+    let b = stamp.as_bytes();
+    let well_formed = b.len() == 16
+        && b[8] == b'T'
+        && b[15] == b'Z'
+        && b[..8].iter().chain(&b[9..15]).all(u8::is_ascii_digit);
+    well_formed.then_some(stamp)
 }
 
 /// `500 https://host/path suite/component arch Packages` → (URL, suite).
@@ -1091,4 +1138,49 @@ async fn run(tool: &'static str, args: &[&str]) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(uri: &str, third_party: bool) -> crate::RepoSource {
+        crate::RepoSource {
+            uri: uri.into(),
+            suite: "bookworm".into(),
+            third_party,
+            packages: vec![],
+        }
+    }
+
+    #[test]
+    fn a_host_is_frozen_only_when_every_distribution_source_is_a_snapshot() {
+        let main = source(
+            "http://snapshot.debian.org/archive/debian/20240315T000000Z",
+            false,
+        );
+        let security = source(
+            "http://snapshot.debian.org/archive/debian-security/20240101T120000Z",
+            false,
+        );
+        let docker = source("https://download.docker.com/linux/debian", true);
+
+        let frozen = frozen_sources(&[main.clone(), security, docker.clone()]).unwrap();
+        assert_eq!(frozen.kind, updawg_protocol::FrozenKind::Snapshot);
+        assert_eq!(frozen.pinned, "20240101T120000Z", "the oldest pins it");
+        assert_eq!(frozen.latest, None);
+
+        let live = source("http://deb.debian.org/debian-security", false);
+        assert_eq!(frozen_sources(&[main, live]), None);
+        assert_eq!(frozen_sources(&[docker]), None, "third-party only");
+        assert_eq!(frozen_sources(&[]), None);
+
+        let ubuntu = source("https://snapshot.ubuntu.com/ubuntu/20240301T030400Z", false);
+        assert_eq!(
+            frozen_sources(&[ubuntu]).unwrap().pinned,
+            "20240301T030400Z"
+        );
+        let not_a_stamp = source("http://snapshot.debian.org/archive/debian/latest", false);
+        assert_eq!(frozen_sources(&[not_a_stamp]), None);
+    }
 }

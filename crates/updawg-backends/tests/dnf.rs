@@ -1045,3 +1045,21 @@ fn installed_versions_keep_every_install_of_an_install_only_package() {
     assert_eq!(versions["openssl-libs.aarch64"], ["1:3.5.5-2.el9_8"]);
     assert!(!versions.contains_key("jq.x86_64"));
 }
+
+/// `dnf check-release-update` in `amazonlinux:2023.5.20240805.0`, captured
+/// 2026-09-30 (DAWG-233), after installing the plugin that provides it — the
+/// container image leaves it out, where AWS's machine images have it. It
+/// offers releases up to 2023.10.20260330 while the newest image is 2023.12:
+/// what it offers is "newer than this", not always "the newest".
+#[test]
+fn the_newest_release_amazon_linux_offers_is_read_from_check_release_update() {
+    let out = include_str!("fixtures/dnf/check-release-update/amazonlinux2023.5.20240805.txt");
+    assert_eq!(dnf::newest_release(out), Some("2023.10.20260330"));
+    // A current host: the command prints nothing.
+    assert_eq!(dnf::newest_release(""), None);
+    // Ordered by number, not by text: 2023.10 is newer than 2023.9.
+    assert_eq!(
+        dnf::newest_release("  Version 2023.9.20250101:\n  Version 2023.10.20250101:\n"),
+        Some("2023.10.20250101")
+    );
+}
