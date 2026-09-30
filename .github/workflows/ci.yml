@@ -31,8 +31,19 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The release signer's tests hand what it writes to the verifiers apt
+      # and dnf use (DAWG-45). Required, so a runner without them fails
+      # instead of passing having verified nothing; sqv is best effort, as
+      # not every runner's release packages it.
+      - name: OpenPGP verifiers for the release signer's tests
+        run: |
+          command -v gpgv >/dev/null || (sudo apt-get update && sudo apt-get install -y gpgv)
+          command -v sqv >/dev/null || sudo apt-get install -y sqv || true
+
       - name: test
         run: cargo test --workspace
+        env:
+          UPDAWG_REQUIRE_GPGV: "1"
 
       # `insecure-extra-root` is off by default and a release does not set it,
       # so nothing above compiles a line of it. A feature-gated module whose

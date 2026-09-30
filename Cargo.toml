@@ -10,6 +10,7 @@ members = [
     "crates/updawg-agent-core",
     "bin/updawgd",
     "bin/updawgctl",
+    "tools/release-sign",
 ]
 
 [workspace.package]
