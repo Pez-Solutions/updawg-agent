@@ -107,6 +107,34 @@ jobs:
           # Debian with no systemd in the container: refused before download.
           refuse debian:13 "no systemctl"
 
+      # The real thing, from pkg.updawg.net's beta channel, in stock images:
+      # key, repository, package, and a host an older install.sh set up handed
+      # over to the package with its config kept. No systemd in a container,
+      # so systemctl is a stub that says yes; the package's own scripts skip
+      # systemd when it is not running.
+      - name: installs from the signed repository
+        run: |
+          install_ok() {
+            docker run --rm -v "$PWD/packaging:/p:ro" "$1" sh -ec '
+              command -v curl >/dev/null 2>&1 ||
+                { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } >/dev/null 2>&1
+              printf "#!/bin/sh\nexit 0\n" > /usr/local/bin/systemctl && chmod +x /usr/local/bin/systemctl
+              # As an older install.sh left a host: its binary, its unit, an edited config.
+              mkdir -p /etc/systemd/system /etc/updawg
+              echo "ExecStart=/usr/local/bin/updawgd" > /etc/systemd/system/updawgd.service
+              touch /usr/local/bin/updawgd /usr/local/bin/updawgctl
+              printf "server = \"https://agents.updawg.net\"\nmode = \"observe\"\n" > /etc/updawg/agent.toml
+              UPDAWG_CHANNEL=beta sh /p/install.sh
+              /usr/bin/updawgctl --version
+              test ! -e /usr/local/bin/updawgd && test ! -e /etc/systemd/system/updawgd.service
+              grep -q "mode = \"observe\"" /etc/updawg/agent.toml
+            ' || { echo "FAIL: $1"; exit 1; }
+            echo "$1: installed"
+          }
+          for image in debian:13 ubuntu:22.04 rockylinux/rockylinux:9 amazonlinux:2023; do
+            install_ok "$image"
+          done
+
   # The agent on every distribution it supports (DAWG-40): the real updawgctl
   # enrolls and the real updawgd checks in and uploads an inventory, in a
   # container of each, against a fake gateway that records what it got

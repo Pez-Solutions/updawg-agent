@@ -192,13 +192,6 @@ jobs:
           echo "${NFPM_SHA256}  nfpm.tgz" | sha256sum -c -
           mkdir -p .nfpm && tar -xzf nfpm.tgz -C .nfpm nfpm
 
-      # install.sh carries the default agent.toml inline, being one file piped
-      # to a shell; the packages carry packaging/agent.toml. The same file.
-      - name: agent.toml matches install.sh
-        run: |
-          sed -n '/^  cat > "\$CONF" <<.TOML.$/,/^TOML$/p' packaging/install.sh | sed '1d;$d' \
-            | diff - packaging/agent.toml
-
       # A tag is its version, release 1. Anything else is the workspace
       # version, released as the commit's UTC time and hash, so every build
       # of main sorts after the one before it for apt and dnf alike.
