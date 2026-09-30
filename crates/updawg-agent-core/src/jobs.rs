@@ -777,13 +777,16 @@ async fn run(
 /// the host still needs one — which, with `if_required`, decides whether it
 /// happens at all. A host rebooted by other means since its install reports
 /// success and stays up.
-async fn reboot_only(rebooter: &dyn Rebooter, log: &JobLog) -> JobComplete {
+///
+/// With `always` — a reboot somebody asked for (DAWG-78) — whether the host
+/// needs one does not decide anything, and the log does not say it does.
+async fn reboot_only(rebooter: &dyn Rebooter, policy: RebootPolicy, log: &JobLog) -> JobComplete {
     let now = Utc::now();
     let reboot_required = rebooter.reboot_required().await;
-    log.agent(if reboot_required {
-        "a reboot job, and the host needs one"
-    } else {
-        "a reboot job, and the host no longer needs one: nothing to do"
+    log.agent(match (policy, reboot_required) {
+        (RebootPolicy::Always, _) => "a reboot job: rebooting, as asked",
+        (_, true) => "a reboot job, and the host needs one",
+        (_, false) => "a reboot job, and the host no longer needs one: nothing to do",
     });
     JobComplete {
         status: JobStatus::Succeeded,
@@ -881,7 +884,7 @@ async fn perform(
             )
             .await
         }
-        Work::Reboot(policy) => (reboot_only(rebooter, log).await, *policy),
+        Work::Reboot(policy) => (reboot_only(rebooter, *policy, log).await, *policy),
         Work::Snapshot(provider, description) => {
             let started_at = Utc::now();
             let done = match take(job, provider.as_ref(), description, room, log).await {
