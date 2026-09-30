@@ -199,6 +199,7 @@ async fn enroll(
         Enrolled::New { host_id, org_keys } => {
             println!("Enrolled as {host_id}.");
             print_pinned(&org_keys);
+            restart_daemon();
         }
         Enrolled::Replaced {
             previous,
@@ -208,9 +209,39 @@ async fn enroll(
             println!("Re-enrolled as {host_id} (was {previous}).");
             println!("The previous certificate is no longer valid.");
             print_pinned(&org_keys);
+            restart_daemon();
         }
     }
     Ok(())
+}
+
+/// Have the running daemon pick up the identity just written.
+///
+/// updawgd reads its identity once, when it starts, and one that started
+/// unenrolled runs without checking in rather than exiting — so without this
+/// a host installed from a package and then enrolled would never check in.
+/// Only a daemon systemd is running is restarted: one stopped on purpose stays
+/// stopped, and without systemd there is nothing here to ask.
+fn restart_daemon() {
+    const UNIT: &str = "updawgd.service";
+    let running = std::path::Path::new("/run/systemd/system").exists()
+        && std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", UNIT])
+            .status()
+            .is_ok_and(|s| s.success());
+    if !running {
+        println!("updawgd is not running here; it uses this identity when it next starts.");
+        return;
+    }
+    match std::process::Command::new("systemctl")
+        .args(["restart", UNIT])
+        .status()
+    {
+        Ok(s) if s.success() => println!("Restarted updawgd, which now checks in as this host."),
+        _ => println!(
+            "Could not restart updawgd: run `systemctl restart updawgd` to use this identity."
+        ),
+    }
 }
 
 /// Show what got pinned. This is the line an operator should be able to compare
