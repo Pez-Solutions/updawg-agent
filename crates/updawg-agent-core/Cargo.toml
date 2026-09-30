@@ -41,7 +41,8 @@ base64.workspace = true
 # The transport tests run a real TLS server that demands a client certificate.
 # Both come in through reqwest already; naming them here keeps the versions in
 # step with what it resolved.
-rcgen.workspace = true
+# x509-parser: the distro matrix's fake gateway signs the agent's CSR.
+rcgen = { workspace = true, features = ["x509-parser"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
 tokio-rustls = "0.26"
 x509-parser.workspace = true
