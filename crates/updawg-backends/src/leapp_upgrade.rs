@@ -5,11 +5,17 @@
 //! Leapp does its own preflight, so the agent's part is mostly to drive it
 //! and report what it says, faithfully.
 //!
+//! 0. **Install leapp** where it is missing ([`install`], the job only):
+//!    from Red Hat's own repositories on RHEL, from AlmaLinux's ELevate on
+//!    Rocky and AlmaLinux (DAWG-152, decided 2026-09-30: approving the
+//!    upgrade is approving the tool that does it). A leapp the host already
+//!    has is used as it is. CentOS Stream and Oracle Linux are not installed
+//!    for: nothing here has been tried on them, so they are told how.
+//!    A preflight installs nothing, so on a host without leapp it cannot ask
+//!    leapp's opinion and says so as a warning ([`BackendError::CannotTell`]).
 //! 1. **Refuse** ([`blockers`], which a preflight asks too): the RHEL family
-//!    only; one major release on (8 to 9, never 8 to 10); leapp installed —
-//!    the agent does not install it, because on Rocky and Alma it comes from
-//!    a third-party repository, and which one to trust is the host owner's
-//!    call; nothing held (`dnf versionlock`). Then **`leapp preupgrade`**,
+//!    only; one major release on (8 to 9, never 8 to 10); leapp installed;
+//!    nothing held (`dnf versionlock`). Then **`leapp preupgrade`**,
 //!    and every report entry it flags as an inhibitor is a refusal, with the
 //!    remediation leapp suggests; an error that stops it (no known upgrade
 //!    path, say) is one too. It changes no package, but it is not quick: it
@@ -34,6 +40,9 @@ use updawg_protocol::InstalledPackage;
 
 const LEAPP: &str = "/usr/bin/leapp";
 const REPORT: &str = "/var/log/leapp/leapp-report.json";
+/// Where the data package says which repositories map to which, and in which
+/// version of that file's format.
+const REPOMAP: &str = "/etc/leapp/files/repomap.json";
 
 /// The distributions leapp upgrades, as `/etc/os-release` names them.
 const FAMILY: &[&str] = &["rhel", "rocky", "almalinux", "centos", "ol"];
@@ -158,8 +167,18 @@ pub async fn blockers(
         return Ok(vec![why]);
     }
     if !Path::new(LEAPP).exists() {
+        if installs_leapp(host) {
+            return Err(BackendError::CannotTell(format!(
+                "leapp is not installed yet, and its checks are most of this one. The upgrade installs it first ({}), then runs them, and anything leapp refuses stops the job before the reboot, with nothing upgraded",
+                if host.id == "rhel" {
+                    "from Red Hat's repositories"
+                } else {
+                    "from AlmaLinux's ELevate"
+                }
+            )));
+        }
         return Ok(vec![format!(
-            "leapp is not installed. On RHEL: dnf install leapp-upgrade. On Rocky, AlmaLinux and CentOS Stream it comes from AlmaLinux's ELevate: dnf install http://repo.almalinux.org/elevate/elevate-release-latest-el{0}.noarch.rpm, then dnf install leapp-upgrade and the data package for this distribution (leapp-data-rocky, leapp-data-almalinux)",
+            "leapp is not installed, and the agent installs it only on RHEL, Rocky and AlmaLinux. It comes from AlmaLinux's ELevate: dnf install https://repo.almalinux.org/elevate/elevate-release-latest-el{0}.noarch.rpm, then dnf install leapp-upgrade and the data package for this distribution",
             major(&host.version).unwrap_or_default()
         )]);
     }
@@ -199,6 +218,135 @@ fn what_leapp_said(status: i32, said: &str) -> Result<Vec<String>> {
     Ok(found)
 }
 
+/// Whether the job installs leapp on this host when it is missing.
+fn installs_leapp(host: &Host) -> bool {
+    host.id == "rhel" || data_package(&host.id).is_some()
+}
+
+/// ELevate's package describing this distribution's upgrade path.
+fn data_package(id: &str) -> Option<&'static str> {
+    match id {
+        "rocky" => Some("leapp-data-rocky"),
+        "almalinux" => Some("leapp-data-almalinux"),
+        _ => None,
+    }
+}
+
+/// `"1.2.1"` is `(1, 2)`.
+fn format_of(repomap: &str) -> Option<(u32, u32)> {
+    let map: serde_json::Value = serde_json::from_str(repomap).ok()?;
+    let mut parts = map.get("version_format")?.as_str()?.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// What to ask dnf for, given the repository-mapping format the data package
+/// ships: the newest leapp-upgrade for format 1.3 and later, else the last
+/// build known to read 1.2. `None` when no build is known to read it here.
+///
+/// Found on Rocky 8.10, 2026-09-30, with leapp-data-rocky 0.9-10 (format
+/// 1.2.1): ELevate's 0.24 refuses the file ("required 1.3.0"), 0.23 cannot
+/// work out a target and crashes, 0.22 runs. leapp-data-almalinux already
+/// ships 1.3.0. Keyed on the format rather than the distribution, so Rocky
+/// moves to the newest by itself once its data does.
+fn leapp_upgrade_for(major: u32, format: (u32, u32)) -> Option<Vec<String>> {
+    if format >= (1, 3) {
+        return Some(vec!["leapp-upgrade".into()]);
+    }
+    match (major, format) {
+        (8, (1, 2)) => Some(vec![
+            "leapp-upgrade-el8toel9-1:0.22.0-3.el8.elevate.1".into(),
+            "leapp-upgrade-el8toel9-deps-1:0.22.0-3.el8.elevate.1".into(),
+        ]),
+        _ => None,
+    }
+}
+
+/// `dnf install -y` these, streamed to the job log; a refusal naming `what`
+/// if dnf fails, which leaves the host as it was (a dnf transaction installs
+/// everything or nothing).
+async fn dnf_install(packages: &[&str], what: &str, log: &dyn LogSink) -> Result<()> {
+    let mut args = vec!["install", "-y"];
+    args.extend_from_slice(packages);
+    let status = crate::debian_upgrade::streamed("dnf", &args, log).await?;
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(BackendError::Refused(format!(
+            "could not install {what} (dnf exited {status}; the job log has its output)"
+        )))
+    }
+}
+
+/// Step 0 of the module note: leapp, where the host does not have it.
+///
+/// # Errors
+/// [`BackendError::Refused`] when it could not be installed. Every step is
+/// its own dnf transaction, so a later one failing leaves the earlier ones
+/// installed, and the refusal says which.
+pub async fn install(host: &Host, log: &dyn LogSink) -> Result<()> {
+    if Path::new(LEAPP).exists() {
+        log.line("leapp is installed: using it as it is");
+        return Ok(());
+    }
+    if host.id == "rhel" {
+        log.line("leapp is not installed: installing it from Red Hat's repositories");
+        return dnf_install(
+            &["leapp-upgrade"],
+            "leapp-upgrade from Red Hat's repositories (a RHEL host needs its subscription's repositories for it)",
+            log,
+        )
+        .await;
+    }
+    let (Some(data), Some(major)) = (data_package(&host.id), major(&host.version)) else {
+        return Err(BackendError::Refused(format!(
+            "leapp is not installed, and the agent installs it only on RHEL, Rocky and AlmaLinux, not {}",
+            host.id
+        )));
+    };
+    log.line(&format!(
+        "leapp is not installed: installing it from AlmaLinux's ELevate, with {data}"
+    ));
+    let release =
+        format!("https://repo.almalinux.org/elevate/elevate-release-latest-el{major}.noarch.rpm");
+    dnf_install(
+        &[release.as_str()],
+        "ELevate's repository (elevate-release)",
+        log,
+    )
+    .await?;
+    dnf_install(
+        &[data],
+        &format!("{data}; ELevate's repository is installed"),
+        log,
+    )
+    .await?;
+    let repomap = std::fs::read_to_string(REPOMAP).unwrap_or_default();
+    let Some(format) = format_of(&repomap) else {
+        return Err(BackendError::Refused(format!(
+            "{data} is installed but {REPOMAP} does not say its format, so which leapp-upgrade reads it is unknown; ELevate's repository and {data} are installed"
+        )));
+    };
+    let Some(wanted) = leapp_upgrade_for(major, format) else {
+        return Err(BackendError::Refused(format!(
+            "{data} ships repository-mapping format {}.{}, and no leapp-upgrade for el{major} is known to read it; ELevate's repository and {data} are installed",
+            format.0, format.1
+        )));
+    };
+    log.line(&format!(
+        "{data} ships repository-mapping format {}.{}: installing {}",
+        format.0,
+        format.1,
+        wanted.join(" ")
+    ));
+    let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+    dnf_install(
+        &wanted,
+        &format!("leapp-upgrade; ELevate's repository and {data} are installed"),
+        log,
+    )
+    .await
+}
+
 /// Prepare this host's upgrade to `target`. See the module note: what it
 /// returns is not the upgrade, which happens during the reboot, but what to
 /// check once it is done.
@@ -213,6 +361,7 @@ pub async fn upgrade(
 ) -> Result<crate::ApplyOutcome> {
     let host = crate::release::this_host()?;
     plan(&host, target).map_err(BackendError::Refused)?;
+    install(&host, log).await?;
     log.line(&format!(
         "upgrading {} {} to {target} with leapp: checking first (leapp preupgrade)",
         host.id, host.version
@@ -270,6 +419,39 @@ mod tests {
         }
         assert!(arrived(&host("rocky", "9.6"), "9"));
         assert!(!arrived(&host("rocky", "8.10"), "9"));
+    }
+
+    #[test]
+    fn the_leapp_to_install_follows_the_data_packages_format() {
+        let rocky = r#"{"datetime": "202507291200Z", "version_format": "1.2.1", "mapping": []}"#;
+        let alma = r#"{"version_format": "1.3.0"}"#;
+        assert_eq!(format_of(rocky), Some((1, 2)));
+        assert_eq!(format_of(alma), Some((1, 3)));
+        assert_eq!(format_of("{}"), None);
+        assert_eq!(format_of("not json"), None);
+
+        assert_eq!(
+            leapp_upgrade_for(8, (1, 3)),
+            Some(vec!["leapp-upgrade".to_owned()])
+        );
+        assert_eq!(
+            leapp_upgrade_for(9, (2, 0)),
+            Some(vec!["leapp-upgrade".to_owned()])
+        );
+        let pinned = leapp_upgrade_for(8, (1, 2)).unwrap();
+        assert!(pinned.iter().all(|p| p.contains("0.22.0")), "{pinned:?}");
+        assert_eq!(leapp_upgrade_for(9, (1, 2)), None);
+        assert_eq!(leapp_upgrade_for(8, (1, 1)), None);
+    }
+
+    #[test]
+    fn leapp_is_installed_where_it_has_been_tried() {
+        for id in ["rhel", "rocky", "almalinux"] {
+            assert!(installs_leapp(&host(id, "8.10")), "{id}");
+        }
+        for id in ["centos", "ol"] {
+            assert!(!installs_leapp(&host(id, "8.10")), "{id}");
+        }
     }
 
     /// Trimmed from a real `leapp preupgrade` on Rocky 8.10 (ELevate,

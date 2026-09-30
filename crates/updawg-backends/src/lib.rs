@@ -51,6 +51,12 @@ pub enum BackendError {
     /// nothing on the host changed.
     #[error("{0}")]
     Refused(String),
+    /// The question cannot be answered without changing the host first — a
+    /// preflight asking leapp's opinion of a host leapp is not installed on
+    /// yet, where the upgrade itself would install it. A preflight says so
+    /// as a warning, never a pass.
+    #[error("{0}")]
+    CannotTell(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
