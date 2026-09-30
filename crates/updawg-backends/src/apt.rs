@@ -88,8 +88,10 @@ impl PackageBackend for AptBackend {
         // from the same run, and this is the expensive call in a collection pass.
         let installed = self.installed().await?;
         let out = run("apt-get", &["-s", "dist-upgrade"]).await?;
+        let mut updates = parse_updates(&out);
+        candidate_sources(&mut updates).await;
         Ok(PendingChanges {
-            updates: parse_updates(&out),
+            updates,
             removals: parse_removals(&out, &installed),
         })
     }
@@ -321,6 +323,8 @@ pub fn parse_updates(out: &str) -> Vec<AvailableUpdate> {
                 // apt has no `updateinfo`. The pocket on `repo` is the whole of
                 // what it says about an update, and it is already there.
                 advisories: Vec::new(),
+                // Filled in by `candidate_sources`, from `apt-cache show`.
+                source: None,
             })
         })
         .collect()
@@ -890,6 +894,36 @@ pub fn parse_uploads(show: &str) -> Sources {
             .or_insert((source, source_version));
     }
     out
+}
+
+/// Each candidate's source package (protocol 0.7, DAWG-287), from
+/// `apt-cache show name=version`, 200 at a time. What the server looks its
+/// changelog up by; the installed package's source is not always it (a
+/// kernel's binary and source versions differ).
+///
+/// A hint, so a failure costs the hint and not the inventory: an update apt
+/// cannot describe is sent without one.
+async fn candidate_sources(updates: &mut [AvailableUpdate]) {
+    for chunk in updates.chunks_mut(200) {
+        let mut args = vec!["show".to_owned()];
+        args.extend(chunk.iter().map(|u| format!("{}={}", u.name, u.candidate)));
+        // Exits 100 if any one is missing; what it did describe is still an
+        // answer.
+        let Ok(shown) = run_status("apt-cache", &args).await else {
+            continue;
+        };
+        let sources = parse_uploads(&shown.stdout);
+        for update in chunk.iter_mut() {
+            if let Some((name, version)) =
+                sources.get(&(update.name.clone(), update.candidate.clone()))
+            {
+                update.source = Some(updawg_protocol::SourcePackage {
+                    name: name.clone(),
+                    version: version.clone(),
+                });
+            }
+        }
+    }
 }
 
 /// Which upload built each package the simulation would install new, and

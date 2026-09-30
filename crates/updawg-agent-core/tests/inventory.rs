@@ -53,6 +53,7 @@ fn update(name: &str, repo: Option<&str>) -> AvailableUpdate {
         candidate: "2".into(),
         repo: repo.map(Into::into),
         advisories: vec![],
+        source: None,
     }
 }
 

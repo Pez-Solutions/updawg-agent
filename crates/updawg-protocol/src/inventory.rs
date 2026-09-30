@@ -107,6 +107,13 @@ pub struct AvailableUpdate {
     /// [`repo`]: AvailableUpdate::repo
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisories: Vec<AdvisoryHint>,
+    /// The source package the **candidate** is built from, where the package
+    /// manager says (0.7, DAWG-287). Not always the installed package's: a
+    /// kernel's binary is `linux-image-cloud-amd64 6.12.111-1` and its source
+    /// `linux-signed-amd64 6.12.111+1`, which nothing on the server can work
+    /// out from the binary. What the server looks a changelog up by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourcePackage>,
 }
 
 /// One advisory the host's package manager attributes to an update.
@@ -376,7 +383,35 @@ mod wire_tests {
             candidate: "2.6.0-1.el9_8".into(),
             repo: Some("baseos".into()),
             advisories: vec![],
+            source: None,
         }
+    }
+
+    #[test]
+    fn an_update_names_its_candidates_source_and_an_older_one_reads_without() {
+        let kernel = AvailableUpdate {
+            name: "linux-image-cloud-amd64".into(),
+            arch: "amd64".into(),
+            installed: "6.12.107-1".into(),
+            candidate: "6.12.111-1".into(),
+            repo: Some("trixie-security".into()),
+            advisories: vec![],
+            source: Some(SourcePackage {
+                name: "linux-signed-amd64".into(),
+                version: "6.12.111+1".into(),
+            }),
+        };
+        let json = serde_json::to_value(&kernel).unwrap();
+        assert_eq!(json["source"]["version"], "6.12.111+1");
+        let back: AvailableUpdate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, kernel);
+
+        // A 0.6 agent's update: no source, and it still reads.
+        let old: AvailableUpdate = serde_json::from_str(
+            r#"{"name":"curl","arch":"amd64","installed":"1","candidate":"2"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.source, None);
     }
 
     #[test]

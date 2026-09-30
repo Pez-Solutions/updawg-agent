@@ -378,6 +378,10 @@ pub fn parse_upgrades(out: &str, installed: &[InstalledPackage]) -> Vec<Availabl
                 // than absent from the type, so the one place that joins them is
                 // the one place that can get it wrong.
                 advisories: Vec::new(),
+                // dnf names no source upload per update; the server does
+                // not need one for the RHEL family, which has no changelogs to
+                // look up by it.
+                source: None,
             })
         })
         .collect()

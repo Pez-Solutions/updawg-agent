@@ -12,7 +12,7 @@ agent and the server — depend on one definition rather than two that drift.
 
 ```toml
 [dependencies]
-updawg-protocol = "0.4"
+updawg-protocol = "0.7"
 ```
 
 ## The property this crate exists to preserve
@@ -91,6 +91,10 @@ longer reported as one that does not need a reboot. A 0.4 reader still takes
 the old `true`/`false`; a 0.3 reader does not take the words, so **the gateway
 moves to 0.4 before any agent does.** 0.4 also adds `CheckinRequest::snapshots`
 and `InstalledPackage::source`, both optional.
+
+0.5 adds `JobComplete::preflight`, 0.6 `Repository::url` (third-party
+repositories only, credentials stripped) and 0.7 `AvailableUpdate::source`,
+the candidate's own source package. All optional in both directions.
 
 ## Transport
 
