@@ -25,7 +25,7 @@
 //! | `snapshot` | — | no snapshot provider, so no rollback |
 //! | `reboot` | — | the change needs a reboot, or the host already does |
 //! | `release_upgrade` (a release upgrade only) | the upgrade would refuse to begin: a newer release that is not the target, updates not installed, a reboot owed (Ubuntu) | the host could not be asked, or its package lists are over a day old |
-//! | `third_party_repos` (a release upgrade only) | a third-party repository publishes nothing for the target | one could not be asked |
+//! | `third_party_repos` (a release upgrade on Debian or Ubuntu; leapp checks the RHEL family's itself) | a third-party repository publishes nothing for the target | one could not be asked |
 //! | `approved_only` (a package change only) | installing it would change something nobody approved, or cannot be done | the package manager could not be asked |
 //!
 //! `approved_only` runs the simulation the install itself runs first
@@ -525,7 +525,11 @@ pub async fn gather(
             }
         })
     };
+    // Not on the RHEL family: its repositories name the release with
+    // `$releasever` rather than a codename, and leapp asks about them
+    // itself, which `release_upgrade` reports (DAWG-152).
     let third_party = match &preflight.target_release {
+        Some(_) if ecosystem == Some(updawg_protocol::Ecosystem::Rpm) => None,
         Some(target) => Some((
             target.clone(),
             crate::readiness::gather(backend, target).await,

@@ -110,11 +110,12 @@ fi
 if [ -n "${UPDAWG_TOKEN:-}" ]; then
   UPDAWG_TOKEN="$UPDAWG_TOKEN" "$BIN/updawgctl" enroll
 else
-  say "no UPDAWG_TOKEN, so not enrolling. Later: sudo updawgctl enroll --token enr_..."
+  say "no UPDAWG_TOKEN, so not enrolling. Later: sudo $BIN/updawgctl enroll --token enr_..."
 fi
 
 systemctl daemon-reload
 systemctl enable updawgd.service >/dev/null 2>&1
 # restart, not start: on a re-run it picks up the binary just installed.
 systemctl restart updawgd.service
-say "updawgd is running. Check it with: sudo updawgctl status"
+# The full path: sudo's secure_path leaves /usr/local/bin out on the RHEL family.
+say "updawgd is running. Check it with: sudo $BIN/updawgctl status"
