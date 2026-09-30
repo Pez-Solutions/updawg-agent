@@ -284,3 +284,41 @@ jobs:
           esac
           docker run --rm -v "$PWD:/w" -w /w "${{ matrix.image }}" \
             sh packaging/nfpm/test.sh "$old" "$new"
+
+  # Every build of main, onto pkg.updawg.net's beta channel (DAWG-45), once
+  # its packages installed, upgraded and removed cleanly everywhere above.
+  # `stable` is the promote button: .github/workflows/promote.yml (DAWG-46).
+  #
+  # Off until the key, the identity and the bucket exist: they are in
+  # updawg-infra's terraform/gcp, which a person applies. Set the repository
+  # variable PKG_PUBLISH to `true` after that apply.
+  publish:
+    name: publish to pkg.updawg.net (beta)
+    needs: [packages, packages-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PKG_PUBLISH == 'true'
+    runs-on: [self-hosted, copenhagen]
+    timeout-minutes: 20
+    # One publish at a time: each rebuilds a channel's indexes from its list,
+    # and two interleaved would each drop the other's build.
+    concurrency:
+      group: pkg-updawg-net
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: updawg-agent-packages
+          path: out/
+
+      - id: tools
+        uses: ./.github/actions/pkg-tools
+
+      - name: publish
+        env:
+          SIGN: ${{ steps.tools.outputs.sign }}
+        run: sh packaging/repo/publish.sh beta out/*.deb out/*.rpm
+

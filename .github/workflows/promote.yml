@@ -1,0 +1,57 @@
+name: Promote
+
+# The button (DAWG-46, decided 2026-09-30): put one build that is on beta onto
+# pkg.updawg.net's stable channel. Nothing is rebuilt — the same files, from
+# the pool, named by one more channel's indexes.
+#
+# Run it from `main`: only `main` can become the identity that signs
+# (updawg-infra terraform/gcp/packages.tf), so from anywhere else it fails at
+# authentication.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "The build, as its packages name it: 0.1.0-20260930183310.g8c53d52"
+        required: true
+        type: string
+
+concurrency:
+  group: pkg-updawg-net
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: promote ${{ inputs.release }} to stable
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, copenhagen]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tools
+        uses: ./.github/actions/pkg-tools
+
+      # Through the environment, never spliced into the script: a workflow
+      # input is text somebody typed.
+      - name: that build's packages, from beta
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          printf '%s' "$RELEASE" | grep -Eq '^[0-9][0-9A-Za-z.+~-]*$' ||
+            { echo "not a build: $RELEASE" >&2; exit 1; }
+          gcloud storage cat "gs://$BUCKET/channels/beta.txt" |
+            grep -F -e "_${RELEASE}_" -e "-${RELEASE}." > files || true
+          cat files
+          [ "$(wc -l < files)" -eq 4 ] ||
+            { echo "beta does not hold that build's four packages" >&2; exit 1; }
+          mkdir promote
+          sed "s|^|gs://$BUCKET/|" files | gcloud storage cp --read-paths-from-stdin promote/
+
+      - name: publish
+        env:
+          SIGN: ${{ steps.tools.outputs.sign }}
+        run: sh packaging/repo/publish.sh stable promote/*

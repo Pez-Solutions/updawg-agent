@@ -1,0 +1,47 @@
+# What publishing to pkg.updawg.net needs (DAWG-45): the tools that build apt
+# and dnf indexes, the signer, gcloud, and a credential for the one identity
+# allowed to sign — release-signer, which only updawg-agent's `main` can
+# become (updawg-infra terraform/gcp/packages.tf).
+name: pkg.updawg.net tools
+description: apt-ftparchive, createrepo_c, updawg-release-sign and release-signer's credential.
+outputs:
+  sign:
+    description: The signer binary.
+    value: ${{ steps.build.outputs.sign }}
+runs:
+  using: composite
+  steps:
+    - name: apt-ftparchive and createrepo_c
+      shell: sh
+      run: |
+        command -v apt-ftparchive >/dev/null && command -v createrepo_c >/dev/null ||
+          (sudo apt-get update && sudo apt-get install -y apt-utils createrepo-c)
+
+    - name: the signer
+      id: build
+      shell: sh
+      run: |
+        rustup toolchain install stable --profile minimal
+        cargo build --release -p updawg-release-sign
+        echo "sign=$PWD/target/release/updawg-release-sign" >> "$GITHUB_OUTPUT"
+
+    - id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: projects/516685478317/locations/global/workloadIdentityPools/github/providers/github
+        service_account: release-signer@updawg-dev.iam.gserviceaccount.com
+        token_format: access_token
+
+    - uses: google-github-actions/setup-gcloud@v2
+
+    - name: the signer's key and credential, for the steps after this
+      shell: sh
+      env:
+        TOKEN: ${{ steps.auth.outputs.access_token }}
+      run: |
+        echo "::add-mask::$TOKEN"
+        {
+          echo "GOOGLE_OAUTH_ACCESS_TOKEN=$TOKEN"
+          echo "UPDAWG_RELEASE_KEY=projects/updawg-dev/locations/europe-west3/keyRings/release-signing/cryptoKeys/packages/cryptoKeyVersions/1"
+          echo "BUCKET=updawg-dev-packages"
+        } >> "$GITHUB_ENV"
