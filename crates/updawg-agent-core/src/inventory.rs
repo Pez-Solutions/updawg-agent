@@ -271,7 +271,9 @@ impl Inventory for GatewayInventory {
         let previous = self.state.inventory_snapshot()?;
 
         let upload = collected.upload(previous.as_ref());
-        let was_delta = upload.base_hash.is_some();
+        // What was sent in the end, for the log: a delta the gateway could
+        // not apply is followed by a full inventory.
+        let mut sent_delta = upload.base_hash.is_some();
 
         match self.transport.upload_inventory(&upload).await {
             Ok(()) => {}
@@ -286,6 +288,7 @@ impl Inventory for GatewayInventory {
                 self.state.clear_inventory_snapshot()?;
                 let full = collected.upload(None);
                 self.transport.upload_inventory(&full).await?;
+                sent_delta = false;
             }
             Err(e) => return Err(e.into()),
         }
@@ -305,7 +308,7 @@ impl Inventory for GatewayInventory {
         self.state.set_inventory_hash(&hash)?;
 
         tracing::info!(
-            delta = was_delta,
+            delta = sent_delta,
             packages = self
                 .state
                 .inventory_snapshot()?
