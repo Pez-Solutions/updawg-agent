@@ -12,12 +12,10 @@
 # is none, installs and starts updawgd.service, and enrolls if UPDAWG_TOKEN is
 # set. It never overwrites an existing agent.toml: local config always wins.
 #
-# The manual path, if you would rather not pipe anything to a shell: fetch the
-# same files from https://get.updawg.net/agent/latest/, verify them against
-# SHA256SUMS there, and run `updawgctl enroll` yourself.
-#
-# ⚠️ Interim (DAWG-44): the design adds a signed apt/yum repository here instead
-# of downloading binaries. That repository does not exist yet (DAWG-42).
+# If you would rather not pipe anything to a shell: the signed apt and dnf
+# repositories at https://pkg.updawg.net, or these same files from
+# https://get.updawg.net/agent/latest/ checked against SHA256SUMS there.
+# Both are at https://docs.updawg.net/install/.
 set -eu
 
 BASE="${UPDAWG_BASE:-https://get.updawg.net}/agent/latest"
