@@ -142,6 +142,11 @@ enum Command {
         #[arg(long)]
         job: String,
     },
+    /// Carry out the self-update the agent prepared (DAWG-46). The agent
+    /// starts this in a transient systemd unit of its own; it is not for
+    /// running by hand.
+    #[command(hide = true)]
+    SelfUpdateRun,
 }
 
 #[tokio::main]
@@ -173,6 +178,7 @@ async fn main() -> Result<()> {
         Command::Jobs => jobs(&state)?,
         Command::Preflight { release } => preflight(&cli.config, release).await?,
         Command::Sign { .. } => println!("sign: not implemented yet (DAWG-148)"),
+        Command::SelfUpdateRun => updawg_agent_core::self_update::helper::run(&state)?,
     }
     Ok(())
 }
@@ -586,12 +592,14 @@ mod tests {
             at: now - chrono::Duration::seconds(42),
             ok: true,
             error: None,
+            agent: None,
         };
         assert!(describe_checkin(&ok, now).starts_with("check-in:  ok, 42 s ago"));
         let failed = LastCheckin {
             at: now - chrono::Duration::minutes(3),
             ok: false,
             error: Some("could not reach https://agents.updawg.net".into()),
+            agent: None,
         };
         assert_eq!(
             describe_checkin(&failed, now),

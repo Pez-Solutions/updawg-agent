@@ -18,6 +18,7 @@ pub mod preflight;
 pub mod readiness;
 pub mod restart;
 pub mod scheduler;
+pub mod self_update;
 pub mod state;
 
 #[cfg(test)]

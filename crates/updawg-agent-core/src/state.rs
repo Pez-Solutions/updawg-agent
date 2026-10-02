@@ -91,6 +91,10 @@ pub struct ReleaseCheck {
     pub before: Vec<updawg_protocol::InstalledPackage>,
 }
 
+/// A self-update under way, and what the helper made of it (DAWG-46).
+const SELF_UPDATE: &str = "self-update.json";
+const SELF_UPDATE_OUTCOME: &str = "self-update-outcome.json";
+
 /// Replay protection. Bounded: an agent running for years must not accumulate
 /// an unbounded file of job ids.
 const SEEN_JOBS_CAPACITY: usize = 2048;
@@ -379,6 +383,67 @@ impl LocalState {
         self.read_json("pending-reboot.json")
     }
 
+    /* ----------------------------------------- self-update (DAWG-46) */
+
+    /// Record a self-update under way (see `crate::self_update`).
+    pub fn set_self_update(&self, pending: &crate::self_update::Pending) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(pending).map_err(|source| StateError::Corrupt {
+            path: SELF_UPDATE.into(),
+            source,
+        })?;
+        self.write_atomic(SELF_UPDATE, &bytes)
+    }
+
+    /// The self-update under way, without taking it: the helper reads it, and
+    /// an agent that finds the helper still running leaves it.
+    pub fn self_update(&self) -> Result<Option<crate::self_update::Pending>> {
+        self.read_json(SELF_UPDATE)
+    }
+
+    /// Read and clear it, with the helper's outcome if it wrote one: once
+    /// the job is reported.
+    pub fn take_self_update(
+        &self,
+    ) -> Result<
+        Option<(
+            crate::self_update::Pending,
+            Option<crate::self_update::Outcome>,
+        )>,
+    > {
+        let Some(pending) = self.self_update()? else {
+            return Ok(None);
+        };
+        let outcome = self.read_json(SELF_UPDATE_OUTCOME)?;
+        for name in [SELF_UPDATE, SELF_UPDATE_OUTCOME] {
+            let path = self.path(name);
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(StateError::Write {
+                        path: path.display().to_string(),
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(Some((pending, outcome)))
+    }
+
+    /// The helper's word, when the old agent is what runs afterwards.
+    pub fn set_self_update_outcome(&self, outcome: &crate::self_update::Outcome) -> Result<()> {
+        let bytes = serde_json::to_vec(outcome).map_err(|source| StateError::Corrupt {
+            path: SELF_UPDATE_OUTCOME.into(),
+            source,
+        })?;
+        self.write_atomic(SELF_UPDATE_OUTCOME, &bytes)
+    }
+
+    /// Whether the helper has written its word yet.
+    pub fn self_update_outcome(&self) -> Result<Option<crate::self_update::Outcome>> {
+        self.read_json(SELF_UPDATE_OUTCOME)
+    }
+
     /* ------------------------------------- what updawgctl shows (DAWG-37) */
 
     /// How the last check-in went. Local only: it is for a person on the host
@@ -485,6 +550,11 @@ pub struct LastCheckin {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Which agent checked in: how a self-update's helper knows the new
+    /// version is up and talking (DAWG-46). Absent in a record an older agent
+    /// wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// One job, as `updawgctl jobs` lists it (DAWG-37).

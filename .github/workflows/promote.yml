@@ -55,3 +55,20 @@ jobs:
         env:
           SIGN: ${{ steps.tools.outputs.sign }}
         run: sh packaging/repo/publish.sh stable promote/*
+
+      # Stable's self-update manifest (DAWG-46): the same binaries beta had,
+      # from the pool, signed again as stable's. A build from before the
+      # binaries were published has none to name; stable.json then stays as
+      # it was, and says so.
+      - name: the stable self-update manifest
+        env:
+          SIGN: ${{ steps.tools.outputs.sign }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          if ! gcloud storage ls "gs://$BUCKET/bin/pool/$RELEASE/" >/dev/null 2>&1; then
+            echo "::warning::$RELEASE has no binaries in bin/pool (built before DAWG-46); bin/stable.json is unchanged"
+            exit 0
+          fi
+          mkdir bin
+          gcloud storage cp -r "gs://$BUCKET/bin/pool/$RELEASE/*" bin/
+          sh packaging/repo/publish-bin.sh stable "$RELEASE" bin

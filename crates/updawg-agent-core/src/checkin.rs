@@ -273,6 +273,7 @@ impl CheckIn for GatewayCheckIn {
             at: chrono::Utc::now(),
             ok: result.is_ok(),
             error: result.as_ref().err().map(|e| format!("{e:#}")),
+            agent: Some(crate::VERSION.to_owned()),
         };
         if let Err(error) = self.state.set_last_checkin(&last) {
             tracing::debug!(%error, "could not record the check-in for updawgctl");

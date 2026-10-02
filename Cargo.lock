@@ -2061,6 +2061,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "updawg-protocol",
 ]
 
 [[package]]

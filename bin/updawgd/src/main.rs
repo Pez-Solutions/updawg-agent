@@ -327,6 +327,12 @@ fn build_checkin(
         let jobs = Arc::clone(&jobs);
         async move { jobs.resume_after_reboot().await }
     });
+    // And a self-update (DAWG-46), which waits for this agent's first
+    // check-in before it reports, so it must not hold anything up either.
+    tokio::spawn({
+        let jobs = Arc::clone(&jobs);
+        async move { jobs.resume_after_self_update().await }
+    });
 
     Some(Arc::new(
         GatewayCheckIn::new(

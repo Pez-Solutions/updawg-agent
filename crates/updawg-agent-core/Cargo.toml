@@ -23,6 +23,9 @@ updawg-executor.workspace = true
 updawg-snapshots.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+# The release manifest's signature and the binaries' sha256 (DAWG-46).
+aws-lc-rs.workspace = true
+base64.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -35,9 +38,7 @@ tracing-subscriber.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
-aws-lc-rs.workspace = true
 updawg-collectors = { workspace = true, features = ["testing"] }
-base64.workspace = true
 # The transport tests run a real TLS server that demands a client certificate.
 # Both come in through reqwest already; naming them here keeps the versions in
 # step with what it resolved.

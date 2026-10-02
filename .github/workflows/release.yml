@@ -317,6 +317,13 @@ jobs:
           name: updawg-agent-packages
           path: out/
 
+      # The same build's binaries, for self-update on hosts install.sh set up
+      # (DAWG-46).
+      - uses: actions/download-artifact@v4
+        with:
+          name: updawg-agent-linux-x86_64
+          path: dist/
+
       - id: tools
         uses: ./.github/actions/pkg-tools
 
@@ -324,4 +331,17 @@ jobs:
         env:
           SIGN: ${{ steps.tools.outputs.sign }}
         run: sh packaging/repo/publish.sh beta out/*.deb out/*.rpm
+
+      # After the packages: a manifest must never name a build apt and dnf
+      # cannot install yet. The version is the binaries' own word for it.
+      - name: the beta self-update manifest
+        env:
+          SIGN: ${{ steps.tools.outputs.sign }}
+        run: |
+          mkdir -p bin/x86_64-unknown-linux-musl bin/aarch64-unknown-linux-musl
+          cp dist/updawgd dist/updawgctl bin/x86_64-unknown-linux-musl/
+          cp dist/aarch64/updawgd dist/aarch64/updawgctl bin/aarch64-unknown-linux-musl/
+          chmod 0755 bin/*/*
+          VERSION=$(bin/x86_64-unknown-linux-musl/updawgctl --version | awk '{print $2}')
+          sh packaging/repo/publish-bin.sh beta "$VERSION" bin
 

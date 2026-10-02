@@ -115,7 +115,7 @@ pub use job::{
     Rollback, SelfUpdate, Snapshot, SnapshotPolicy,
 };
 pub use logs::{LogLine, LogStream};
-pub use releases::{ReleaseChannel, ReleaseManifest};
+pub use releases::{ReleaseArtifact, ReleaseChannel, ReleaseManifest};
 pub use sign::SignaturePurpose;
 
 /// The agent API path prefix.

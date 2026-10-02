@@ -9,10 +9,13 @@
 //! updawg-release-sign --key <version> public-key --user-id "…" > updawg.asc
 //! updawg-release-sign --key <version> detach Release > Release.gpg
 //! updawg-release-sign --key <version> clear Release > InRelease
+//! updawg-release-sign --key <version> manifest --channel beta --version 0.1.0-… \
+//!     --dir bin/ --base-url https://pkg.updawg.net/bin/pool/0.1.0-… > beta.json
 //! ```
 
 mod der;
 mod kms;
+mod manifest;
 mod openpgp;
 
 use anyhow::Context as _;
@@ -40,6 +43,22 @@ enum Command {
     Detach { file: PathBuf },
     /// FILE as a cleartext-signed message: InRelease.
     Clear { file: PathBuf },
+    /// A channel's signed release manifest (DAWG-46): the agent's binaries in
+    /// DIR, as `<target>/updawgd` and `<target>/updawgctl`, served from
+    /// `<base-url>/<target>/<name>`. Signed as raw `RSASSA-PKCS1-v1_5`
+    /// rather than OpenPGP: the agent verifies it with the key compiled into
+    /// it, and has no OpenPGP parser to want.
+    Manifest {
+        #[arg(long)]
+        channel: String,
+        /// The build, as its packages name it.
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        base_url: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -58,6 +77,12 @@ fn main() -> anyhow::Result<()> {
                 std::fs::read_to_string(&file).with_context(|| file.display().to_string())?;
             key.clear_sign(&text, &kms, now)?
         }
+        Command::Manifest {
+            channel,
+            version,
+            dir,
+            base_url,
+        } => manifest::build(&kms, &channel, &version, &dir, &base_url)?,
     };
     print!("{out}");
     Ok(())

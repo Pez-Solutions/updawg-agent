@@ -262,6 +262,98 @@ impl Executor {
         self
     }
 
+    /// Finish a self-update (DAWG-46). Call once at startup, as
+    /// [`Self::resume_after_reboot`] is.
+    ///
+    /// - **The new version** waits for its own first successful check-in —
+    ///   the same evidence the helper waits for — and reports success. If it
+    ///   never comes, it reports nothing: the helper puts the old version
+    ///   back, and that one reports.
+    /// - **The old version**, put back, reports the helper's reason.
+    /// - **The old version with no reason written** leaves the job alone
+    ///   while the helper is still running (it will restart this agent), and
+    ///   otherwise reports that the update stopped part-way.
+    pub async fn resume_after_self_update(&self) {
+        let pending = match self.state.self_update() {
+            Ok(Some(pending)) => pending,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::error!(%error, "cannot read the record of a self-update");
+                return;
+            }
+        };
+        let job = pending.job.clone();
+        let mut done = pending.report.clone();
+        let log = JobLog::start(Arc::clone(&self.reporter), job.clone(), AFTER_REBOOT);
+        if crate::VERSION == pending.to {
+            let began = Utc::now();
+            let deadline = tokio::time::Instant::now() + crate::self_update::CONFIRM_WITHIN;
+            loop {
+                if let Ok(Some(last)) = self.state.last_checkin()
+                    && last.ok
+                    && last.at >= began
+                    && last.agent.as_deref() == Some(crate::VERSION)
+                {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::error!(job = %job.id, "updated, and never checked in; the helper puts the previous version back");
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            log.agent(format!("now {}, and checked in", pending.to));
+            done.status = JobStatus::Succeeded;
+            done.changes = vec![PackageChange {
+                name: crate::self_update::PACKAGE.into(),
+                arch: std::env::consts::ARCH.into(),
+                from: pending.from.clone(),
+                to: pending.to.clone(),
+            }];
+        } else {
+            let outcome = self.state.self_update_outcome();
+            // Asked before the match rather than in a guard: the helper may
+            // be part-way and about to restart this agent.
+            let helper_running =
+                matches!(outcome, Ok(None)) && crate::self_update::helper_running().await;
+            match outcome {
+                Ok(Some(outcome)) => {
+                    log.agent(&outcome.detail);
+                    done.status = JobStatus::Failed;
+                    done.error = Some(outcome.detail);
+                }
+                Ok(None) if helper_running => {
+                    tracing::info!(job = %job.id, "the self-update helper is still running");
+                    return;
+                }
+                Ok(None) | Err(_) => {
+                    let why = format!(
+                        "the update to {} stopped before it finished; {} is still running",
+                        pending.to,
+                        crate::VERSION
+                    );
+                    log.agent(&why);
+                    done.status = JobStatus::Failed;
+                    done.error = Some(why);
+                }
+            }
+        }
+        if let Err(error) = self.state.take_self_update() {
+            tracing::error!(job = %job.id, %error, "cannot clear the record of the self-update");
+        }
+        log.finish().await;
+        done.finished_at = Utc::now();
+        note_done(&self.state, &job, &done);
+        if let Err(error) = self.reporter.complete(&job, &done).await {
+            tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the self-update went");
+        }
+        if let Some(inventory) = &self.inventory
+            && let Err(error) = inventory.collect_and_upload().await
+        {
+            tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not upload the inventory after the self-update");
+        }
+    }
+
     /// Finish a job that rebooted the host (DAWG-103). Call once at startup.
     ///
     /// The boot id is the evidence: a different one means the host really
@@ -528,7 +620,8 @@ impl Executor {
                 }
                 Work::Rollback(provider, rollback.snapshot_id.clone(), self.backend.clone())
             }
-            _ => {
+            JobSpec::SelfUpdate(spec) => Work::SelfUpdate(spec.clone()),
+            JobSpec::RefreshInventory => {
                 return Err(format!(
                     "this agent version does not run {:?} jobs yet",
                     job.kind()
@@ -652,6 +745,9 @@ enum Work {
         Option<Arc<dyn PackageBackend>>,
         std::result::Result<String, String>,
     ),
+    /// Become this version (DAWG-46): prepared here, carried out by the
+    /// helper in its own unit (`crate::self_update`).
+    SelfUpdate(updawg_protocol::SelfUpdate),
 }
 
 /// A job that changes packages: its reboot and snapshot policies. The same
@@ -692,6 +788,10 @@ impl crate::checkin::JobSink for Executor {
         tokio::spawn(async move {
             let _one_at_a_time = running.lock().await;
             let log = JobLog::start(Arc::clone(&reporter), job.clone(), 0);
+            if let Work::SelfUpdate(spec) = &work {
+                self_update(&job, spec, &state, reporter.as_ref(), &log).await;
+                return;
+            }
             let (mut done, policy) =
                 perform(&job, &work, &checks, &state, rebooter.as_ref(), room, &log).await;
             if wants_reboot(policy, &done) {
@@ -745,6 +845,51 @@ impl crate::checkin::JobSink for Executor {
             // agent itself left the old binary running (see `crate::restart`).
             crate::restart::restart_if_replaced();
         });
+    }
+}
+
+/// What `perform` answers for work that belongs elsewhere.
+fn misrouted() -> (JobComplete, RebootPolicy) {
+    let now = Utc::now();
+    let why = "a self-update reached the wrong path in the agent".to_owned();
+    (
+        failed(JobStatus::Failed, now, now, why),
+        RebootPolicy::Never,
+    )
+}
+
+/// A `self_update` job (DAWG-46): prepared and handed to the helper, which
+/// is the last this agent does for it — the report comes from
+/// [`Executor::resume_after_self_update`], by the new agent once it has
+/// checked in, or by this one put back. Reported here only when there was
+/// nothing to do, or it was refused before anything changed.
+async fn self_update(
+    job: &Job,
+    spec: &updawg_protocol::SelfUpdate,
+    state: &LocalState,
+    reporter: &dyn Reporter,
+    log: &JobLog,
+) {
+    let started = Utc::now();
+    let skeleton = ended(JobStatus::Succeeded, started, started, None);
+    let done = match crate::self_update::start(job, spec, skeleton, state, log).await {
+        Ok(crate::self_update::Started::Handed) => {
+            note(state, job, "updating", None);
+            log.finish().await;
+            return;
+        }
+        Ok(crate::self_update::Started::AlreadyThere) => {
+            ended(JobStatus::Succeeded, started, Utc::now(), None)
+        }
+        Err(why) => {
+            log.agent(format!("not updating: {why}"));
+            failed(JobStatus::Failed, started, Utc::now(), why)
+        }
+    };
+    log.finish().await;
+    note_done(state, job, &done);
+    if let Err(error) = reporter.complete(job, &done).await {
+        tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the job went");
     }
 }
 
@@ -888,6 +1033,8 @@ async fn perform(
             .await
         }
         Work::Reboot(policy) => (reboot_only(rebooter, *policy, log).await, *policy),
+        // Handed to `crate::self_update` in `deliver`, never run here.
+        Work::SelfUpdate(_) => misrouted(),
         Work::Snapshot(provider, description) => {
             let started_at = Utc::now();
             let done = match take(job, provider.as_ref(), description, room, log).await {

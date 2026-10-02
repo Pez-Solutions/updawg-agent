@@ -199,3 +199,57 @@ fn the_export_is_the_same_bytes_every_time() {
     assert!(a.starts_with("-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n"));
     assert_eq!(canonical_text("x\n"), b"x".to_vec());
 }
+
+#[test]
+fn a_manifest_verifies_with_the_public_key_as_the_agent_holds_it() {
+    use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA512, UnparsedPublicKey};
+    use base64::Engine as _;
+    let pair = KeyPair::generate(KeySize::Rsa2048).unwrap();
+    // PKCS#1 DER, which is what the agent compiles in (self_update/release-key.der).
+    let public = pair.public_key().as_ref().to_vec();
+    let dir = scratch("manifest");
+    for target in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
+        std::fs::create_dir_all(dir.join(target)).unwrap();
+        for name in ["updawgd", "updawgctl"] {
+            std::fs::write(dir.join(target).join(name), format!("{target} {name}")).unwrap();
+        }
+    }
+    let json = crate::manifest::build(
+        &Local(pair),
+        "beta",
+        "0.1.0-20261002120000.gabcdef0",
+        &dir,
+        "https://pkg.updawg.net/bin/pool/0.1.0-20261002120000.gabcdef0/",
+    )
+    .unwrap();
+    let manifest: updawg_protocol::ReleaseManifest = serde_json::from_str(&json).unwrap();
+    assert_eq!(manifest.artifacts.len(), 4);
+    let d = manifest
+        .artifact("aarch64-unknown-linux-musl", "updawgd")
+        .unwrap();
+    assert_eq!(
+        d.url,
+        "https://pkg.updawg.net/bin/pool/0.1.0-20261002120000.gabcdef0/aarch64-unknown-linux-musl/updawgd"
+    );
+    assert_eq!(
+        d.size_bytes,
+        "aarch64-unknown-linux-musl updawgd".len() as u64
+    );
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(&manifest.signature)
+        .unwrap();
+    UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA512, &public)
+        .verify(&manifest.signing_bytes().unwrap(), &signature)
+        .unwrap();
+    assert!(
+        crate::manifest::build(
+            &Local(KeyPair::generate(KeySize::Rsa2048).unwrap()),
+            "nightly",
+            "1",
+            &dir,
+            "x"
+        )
+        .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
