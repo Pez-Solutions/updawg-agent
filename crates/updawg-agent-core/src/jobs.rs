@@ -338,14 +338,32 @@ impl Executor {
                 }
             }
         }
-        if let Err(error) = self.state.take_self_update() {
-            tracing::error!(job = %job.id, %error, "cannot clear the record of the self-update");
-        }
         log.finish().await;
         done.finished_at = Utc::now();
         note_done(&self.state, &job, &done);
-        if let Err(error) = self.reporter.complete(&job, &done).await {
-            tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the self-update went");
+        // Reported before the record is cleared, and retried until it is
+        // delivered or the job has expired. On the first real hosts a failed
+        // update's report went out while the host could not reach the
+        // gateway, the record was already gone, and the job read as running
+        // on the server until it expired. A restart in between retries too:
+        // the record is still there.
+        let mut wait = std::time::Duration::from_secs(15);
+        loop {
+            match self.reporter.complete(&job, &done).await {
+                Ok(()) => break,
+                Err(error) if Utc::now() < job.expires_at => {
+                    tracing::warn!(job = %job.id, error = format!("{error:#}"), retry_in_s = wait.as_secs(), "could not report how the self-update went; trying again");
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(std::time::Duration::from_secs(600));
+                }
+                Err(error) => {
+                    tracing::error!(job = %job.id, error = format!("{error:#}"), "could not report how the self-update went, and the job has expired");
+                    break;
+                }
+            }
+        }
+        if let Err(error) = self.state.take_self_update() {
+            tracing::error!(job = %job.id, %error, "cannot clear the record of the self-update");
         }
         if let Some(inventory) = &self.inventory
             && let Err(error) = inventory.collect_and_upload().await
