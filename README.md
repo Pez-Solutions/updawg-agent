@@ -386,3 +386,24 @@ Two behaviours exist because of how this fails at scale:
 journal it sets `JOURNAL_STREAM`, and the agent then drops its own timestamps
 and colour — journald adds a timestamp itself, and printing a second one wrapped
 in escape codes helps nobody.
+
+## Versions and releases
+
+Every build of `main` is `<version>-<UTC time>.g<commit>`, e.g.
+`0.2.0-20261002200000.gabcdef0`. That string is the package version, what
+`updawgctl --version` prints, and the `agent_version` the server sees.
+`<version>` is `[workspace.package] version` in `Cargo.toml`. The rest comes
+from `packaging/release-id.sh`, so the binaries and the packages can't
+disagree.
+
+- **Bump** with `sh packaging/bump-version.sh minor` (or `major`, `patch`) in a
+  pull request. Minor for a feature, patch for a fix. `updawg-protocol` has its
+  own version, which changes with the wire format.
+- **Release** by promoting a beta build to stable (the Promote workflow, by
+  build id). Tags are optional. A `v*` tag must match `Cargo.toml`, or the
+  build fails.
+- **Never backwards.** CI refuses a pull request that lowers the version, and
+  publishing refuses a build that sorts below what beta holds, compared as
+  dpkg compares. A tag no longer gets package release `1`, because `0.2.0-1`
+  sorts below every earlier build of `0.2.0` and hosts would never upgrade to
+  it.

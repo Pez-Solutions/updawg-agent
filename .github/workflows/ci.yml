@@ -10,6 +10,27 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # The version only goes up (packaging/bump-version.sh). Lowered on main,
+  # every build after it would sort below the ones hosts already have.
+  version:
+    name: the version does not go backwards
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, copenhagen]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: compare with ${{ github.base_ref }}
+        run: |
+          version() { sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p'; }
+          HERE=$(version < Cargo.toml)
+          BASE=$(git show "origin/${{ github.base_ref }}:Cargo.toml" | version)
+          echo "this branch: $HERE; ${{ github.base_ref }}: $BASE"
+          if ! dpkg --compare-versions "$HERE" ge "$BASE"; then
+            echo "the version went from $BASE to $HERE; it only goes up (packaging/bump-version.sh)" >&2
+            exit 1
+          fi
+
   check:
     name: fmt, clippy, test
     runs-on: [self-hosted, copenhagen]

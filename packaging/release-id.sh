@@ -3,11 +3,10 @@
 # the .deb and .rpm names, and what the binaries report (UPDAWG_BUILD, see
 # crates/updawg-agent-core/build.rs). One place, so the two cannot disagree.
 #
-# A tag is release 1. Anything else is the commit's UTC time and hash, so
-# every build of main sorts after the one before it for apt and dnf alike.
+# Always the commit's UTC time and hash, tags included, so every build sorts
+# after the one before it for apt and dnf alike. A tag used to be release 1,
+# which sorts *below* every earlier build of the same version
+# (0.2.0-1 < 0.2.0-20261002…): a tagged release would have looked older than
+# the builds before it, and hosts would never have moved to it.
 set -eu
-if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
-  echo 1
-else
-  echo "$(TZ=UTC0 git log -1 --date=format-local:%Y%m%d%H%M%S --format=%cd).g$(git rev-parse --short=7 HEAD)"
-fi
+echo "$(TZ=UTC0 git log -1 --date=format-local:%Y%m%d%H%M%S --format=%cd).g$(git rev-parse --short=7 HEAD)"

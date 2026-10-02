@@ -1963,7 +1963,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updawg-agent-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "updawg-backends"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "updawg-collectors"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "thiserror",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "updawg-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "updawg-executor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "updawg-release-sign"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2066,7 +2066,7 @@ dependencies = [
 
 [[package]]
 name = "updawg-snapshots"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -2077,7 +2077,7 @@ dependencies = [
 
 [[package]]
 name = "updawgctl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2094,7 +2094,7 @@ dependencies = [
 
 [[package]]
 name = "updawgd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -197,14 +197,15 @@ jobs:
           echo "${NFPM_SHA256}  nfpm.tgz" | sha256sum -c -
           mkdir -p .nfpm && tar -xzf nfpm.tgz -C .nfpm nfpm
 
-      # A tag is its version; anything else the workspace version. The
-      # release is packaging/release-id.sh's.
+      # The version is Cargo.toml's, always: packaging/bump-version.sh moves
+      # it. A tag only marks a build, and has to agree with it. The release is
+      # packaging/release-id.sh's.
       - name: build
         run: |
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "the tag ${GITHUB_REF_NAME} is not v${VERSION}, the version in Cargo.toml" >&2
+            exit 1
           fi
           RELEASE=$(sh packaging/release-id.sh)
           # The binaries say the same, or a self-update could never tell it
@@ -326,6 +327,19 @@ jobs:
 
       - id: tools
         uses: ./.github/actions/pkg-tools
+
+      # Never backwards: a build that sorts below what beta holds would be
+      # one apt and dnf never install, and a manifest that moves agents back.
+      # Compared as dpkg compares, which is how the hosts will.
+      - name: newer than beta
+        run: |
+          NEW=$(ls out/*_amd64.deb | sed 's/.*updawg-agent_\(.*\)_amd64\.deb/\1/')
+          CURRENT=$(curl -fsS https://pkg.updawg.net/bin/beta.json | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' || true)
+          echo "this build: $NEW; beta: ${CURRENT:-nothing yet}"
+          if [ -n "$CURRENT" ] && ! dpkg --compare-versions "$NEW" gt "$CURRENT"; then
+            echo "$NEW does not sort after $CURRENT, which beta holds: was the version lowered?" >&2
+            exit 1
+          fi
 
       - name: publish
         env:
