@@ -247,6 +247,33 @@ pub async fn offered(method: &Method) -> Result<Vec<String>, String> {
     })
 }
 
+/// `apt-get update` / `dnf makecache`: the package lists as the
+/// repositories have them now.
+///
+/// # Errors
+/// When the package manager cannot be run or says it failed.
+pub async fn refresh(method: &Method) -> Result<(), String> {
+    let (tool, args): (&str, &[&str]) = match method {
+        Method::Apt => ("apt-get", &["update", "-qq"]),
+        Method::Dnf => ("dnf", &["-y", "-q", "makecache"]),
+        Method::Binary { .. } => return Ok(()),
+    };
+    let out = tokio::process::Command::new(tool)
+        .args(args)
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        .output()
+        .await
+        .map_err(|e| format!("running {tool}: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "refreshing the package lists: {tool} said {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 /// `apt-cache madison`: `updawg-agent | 0.1.0-… | https://… beta/main amd64 Packages`.
 #[must_use]
 pub fn parse_madison(text: &str) -> Vec<String> {
@@ -313,6 +340,10 @@ pub async fn start(
 
     match &method {
         Method::Apt | Method::Dnf => {
+            // The lists first: a build promoted an hour ago is not in lists
+            // read yesterday, and the update would be refused for no reason
+            // but the host's cache. Found on the first real hosts.
+            refresh(&method).await?;
             let offered = offered(&method).await?;
             if !offered.iter().any(|v| v == to) {
                 return Err(format!(
