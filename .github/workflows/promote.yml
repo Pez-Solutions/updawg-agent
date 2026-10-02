@@ -69,6 +69,7 @@ jobs:
             echo "::warning::$RELEASE has no binaries in bin/pool (built before DAWG-46); bin/stable.json is unchanged"
             exit 0
           fi
-          mkdir bin
-          gcloud storage cp -r "gs://$BUCKET/bin/pool/$RELEASE/*" bin/
-          sh packaging/repo/publish-bin.sh stable "$RELEASE" bin
+          # Not `bin/`: that is the binaries' source in this repository.
+          mkdir release-bin
+          gcloud storage cp -r "gs://$BUCKET/bin/pool/$RELEASE/*" release-bin/
+          sh packaging/repo/publish-bin.sh stable "$RELEASE" release-bin

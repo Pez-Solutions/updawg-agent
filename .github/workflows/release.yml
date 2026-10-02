@@ -338,10 +338,11 @@ jobs:
         env:
           SIGN: ${{ steps.tools.outputs.sign }}
         run: |
-          mkdir -p bin/x86_64-unknown-linux-musl bin/aarch64-unknown-linux-musl
-          cp dist/updawgd dist/updawgctl bin/x86_64-unknown-linux-musl/
-          cp dist/aarch64/updawgd dist/aarch64/updawgctl bin/aarch64-unknown-linux-musl/
-          chmod 0755 bin/*/*
-          VERSION=$(bin/x86_64-unknown-linux-musl/updawgctl --version | awk '{print $2}')
-          sh packaging/repo/publish-bin.sh beta "$VERSION" bin
+          # Not `bin/`: that is the binaries' source in this repository.
+          mkdir -p release-bin/x86_64-unknown-linux-musl release-bin/aarch64-unknown-linux-musl
+          cp dist/updawgd dist/updawgctl release-bin/x86_64-unknown-linux-musl/
+          cp dist/aarch64/updawgd dist/aarch64/updawgctl release-bin/aarch64-unknown-linux-musl/
+          chmod 0755 release-bin/*/*
+          VERSION=$(release-bin/x86_64-unknown-linux-musl/updawgctl --version | awk '{print $2}')
+          sh packaging/repo/publish-bin.sh beta "$VERSION" release-bin
 
