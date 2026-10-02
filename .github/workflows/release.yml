@@ -48,8 +48,11 @@ jobs:
 
       - name: build
         run: |
+          # The version it reports is the packages' (DAWG-46).
+          export UPDAWG_BUILD=$(sh packaging/release-id.sh)
           cargo build --release --target x86_64-unknown-linux-musl \
             --bin updawgd --bin updawgctl
+          ./target/x86_64-unknown-linux-musl/release/updawgctl --version | grep -F -- "-$UPDAWG_BUILD"
 
       - name: collect
         run: |
@@ -99,6 +102,8 @@ jobs:
       # aws-lc-rs needs; Docker is on the runners.
       - name: build
         run: |
+          # Through Cross.toml's passthrough into the container.
+          export UPDAWG_BUILD=$(sh packaging/release-id.sh)
           cross build --release --target aarch64-unknown-linux-musl \
             --bin updawgd --bin updawgctl
 
@@ -192,17 +197,22 @@ jobs:
           echo "${NFPM_SHA256}  nfpm.tgz" | sha256sum -c -
           mkdir -p .nfpm && tar -xzf nfpm.tgz -C .nfpm nfpm
 
-      # A tag is its version, release 1. Anything else is the workspace
-      # version, released as the commit's UTC time and hash, so every build
-      # of main sorts after the one before it for apt and dnf alike.
+      # A tag is its version; anything else the workspace version. The
+      # release is packaging/release-id.sh's.
       - name: build
         run: |
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            VERSION="${GITHUB_REF_NAME#v}"; RELEASE=1
+            VERSION="${GITHUB_REF_NAME#v}"
           else
             VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
-            RELEASE="$(TZ=UTC0 git log -1 --date=format-local:%Y%m%d%H%M%S --format=%cd).g$(git rev-parse --short=7 HEAD)"
           fi
+          RELEASE=$(sh packaging/release-id.sh)
+          # The binaries say the same, or a self-update could never tell it
+          # had arrived (DAWG-46).
+          # Artifacts lose the executable bit on the way.
+          chmod +x bin/amd64/updawgctl
+          bin/amd64/updawgctl --version 2>/dev/null | grep -F -- "${VERSION}-${RELEASE}" ||
+            { file bin/amd64/updawgctl; echo "the binaries do not report ${VERSION}-${RELEASE}" >&2; exit 1; }
           echo "version ${VERSION}, release ${RELEASE}"
           export VERSION
           stage() {

@@ -42,11 +42,8 @@ fn only_the_agents_own_snapshots_of_this_volume_are_listed() {
     assert_eq!(ours[0].id, "lvm:testvg/updawg_job_x");
     assert_eq!(ours[0].job, "job_x");
     // Of another volume: not this one's.
-    assert!(
-        parse_ours(&fixture("lvs-ours.json"), "home")
-            .unwrap()
-            .is_empty()
-    );
+    let home = parse_ours(&fixture("lvs-ours.json"), "home").unwrap();
+    assert!(matches!(home.as_slice(), []), "{home:?}");
 }
 
 /// 1 GiB, 6.32% used.

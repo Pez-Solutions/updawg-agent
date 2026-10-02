@@ -741,6 +741,9 @@ impl crate::checkin::JobSink for Executor {
             {
                 tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not upload the inventory after the job");
             }
+            // Reported first, then restarted: an install that included the
+            // agent itself left the old binary running (see `crate::restart`).
+            crate::restart::restart_if_replaced();
         });
     }
 }

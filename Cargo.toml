@@ -80,6 +80,11 @@ todo = "allow"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# New in Rust 1.99's clippy, which the runners install as stable: it wants
+# `assert_eq!(x, [])` for every `assert!(x.is_empty())`. The tests here assert
+# emptiness on purpose, mostly with a message saying why; the rewrite buys
+# nothing and touches dozens of them.
+assert_is_empty = "allow"
 
 [profile.release]
 strip = true
