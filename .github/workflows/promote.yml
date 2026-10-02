@@ -73,3 +73,16 @@ jobs:
           mkdir release-bin
           gcloud storage cp -r "gs://$BUCKET/bin/pool/$RELEASE/*" release-bin/
           sh packaging/repo/publish-bin.sh stable "$RELEASE" release-bin
+
+      # get.updawg.net follows stable (DAWG-44): the installer and the
+      # promoted build's binaries, for anybody installing by hand. Served by
+      # Caddy from this bucket's get/ (updawg-infra).
+      - name: get.updawg.net
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          if [ ! -d release-bin ]; then
+            echo "::warning::$RELEASE has no binaries in bin/pool; get.updawg.net is unchanged"
+            exit 0
+          fi
+          sh packaging/repo/publish-get.sh "$RELEASE" release-bin
