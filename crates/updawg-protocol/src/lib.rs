@@ -95,7 +95,8 @@ pub mod sign;
 
 pub use cert::{CertRenewRequest, CertRenewResponse};
 pub use checkin::{
-    CheckinRequest, CheckinResponse, HostMetrics, HostStateReport, RebootRequired, SnapshotSupport,
+    AgentInstall, CheckinRequest, CheckinResponse, HostMetrics, HostStateReport, InstallMethod,
+    RebootRequired, SnapshotSupport,
 };
 pub use config::{AgentMode, LocalPolicy, ServerConfig};
 pub use endorsement::{EndorsedKey, Endorsement, EndorsementStatement};

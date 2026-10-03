@@ -30,12 +30,12 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use updawg_protocol::{
-    AdvisoryHint, AgentMode, AvailableUpdate, CertRenewRequest, CheckStatus, CheckinRequest,
-    CloudFacts, Ecosystem, EnrollRequest, Frozen, FrozenKind, HealthCheckReport, HostFacts,
-    HostMetrics, HostStateReport, InstalledPackage, InventoryKind, InventoryUpload, JobAck,
-    JobComplete, JobId, JobKind, JobStatus, LocalPolicy, LogLine, LogStream, PackageChange,
-    PackageDelta, PendingRemoval, PreflightCheck, RebootRequired, RemovedPackage, Replacement,
-    Repository, SnapshotSupport, SourcePackage, SystemFacts,
+    AdvisoryHint, AgentInstall, AgentMode, AvailableUpdate, CertRenewRequest, CheckStatus,
+    CheckinRequest, CloudFacts, Ecosystem, EnrollRequest, Frozen, FrozenKind, HealthCheckReport,
+    HostFacts, HostMetrics, HostStateReport, InstallMethod, InstalledPackage, InventoryKind,
+    InventoryUpload, JobAck, JobComplete, JobId, JobKind, JobStatus, LocalPolicy, LogLine,
+    LogStream, PackageChange, PackageDelta, PendingRemoval, PreflightCheck, RebootRequired,
+    RemovedPackage, Replacement, Repository, SnapshotSupport, SourcePackage, SystemFacts,
 };
 
 const FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/collected-fields.txt");
@@ -121,6 +121,11 @@ fn checkin() -> CheckinRequest {
         snapshots: Some(SnapshotSupport {
             provider: Some("zfs".into()),
             reason: Some("why not".into()),
+        }),
+        agent_version: Some("0.2.0-20261003083653.gdd21454".into()),
+        install: Some(AgentInstall {
+            method: InstallMethod::Apt,
+            channel: Some("stable".into()),
         }),
     }
 }

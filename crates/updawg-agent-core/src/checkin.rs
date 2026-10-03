@@ -104,6 +104,9 @@ pub struct GatewayCheckIn {
     policy: LocalPolicy,
     /// Whether this host can take snapshots, detected at start (DAWG-115).
     snapshots: Option<updawg_protocol::SnapshotSupport>,
+    /// How the agent was installed and the channel it follows, detected at
+    /// start (protocol 0.9).
+    install: Option<updawg_protocol::AgentInstall>,
     /// The shortest a poll has survived before being cut off, if it ever has.
     ///
     /// Recorded rather than acted on: see the module docs. It is what turns
@@ -137,6 +140,7 @@ impl GatewayCheckIn {
             jobs,
             policy,
             snapshots: None,
+            install: None,
             observed_idle_limit: RwLock::new(None),
         }
     }
@@ -145,6 +149,13 @@ impl GatewayCheckIn {
     #[must_use]
     pub fn with_snapshots(mut self, snapshots: updawg_protocol::SnapshotSupport) -> Self {
         self.snapshots = Some(snapshots);
+        self
+    }
+
+    /// Report how this agent was installed on every check-in (protocol 0.9).
+    #[must_use]
+    pub fn with_install(mut self, install: updawg_protocol::AgentInstall) -> Self {
+        self.install = Some(install);
         self
     }
 
@@ -259,6 +270,10 @@ impl GatewayCheckIn {
             // re-enrolled (DAWG-223).
             local_policy: Some(self.policy.clone()),
             snapshots: self.snapshots.clone(),
+            // Every check-in too, so an upgrade nobody proposed (`apt
+            // upgrade` by hand) still reaches the hosts list.
+            agent_version: Some(crate::VERSION.to_owned()),
+            install: self.install.clone(),
         }
     }
 }

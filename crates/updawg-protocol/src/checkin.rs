@@ -91,6 +91,36 @@ pub struct SnapshotSupport {
     pub reason: Option<String>,
 }
 
+/// How the agent was installed, which decides how it updates (DAWG-46,
+/// protocol 0.9). Detected by the agent at start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentInstall {
+    pub method: InstallMethod,
+    /// The channel the host's package repository follows, as the repository
+    /// spells it (`stable`, `beta`). A package host can only move to builds
+    /// its own repository holds, so a stable host offered a beta build
+    /// refuses it. `None` for a binary install, which can take either, and
+    /// when the repository file could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallMethod {
+    /// The .deb from pkg.updawg.net, through apt.
+    Apt,
+    /// The .rpm from pkg.updawg.net, through dnf.
+    Dnf,
+    /// install.sh's binaries in /usr/local/bin, updated from the signed
+    /// manifest.
+    Binary,
+    /// A method this version does not know, from a newer agent, or an agent
+    /// installed some way it cannot update itself.
+    #[serde(other)]
+    Other,
+}
+
 /// Cheap state, small enough to send every time.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HostStateReport {
@@ -155,6 +185,20 @@ pub struct CheckinRequest {
     /// too old to say, which is not the same as a host that cannot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<SnapshotSupport>,
+    /// The agent build this host is running, as its packages name it
+    /// (`0.2.0-20261003083653.gdd21454`).
+    ///
+    /// Sent every check-in so the server's idea of a host's version cannot go
+    /// stale: before this it learnt the version at enrollment, certificate
+    /// renewal and a reported self-update, and missed any upgrade done by hand
+    /// (`apt upgrade`, a rerun of the installer). `None` means an agent too old
+    /// to say; the server keeps what it last knew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    /// How this agent was installed and which channel it follows (protocol
+    /// 0.9). `None` from an agent too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<AgentInstall>,
 }
 
 impl CheckinRequest {
@@ -215,6 +259,8 @@ mod tests {
             max_hold_s: None,
             local_policy: None,
             snapshots: None,
+            agent_version: None,
+            install: None,
         }
     }
 

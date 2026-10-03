@@ -105,6 +105,85 @@ pub fn method_for(exe: &Path, packaged: bool, dpkg: bool) -> Result<Method, Stri
     }
 }
 
+/// Where install.sh writes the package repository (`packaging/install.sh`).
+pub const APT_SOURCE: &str = "/etc/apt/sources.list.d/updawg.list";
+/// The dnf equivalent of [`APT_SOURCE`].
+pub const DNF_REPO: &str = "/etc/yum.repos.d/updawg.repo";
+
+/// How this agent was installed, for the check-in (protocol 0.9): the method
+/// and, for a package install, the channel its repository follows.
+///
+/// Run once at start, like snapshot detection. An agent installed some way it
+/// cannot update itself still checks in, as `other`.
+#[must_use]
+pub fn install() -> updawg_protocol::AgentInstall {
+    use updawg_protocol::{AgentInstall, InstallMethod};
+    let read = |path: &str| std::fs::read_to_string(path).ok();
+    match detect() {
+        Ok(Method::Apt) => AgentInstall {
+            method: InstallMethod::Apt,
+            channel: read(APT_SOURCE).as_deref().and_then(apt_channel),
+        },
+        Ok(Method::Dnf) => AgentInstall {
+            method: InstallMethod::Dnf,
+            channel: read(DNF_REPO).as_deref().and_then(dnf_channel),
+        },
+        Ok(Method::Binary { .. }) => AgentInstall {
+            method: InstallMethod::Binary,
+            channel: None,
+        },
+        Err(_) => AgentInstall {
+            method: InstallMethod::Other,
+            channel: None,
+        },
+    }
+}
+
+/// The suite of the `…/apt` line in install.sh's source file:
+/// `deb [signed-by=/etc/apt/keyrings/updawg.asc] https://pkg.updawg.net/apt stable main`.
+#[must_use]
+pub fn apt_channel(list: &str) -> Option<String> {
+    list.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("deb ") || line.starts_with("deb\t"))
+        .find_map(|line| {
+            let mut words = line.split_whitespace().skip(1);
+            let uri = words.find(|w| !w.starts_with('['))?;
+            uri.trim_end_matches('/')
+                .ends_with("/apt")
+                .then(|| words.next())
+                .flatten()
+                .and_then(channel_name)
+        })
+}
+
+/// The last path segment of the repository's `baseurl`:
+/// `baseurl=https://pkg.updawg.net/rpm/stable`.
+#[must_use]
+pub fn dnf_channel(repo: &str) -> Option<String> {
+    repo.lines()
+        .filter_map(|line| line.trim().strip_prefix("baseurl"))
+        .filter_map(|rest| rest.trim_start().strip_prefix('='))
+        .find_map(|url| {
+            url.trim()
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .and_then(channel_name)
+        })
+}
+
+/// A channel name as a repository could spell one, or nothing: what goes on
+/// the wire is read from a file anyone with root can edit.
+fn channel_name(word: &str) -> Option<String> {
+    (!word.is_empty()
+        && word.len() <= 32
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+    .then(|| word.to_owned())
+}
+
 /// Look at the running agent and decide.
 ///
 /// # Errors

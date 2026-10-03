@@ -229,3 +229,39 @@ fn a_pending_update_survives_the_restart_it_is_for() {
     assert!(state.self_update_outcome().unwrap().is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_apt_channel_is_the_suite_of_the_updawg_line() {
+    let list = "# written by install.sh\n\
+                deb [signed-by=/etc/apt/keyrings/updawg.asc] https://pkg.updawg.net/apt beta main\n";
+    assert_eq!(apt_channel(list).as_deref(), Some("beta"));
+    assert_eq!(
+        apt_channel("deb https://pkg.updawg.net/apt/ stable main").as_deref(),
+        Some("stable")
+    );
+    assert_eq!(
+        apt_channel("deb http://deb.debian.org/debian trixie main"),
+        None
+    );
+    assert_eq!(
+        apt_channel("# deb https://pkg.updawg.net/apt beta main"),
+        None
+    );
+    assert_eq!(apt_channel(""), None);
+}
+
+#[test]
+fn the_dnf_channel_is_the_last_segment_of_baseurl() {
+    let repo =
+        "[updawg]\nname=Updawg (stable)\nbaseurl=https://pkg.updawg.net/rpm/stable\nenabled=1\n";
+    assert_eq!(dnf_channel(repo).as_deref(), Some("stable"));
+    assert_eq!(
+        dnf_channel("baseurl = https://pkg.updawg.net/rpm/beta/").as_deref(),
+        Some("beta")
+    );
+    assert_eq!(
+        dnf_channel("baseurl=https://pkg.updawg.net/rpm/$basearch?x"),
+        None
+    );
+    assert_eq!(dnf_channel("[updawg]\n"), None);
+}

@@ -1,6 +1,9 @@
 cert_renew.agent_version
 cert_renew.csr
+checkin.agent_version
 checkin.boot_id
+checkin.install.channel
+checkin.install.method
 checkin.inventory_hash
 checkin.local_policy.mode
 checkin.local_policy.permitted_job_kinds[]

@@ -344,7 +344,10 @@ fn build_checkin(
             // can narrow against it rather than guess (DAWG-223).
             config.local_policy(),
         )
-        .with_snapshots(support),
+        .with_snapshots(support)
+        // Once, at start: it asks dpkg or rpm who owns this binary, and the
+        // agent restarts whenever a package or install.sh replaces it.
+        .with_install(updawg_agent_core::self_update::install()),
     ))
 }
 

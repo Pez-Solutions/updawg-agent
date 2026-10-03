@@ -385,6 +385,8 @@ pub(crate) fn checkin_request() -> CheckinRequest {
         max_hold_s: None,
         local_policy: None,
         snapshots: None,
+        agent_version: None,
+        install: None,
     }
 }
 
