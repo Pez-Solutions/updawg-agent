@@ -121,9 +121,13 @@ async fn main() {
                 )
                 .await;
             let _ = stream.shutdown().await;
-            let snapshot = serde_json::to_vec_pretty(&*results.lock().unwrap()).unwrap();
+            // Under the lock, write and rename both: with several hosts at
+            // once, two tasks sharing the temporary file had one rename it
+            // away from the other, whose rename then panicked — and with
+            // panic = "abort" that took the whole gateway down.
+            let results = results.lock().unwrap();
             let tmp = dir.join("results.json.tmp");
-            std::fs::write(&tmp, snapshot).unwrap();
+            std::fs::write(&tmp, serde_json::to_vec_pretty(&*results).unwrap()).unwrap();
             std::fs::rename(tmp, dir.join("results.json")).unwrap();
         });
     }

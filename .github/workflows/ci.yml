@@ -162,10 +162,10 @@ jobs:
   # (crates/updawg-agent-core/examples/fake_gateway.rs). Built once with
   # insecure-extra-root, which only this build has, so the agent trusts the
   # fake's CA.
-  distro-build:
-    name: build for the distro matrix
+  distros:
+    name: agent on the distro matrix
     runs-on: [self-hosted, copenhagen]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -180,53 +180,31 @@ jobs:
         with:
           key: distro-matrix
 
+      # Not into bin/: that is where the updawgd and updawgctl crates live.
       - name: build
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
             -p updawgd -p updawgctl \
             --features updawgd/insecure-extra-root,updawgctl/insecure-extra-root
           cargo build --release -p updawg-agent-core --example fake_gateway
-          mkdir -p out
-          cp target/x86_64-unknown-linux-musl/release/updawgd target/x86_64-unknown-linux-musl/release/updawgctl out/
-          cp target/release/examples/fake_gateway out/
+          mkdir -p mbin
+          cp target/x86_64-unknown-linux-musl/release/updawgd target/x86_64-unknown-linux-musl/release/updawgctl mbin/
+          cp target/release/examples/fake_gateway mbin/
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: distro-matrix-bin
-          path: out/
-          retention-days: 1
-
-  distros:
-    name: agent on ${{ matrix.image }}
-    needs: distro-build
-    runs-on: [self-hosted, copenhagen]
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        include:
-          - { image: "debian:12", id: debian }
-          - { image: "debian:13", id: debian }
-          - { image: "ubuntu:20.04", id: ubuntu }
-          - { image: "ubuntu:22.04", id: ubuntu }
-          - { image: "ubuntu:24.04", id: ubuntu }
-          - { image: "rockylinux/rockylinux:8", id: rocky }
-          - { image: "rockylinux/rockylinux:9", id: rocky }
-          - { image: "almalinux:8", id: almalinux }
-          - { image: "almalinux:9", id: almalinux }
-          - { image: "oraclelinux:8", id: ol }
-          - { image: "oraclelinux:9", id: ol }
-          - { image: "redhat/ubi9", id: rhel }
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: distro-matrix-bin
-          # Not bin/: that is where the updawgd and updawgctl crates live, and
-          # a file cannot be unpacked over a directory of the same name.
-          path: mbin/
-
+      # All of them at once, in one job: twelve jobs of half a minute each
+      # held twelve runner slots and starved main's release jobs.
       - name: enroll, check in, upload an inventory
-        run: sh .github/distros/run.sh "${{ matrix.image }}" "${{ matrix.id }}"
+        run: |
+          sh .github/distros/run.sh \
+            debian:12 debian \
+            debian:13 debian \
+            ubuntu:20.04 ubuntu \
+            ubuntu:22.04 ubuntu \
+            ubuntu:24.04 ubuntu \
+            rockylinux/rockylinux:8 rocky \
+            rockylinux/rockylinux:9 rocky \
+            almalinux:8 almalinux \
+            almalinux:9 almalinux \
+            oraclelinux:8 ol \
+            oraclelinux:9 ol \
+            redhat/ubi9 rhel

@@ -253,20 +253,10 @@ jobs:
           retention-days: 1
 
   packages-test:
-    name: packages on ${{ matrix.image }}
+    name: packages on the distro matrix
     needs: packages
     runs-on: [self-hosted, copenhagen]
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - debian:12
-          - debian:13
-          - ubuntu:22.04
-          - ubuntu:24.04
-          - rockylinux/rockylinux:9
-          - almalinux:8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -280,14 +270,32 @@ jobs:
           name: packages-next
           path: next/
 
+      # Every image at once, in one job: a job per image held a runner slot
+      # each, and with PRs queued that is how this run lost jobs ("not
+      # acquired by Runner") and never published.
       - name: install, upgrade, remove
         run: |
-          case "${{ matrix.image }}" in
-            debian* | ubuntu*) old=$(ls out/*_amd64.deb); new=$(ls next/*_amd64.deb) ;;
-            *) old=$(ls out/*.x86_64.rpm); new=$(ls next/*.x86_64.rpm) ;;
-          esac
-          docker run --rm -v "$PWD:/w" -w /w "${{ matrix.image }}" \
-            sh packaging/nfpm/test.sh "$old" "$new"
+          deb_old=$(ls out/*_amd64.deb) deb_new=$(ls next/*_amd64.deb)
+          rpm_old=$(ls out/*.x86_64.rpm) rpm_new=$(ls next/*.x86_64.rpm)
+          mkdir -p logs
+          pids=
+          for image in debian:12 debian:13 ubuntu:22.04 ubuntu:24.04 rockylinux/rockylinux:9 almalinux:8; do
+            case "$image" in
+              debian* | ubuntu*) old=$deb_old new=$deb_new ;;
+              *) old=$rpm_old new=$rpm_new ;;
+            esac
+            log=logs/$(echo "$image" | tr '/:' '__').log
+            ( docker run --rm -v "$PWD:/w" -w /w "$image" sh packaging/nfpm/test.sh "$old" "$new" \
+                > "$log" 2>&1 && echo ok >> "$log.status" || echo failed >> "$log.status" ) &
+            pids="$pids $!"
+          done
+          wait $pids
+          failed=
+          for log in logs/*.log; do
+            echo "::group::$log"; cat "$log"; echo "::endgroup::"
+            [ "$(cat "$log.status")" = ok ] || failed="$failed $log"
+          done
+          [ -z "$failed" ] || { echo "FAILED:$failed"; exit 1; }
 
   # Every build of main, onto pkg.updawg.net's beta channel (DAWG-45), once
   # its packages installed, upgraded and removed cleanly everywhere above.
