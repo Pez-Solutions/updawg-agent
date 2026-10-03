@@ -2189,6 +2189,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             arch: "x86_64".into(),
             repo: None,
             source: None,
+            module: None,
         };
         *w.backend.packages.lock().unwrap() = vec![package("4.4")];
         w.executor
@@ -2622,6 +2623,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             arch: "amd64".into(),
             repo: None,
             source: None,
+            module: None,
         }
     }
 

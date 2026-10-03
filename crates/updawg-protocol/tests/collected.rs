@@ -162,6 +162,7 @@ fn inventory() -> InventoryUpload {
                 arch: "amd64".into(),
                 repo: Some("noble-updates".into()),
                 source: Some(source()),
+                module: Some("nodejs:20".into()),
             }],
             removed: vec![RemovedPackage {
                 name: "libssl3".into(),
@@ -207,6 +208,7 @@ fn inventory() -> InventoryUpload {
             pinned: "20240101T000000Z".into(),
             latest: Some("20240201T000000Z".into()),
         }),
+        modules_reported: true,
     }
 }
 

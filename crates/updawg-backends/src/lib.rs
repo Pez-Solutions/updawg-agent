@@ -127,6 +127,12 @@ pub trait LogSink: Send + Sync {
 pub trait PackageBackend: Send + Sync {
     fn ecosystem(&self) -> Ecosystem;
     async fn installed(&self) -> Result<Vec<InstalledPackage>>;
+    /// Whether [`installed`](PackageBackend::installed) says every package's
+    /// module stream, so that `module: None` means "not modular" rather than
+    /// "not asked" (DAWG-236). False by default: apt has no modules.
+    fn reports_modules(&self) -> bool {
+        false
+    }
     /// `apt-get update` / `dnf makecache`.
     async fn refresh_metadata(&self) -> Result<()>;
     /// Everything one look at the upgrade path found.

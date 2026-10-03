@@ -119,6 +119,30 @@ fn every_distribution_reports_its_installed_packages() {
 }
 
 #[test]
+fn a_modular_package_says_its_stream_and_nothing_else_does() {
+    // DAWG-236. rpm prints `(none)` for a package with no label, and the
+    // label's build version and context are dropped: an advisory is about a
+    // stream, never a build of it. A line from a format without the column at
+    // all (an older fixture) is not modular either.
+    let raw = "nodejs\t1:18.20.4-1.module_el9+123+abc\tx86_64\tnodejs:18:9040020240807145403:rhel9\n\
+               npm\t1:10.7.0-1.18.20.4.1.module_el9+123+abc\tx86_64\tnodejs:18:9040020240807145403:rhel9\n\
+               bash\t5.1.8-9.el9\tx86_64\t(none)\n\
+               tar\t2:1.34-6.el9\tx86_64\n";
+    let packages = parse_installed(raw);
+    let module = |name: &str| {
+        packages
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.module.clone())
+    };
+    assert_eq!(module("nodejs").as_deref(), Some("nodejs:18"));
+    assert_eq!(module("npm").as_deref(), Some("nodejs:18"));
+    assert_eq!(module("bash"), None);
+    assert_eq!(module("tar"), None);
+    assert_eq!(packages.len(), 4);
+}
+
+#[test]
 fn an_imported_signing_key_is_not_an_installed_package() {
     // rpm keeps imported GPG keys in the package database and `rpm -qa` lists
     // them, with `(none)` for the architecture. Reported as packages, the server

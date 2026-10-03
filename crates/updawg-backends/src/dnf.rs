@@ -108,6 +108,10 @@ impl PackageBackend for DnfBackend {
         Ok(parse_installed(&out))
     }
 
+    fn reports_modules(&self) -> bool {
+        true
+    }
+
     async fn refresh_metadata(&self) -> Result<()> {
         run("dnf", &["-q", "makecache"]).await.map(|_| ())
     }
@@ -328,7 +332,8 @@ impl PackageBackend for DnfBackend {
 /// `rpmvercmp` parses — and it is what `dnf`'s own `%{evr}` produces, so the
 /// installed version and the candidate are spelled the same way on both sides of
 /// a comparison.
-const RPM_QF: &str = "%{NAME}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\t%{ARCH}\n";
+const RPM_QF: &str =
+    "%{NAME}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\t%{ARCH}\t%{MODULARITYLABEL}\n";
 
 /// `dnf repoquery` format: name, `[epoch:]version-release`, architecture, repo.
 ///
@@ -340,7 +345,7 @@ const REPOQUERY_QF: &str = "%{name}\t%{evr}\t%{arch}\t%{reponame}";
 
 /* ------------------------------------------------------------- the parsers */
 
-/// `rpm -qa --qf` output: name, EVR, architecture.
+/// `rpm -qa --qf` output: name, EVR, architecture, modularity label.
 ///
 /// **`gpg-pubkey` is not a package.** rpm keeps imported signing keys in the same
 /// database and `rpm -qa` lists them, with `(none)` for the architecture. Sending
@@ -355,6 +360,7 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
             let name = fields.next()?;
             let version = fields.next()?;
             let arch = fields.next()?;
+            let label = fields.next().unwrap_or_default();
             if name.is_empty() || version.is_empty() || arch == "(none)" {
                 return None;
             }
@@ -370,9 +376,25 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
                 // rpm's SOURCERPM is a file name, not a name and version; not
                 // needed until the RHEL family has unfixed advisories too.
                 source: None,
+                module: module_stream(label),
             })
         })
         .collect()
+}
+
+/// `name:stream` from rpm's `MODULARITYLABEL`, `name:stream:version:context`
+/// (DAWG-236). The build version and context say which build of the stream a
+/// package is, which no advisory is about. `(none)` — rpm's word for a tag a
+/// package does not have — and anything without a stream are not modular.
+fn module_stream(label: &str) -> Option<String> {
+    let mut parts = label.split(':');
+    let (Some(name), Some(stream)) = (parts.next(), parts.next()) else {
+        return None;
+    };
+    if name.is_empty() || stream.is_empty() || name == "(none)" {
+        return None;
+    }
+    Some(format!("{name}:{stream}"))
 }
 
 /// `dnf repoquery --upgrades --latest-limit=1 --qf` output, joined to what is

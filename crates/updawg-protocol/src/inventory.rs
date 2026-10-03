@@ -53,6 +53,21 @@ pub struct InstalledPackage {
     /// alone cannot be mapped back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourcePackage>,
+    /// The module stream it was installed from, as `name:stream` — `nodejs:20`
+    /// (DAWG-236, protocol 0.10). rpm's `MODULARITYLABEL` without its build
+    /// version and context, which say which build of the stream and nothing
+    /// an advisory is about.
+    ///
+    /// On the RHEL family a modular package ships once per stream, so one
+    /// advisory can fix `nodejs` at 18.20.4 and at 20.17.0 at once. Which of
+    /// the two applies to a host is the stream its package came from, and
+    /// nothing in the name or version says so.
+    ///
+    /// `None` for a package that is not modular, but only when
+    /// [`InventoryUpload::modules_reported`] says the agent looked: from an
+    /// older agent, or from apt, it means nobody asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
 }
 
 /// A source package, by name and version (DAWG-212).
@@ -285,6 +300,13 @@ pub struct InventoryUpload {
     /// and from agents before 0.8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen: Option<Frozen>,
+    /// Every package in this upload says its module stream, so one with
+    /// [`InstalledPackage::module`] `None` is not modular (DAWG-236, protocol
+    /// 0.10). False from apt hosts, which have no modules, and from agents
+    /// before 0.10, whose `None` means "not asked" — the server has to tell
+    /// those apart, because the first is a fact and the second is not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub modules_reported: bool,
 }
 
 /// What pins a host's package sources in time (DAWG-233).
@@ -362,6 +384,7 @@ mod tests {
             held_packages: vec![],
             removals: vec![],
             frozen: None,
+            modules_reported: false,
         }
     }
 

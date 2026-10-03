@@ -58,7 +58,7 @@ dnf -q $DNFARGS makecache >/dev/null 2>&1
 echo "===OS_RELEASE==="
 cat /etc/os-release
 echo "===RPM_QA==="
-rpm -qa --qf '%{NAME}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\t%{ARCH}\n'
+rpm -qa --qf '%{NAME}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\t%{ARCH}\t%{MODULARITYLABEL}\n'
 echo "===UPGRADES==="
 dnf -q $DNFARGS repoquery --upgrades --latest-limit=1 --qf '%{name}\t%{evr}\t%{arch}\t%{reponame}' 2>/dev/null
 echo "===CHECK_UPDATE==="
@@ -122,7 +122,7 @@ createrepo_c -q /tmp/repo
 printf '[local]\nname=local\nbaseurl=file:///tmp/repo\nenabled=1\ngpgcheck=0\n' > /etc/yum.repos.d/local.repo
 dnf -q makecache >/dev/null 2>&1
 echo "===RPM_QA==="
-rpm -qa --qf '%{NAME}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\t%{ARCH}\n'
+rpm -qa --qf '%{NAME}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\t%{ARCH}\t%{MODULARITYLABEL}\n'
 echo "===UPGRADES==="
 dnf -q repoquery --upgrades --latest-limit=1 --qf '%{name}\t%{evr}\t%{arch}\t%{reponame}' 2>/dev/null
 echo "===CHECK_UPDATE_OBSOLETES==="

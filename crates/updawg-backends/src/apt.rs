@@ -273,6 +273,8 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
                 // available. Left absent rather than guessed.
                 repo: None,
                 source,
+                // apt has no modules.
+                module: None,
             })
         })
         .collect()

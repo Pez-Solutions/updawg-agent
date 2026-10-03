@@ -263,6 +263,11 @@ host as `updawg_protocol::public_url` makes it: `http`/`https` only, with any
 URL's **path** cannot be told from a directory name and is sent as it is.
 Distribution repositories send no URL.
 
+On the RHEL family an installed package also says the module stream it came
+from, as `name:stream` (protocol 0.10, DAWG-236): rpm's `MODULARITYLABEL`
+without its build version and context. One advisory can fix `nodejs` at two
+versions, one per stream, and the stream is what says which applies.
+
 ### "I could not tell" is a third answer
 
 Whether a reboot is pending is the most consequential thing collected, and the

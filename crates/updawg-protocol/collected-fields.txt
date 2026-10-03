@@ -51,7 +51,9 @@ inventory.frozen.latest
 inventory.frozen.pinned
 inventory.hash
 inventory.held_packages[]
+inventory.modules_reported
 inventory.packages.added[].arch
+inventory.packages.added[].module
 inventory.packages.added[].name
 inventory.packages.added[].repo
 inventory.packages.added[].source.name

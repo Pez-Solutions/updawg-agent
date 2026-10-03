@@ -594,6 +594,7 @@ mod tests {
             arch: "amd64".into(),
             repo: None,
             source: None,
+            module: None,
         };
         let changed = changes(
             &[p("bash", "5.2"), p("libold", "1"), p("tzdata", "a")],

@@ -59,6 +59,9 @@ pub struct Collected {
     pub security: BTreeSet<String>,
     /// What pins the host's sources in time, if anything does (DAWG-233).
     pub frozen: Option<updawg_protocol::Frozen>,
+    /// Whether every package says its module stream (DAWG-236): the backend's
+    /// [`reports_modules`](PackageBackend::reports_modules).
+    pub modules_reported: bool,
 }
 
 impl Collected {
@@ -95,6 +98,7 @@ impl Collected {
                 tracing::warn!(error = %e, "could not tell whether the package sources are pinned");
                 None
             }),
+            modules_reported: backend.reports_modules(),
         })
     }
 
@@ -199,6 +203,10 @@ impl Collected {
             // Current state too: a pin is lifted by editing a file, which no
             // package delta would show.
             frozen: self.frozen.clone(),
+            // A module is not part of a package's identity, so a delta never
+            // resends a package to say its stream. The server asks for a full
+            // inventory the first time this is true for a host.
+            modules_reported: self.modules_reported,
         }
     }
 }

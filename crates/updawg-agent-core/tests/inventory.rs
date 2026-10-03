@@ -42,6 +42,7 @@ fn pkg(name: &str, version: &str) -> InstalledPackage {
         arch: "amd64".into(),
         repo: None,
         source: None,
+        module: None,
     }
 }
 
@@ -67,6 +68,7 @@ fn collected(packages: Vec<InstalledPackage>) -> Collected {
         repositories: vec![],
         held: vec![],
         frozen: None,
+        modules_reported: false,
     }
 }
 
@@ -128,6 +130,26 @@ fn the_hash_ignores_everything_except_packages() {
     }];
     a.held = vec!["linux-image-generic".into()];
     assert_eq!(a.hash(), b.hash());
+}
+
+#[test]
+fn a_module_stream_is_not_part_of_the_hash_and_the_upload_says_it_was_asked() {
+    // DAWG-236. A package's stream follows from its name and version, so the
+    // hash stays what it was and an agent that starts reporting streams does
+    // not make the whole fleet look changed. That is also why a delta cannot
+    // carry them, and why the upload says it asked: the server wants a full
+    // inventory the first time it does.
+    let mut modular = pkg("nodejs", "1:20.17.0-1.module_el9+456+def");
+    let plain = collected(vec![modular.clone()]);
+    modular.module = Some("nodejs:20".into());
+    let mut with_modules = collected(vec![modular]);
+    with_modules.modules_reported = true;
+    assert_eq!(plain.hash(), with_modules.hash());
+
+    let upload = with_modules.upload(Some(&snapshot(&plain)));
+    assert!(upload.modules_reported);
+    assert!(upload.packages.added.is_empty());
+    assert!(!plain.upload(None).modules_reported);
 }
 
 #[test]

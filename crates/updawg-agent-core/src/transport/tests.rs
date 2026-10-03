@@ -330,6 +330,7 @@ fn inventory_upload() -> updawg_protocol::InventoryUpload {
         facts: None,
         removals: vec![],
         frozen: None,
+        modules_reported: false,
         packages: updawg_protocol::PackageDelta {
             // Repetitive on purpose: a real package list is hundreds of similar
             // lines, which is the case zstd is best at, and a body that did not
@@ -341,6 +342,7 @@ fn inventory_upload() -> updawg_protocol::InventoryUpload {
                     arch: "amd64".into(),
                     repo: Some("noble-updates".into()),
                     source: None,
+                    module: None,
                 })
                 .collect(),
             removed: vec![],
