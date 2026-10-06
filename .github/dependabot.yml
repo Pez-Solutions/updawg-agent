@@ -1,0 +1,25 @@
+# Dependency updates (DAWG-28). Weekly and grouped, one pull request per
+# ecosystem, because CI runs on a handful of self-hosted runners and a PR per
+# package would queue behind every real change. Security updates are separate
+# and arrive as soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    groups:
+      cargo:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
