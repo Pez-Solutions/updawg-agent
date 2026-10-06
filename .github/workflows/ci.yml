@@ -17,7 +17,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, copenhagen]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: compare with ${{ github.base_ref }}
@@ -35,7 +35,7 @@ jobs:
     name: fmt, clippy, test
     runs-on: [self-hosted, copenhagen]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: |
@@ -109,7 +109,7 @@ jobs:
     name: install.sh
     runs-on: [self-hosted, copenhagen]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shellcheck
         run: shellcheck -s sh packaging/install.sh
       - name: short enough to read before running
@@ -167,7 +167,7 @@ jobs:
     runs-on: [self-hosted, copenhagen]
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust and musl
         run: |

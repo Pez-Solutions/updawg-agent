@@ -31,7 +31,7 @@ jobs:
     runs-on: [self-hosted, copenhagen]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # musl, so one static binary runs on every supported distribution — CI
       # checks that it compiles; this is the only place it is linked.
@@ -63,7 +63,7 @@ jobs:
           done
           file out/updawgd | tee /dev/stderr | grep -Eq 'x86-64.*(statically linked|static-pie linked)'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bin-x86_64
           path: out/
@@ -80,7 +80,7 @@ jobs:
       # people's servers.
       CROSS_SHA256: a486cefa6cb486971b97be321ea9dfc2e90c1979550295314a368f53fab6d588
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust and cross
         run: |
@@ -121,7 +121,7 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" out
           file out/updawgd | tee /dev/stderr | grep -Eq 'ARM aarch64.*(statically linked|static-pie linked)'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bin-aarch64
           path: out/
@@ -134,14 +134,14 @@ jobs:
     runs-on: [self-hosted, copenhagen]
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bin-x86_64
           path: dist/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bin-aarch64
           path: dist/aarch64/
@@ -160,7 +160,7 @@ jobs:
           cat dist/SHA256SUMS
 
       # The name stays what updawg-infra's get role downloads.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: updawg-agent-linux-x86_64
           path: dist/
@@ -173,16 +173,16 @@ jobs:
     runs-on: [self-hosted, copenhagen]
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bin-x86_64
           path: bin/amd64/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bin-aarch64
           path: bin/arm64/
@@ -238,14 +238,14 @@ jobs:
           (cd out && sha256sum * > SHA256SUMS)
           ls -l out next
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: updawg-agent-packages
           path: out/
           if-no-files-found: error
           retention-days: 30
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages-next
           path: next/
@@ -258,14 +258,14 @@ jobs:
     runs-on: [self-hosted, copenhagen]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: updawg-agent-packages
           path: out/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages-next
           path: next/
@@ -319,16 +319,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: updawg-agent-packages
           path: out/
 
       # The same build's binaries, for self-update on hosts install.sh set up
       # (DAWG-46).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: updawg-agent-linux-x86_64
           path: dist/
