@@ -55,10 +55,10 @@ x509-parser = "0.18"
 serde_json = "1"
 # Inventory uploads. A full package list is 800-2,500 entries of repetitive
 # text, which is the case zstd is best at.
-zstd = "0.13"
+zstd = "0.14"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "fs", "signal", "sync"] }
-toml = "0.9"
+toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
