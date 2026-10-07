@@ -24,7 +24,10 @@ jobs:
   promote:
     name: promote ${{ inputs.release }} to stable
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, copenhagen]
+    # On the release runner group (DAWG-291): only this workflow on main may use
+    # it, so nothing a pull request runs can touch the machine that holds this
+    # job's credentials.
+    runs-on: [self-hosted, release]
     timeout-minutes: 20
     permissions:
       contents: read

@@ -26,9 +26,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Every job here runs on the release runner group on main (DAWG-291), not
+  # only `publish`: the builds make the artifacts `publish` signs, so a build
+  # on a runner pull requests also use could hand it something tampered with.
+  # Pull requests build on the shared runners and publish nothing.
   x86_64:
     name: x86_64-unknown-linux-musl
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -72,7 +76,7 @@ jobs:
 
   aarch64:
     name: aarch64-unknown-linux-musl
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
     timeout-minutes: 45
     env:
       CROSS_VERSION: v0.2.5
@@ -131,7 +135,7 @@ jobs:
   agent:
     name: assemble
     needs: [x86_64, aarch64]
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -170,7 +174,7 @@ jobs:
   packages:
     name: .deb and .rpm
     needs: [x86_64, aarch64]
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -255,7 +259,7 @@ jobs:
   packages-test:
     name: packages on the distro matrix
     needs: packages
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -308,7 +312,7 @@ jobs:
     name: publish to pkg.updawg.net (beta)
     needs: [packages, packages-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PKG_PUBLISH == 'true'
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
     timeout-minutes: 20
     # One publish at a time: each rebuilds a channel's indexes from its list,
     # and two interleaved would each drop the other's build.
