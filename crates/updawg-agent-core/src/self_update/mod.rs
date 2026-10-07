@@ -40,9 +40,14 @@ use std::time::Duration;
 use updawg_protocol::{Job, JobComplete, ReleaseChannel, ReleaseManifest};
 
 /// The release key's public half (PKCS#1 `RSAPublicKey`, DER): the Cloud KMS
-/// key `release-signing/packages` version 1, which also signs pkg.updawg.net.
-/// SHA-256 of this file: `c9101285632b1eafb8ec68862de7b2f4ced7779e86a590227cb8b7a15fec86af`;
-/// its modulus begins `8b4906e6`, as `updawg.asc`'s does.
+/// key `release-signing/packages` version 1 in **`updawg-prod`**, which also
+/// signs pkg.updawg.net. SHA-256 of this file:
+/// `05ac56cc6b856b5df464feacc66dc239dfc598f942af5577702a729c0081028c`; its
+/// modulus begins `cd5007d5`, as `updawg.asc`'s does.
+///
+/// Production's key since 2026-10-07 (DAWG-184). Agents built before then
+/// trust `updawg-dev`'s key (modulus `8b4906e6`) and cannot follow on their
+/// own: they are reinstalled from get.updawg.net.
 ///
 /// ⚠️ Compiled in, never configurable and never fetched: anything that could
 /// change it could ship an agent.

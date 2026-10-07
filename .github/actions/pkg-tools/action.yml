@@ -1,7 +1,8 @@
 # What publishing to pkg.updawg.net needs (DAWG-45): the tools that build apt
 # and dnf indexes, the signer, gcloud, and a credential for the one identity
 # allowed to sign — release-signer, which only updawg-agent's `main` can
-# become (updawg-infra terraform/gcp/packages.tf).
+# become (updawg-infra terraform/gcp/packages.tf). Production's project,
+# `updawg-prod`, since 2026-10-07 (DAWG-184).
 name: pkg.updawg.net tools
 description: apt-ftparchive, createrepo_c, updawg-release-sign and release-signer's credential.
 outputs:
@@ -28,8 +29,8 @@ runs:
     - id: auth
       uses: google-github-actions/auth@v3
       with:
-        workload_identity_provider: projects/516685478317/locations/global/workloadIdentityPools/github/providers/github
-        service_account: release-signer@updawg-dev.iam.gserviceaccount.com
+        workload_identity_provider: projects/736025852210/locations/global/workloadIdentityPools/github/providers/github
+        service_account: release-signer@updawg-prod.iam.gserviceaccount.com
         token_format: access_token
 
     - uses: google-github-actions/setup-gcloud@v3
@@ -42,6 +43,6 @@ runs:
         echo "::add-mask::$TOKEN"
         {
           echo "GOOGLE_OAUTH_ACCESS_TOKEN=$TOKEN"
-          echo "UPDAWG_RELEASE_KEY=projects/updawg-dev/locations/europe-west3/keyRings/release-signing/cryptoKeys/packages/cryptoKeyVersions/1"
-          echo "BUCKET=updawg-dev-packages"
+          echo "UPDAWG_RELEASE_KEY=projects/updawg-prod/locations/europe-west3/keyRings/release-signing/cryptoKeys/packages/cryptoKeyVersions/1"
+          echo "BUCKET=updawg-prod-packages"
         } >> "$GITHUB_ENV"
