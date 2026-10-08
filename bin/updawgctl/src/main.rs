@@ -20,6 +20,8 @@ use updawg_agent_core::{
 use updawg_collectors::{PlatformFacts, Root};
 use updawg_crypto::{ClientCertificate, PinnedKeys};
 
+mod sign;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "updawgctl",
@@ -136,11 +138,51 @@ enum Command {
         #[arg(long)]
         release: Option<String>,
     },
-    /// Sign an approved job with a customer-held key (Enterprise).
-    Sign {
-        /// Path to the job envelope to sign.
+    /// Make an organization signing key for your organization to hold
+    /// itself (Enterprise, DAWG-157).
+    ///
+    /// Run this where the key will live, not on a managed host. It writes the
+    /// private key to --out, readable only by you, and prints the public half:
+    /// give that to the portal, and to each host as `trusted_org_key` in
+    /// `/etc/updawg/agent.toml` (or `UPDAWG_ORG_KEY` for the installer). Updawg
+    /// never sees the private key, so it cannot be recovered if lost.
+    Keygen {
+        /// Where to write the private key. Never overwritten.
         #[arg(long)]
-        job: String,
+        out: std::path::PathBuf,
+    },
+    /// Prove you hold an organization key, for handing signing over to it
+    /// in the portal (Enterprise, DAWG-157). Prints one line to paste.
+    ProveKey {
+        /// Your organization's id, `org_…`, as the portal shows it.
+        #[arg(long)]
+        org: String,
+        #[command(flatten)]
+        source: sign::KeySource,
+    },
+    /// Sign the jobs waiting for your organization's own key (Enterprise,
+    /// DAWG-157).
+    ///
+    /// Shows what each job will do, decoded from the bytes being signed, and
+    /// asks before signing it. Needs an API token with the `read` and
+    /// `approve` scopes in `UPDAWG_API_TOKEN`. Run it by hand, or on a
+    /// schedule with --yes.
+    Sign {
+        /// Your organization's slug.
+        #[arg(long, env = "UPDAWG_ORG")]
+        org: String,
+        /// The Updawg API.
+        #[arg(long, env = "UPDAWG_API", default_value = "https://api.updawg.net")]
+        api: String,
+        /// The API token. Prefer the environment: an argument is visible to
+        /// every user on this machine in `ps`.
+        #[arg(long, env = "UPDAWG_API_TOKEN", hide_env_values = true)]
+        token: String,
+        /// Sign every waiting job without asking.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        source: sign::KeySource,
     },
     /// Carry out the self-update the agent prepared (DAWG-46). The agent
     /// starts this in a transient systemd unit of its own; it is not for
@@ -177,7 +219,26 @@ async fn main() -> Result<()> {
         Command::PrintInventory { json } => print_inventory(&cli.config, json).await?,
         Command::Jobs => jobs(&state)?,
         Command::Preflight { release } => preflight(&cli.config, release).await?,
-        Command::Sign { .. } => println!("sign: not implemented yet (DAWG-148)"),
+        Command::Keygen { out } => keygen(&out)?,
+        Command::ProveKey { org, source } => sign::prove_key(&org, &source)?,
+        Command::Sign {
+            org,
+            api,
+            token,
+            yes,
+            source,
+        } => {
+            sign::sign(
+                sign::SignOptions {
+                    api,
+                    org,
+                    token,
+                    yes,
+                },
+                &source,
+            )
+            .await?;
+        }
         Command::SelfUpdateRun => updawg_agent_core::self_update::helper::run(&state)?,
     }
     Ok(())
@@ -194,8 +255,12 @@ async fn enroll(
         .with_context(|| format!("reading {config_path} for the server address"))?;
     state.ensure().context("preparing the state directory")?;
 
+    let trusted = config
+        .trusted_org_key()
+        .with_context(|| format!("reading trusted_org_key from {config_path}"))?;
+
     let exchange = HttpsEnrollExchange::with_extra_root(&config.server, extra_root)?;
-    let enroller = Enroller::new(state, &exchange);
+    let enroller = Enroller::new(state, &exchange).with_trusted_org_key(trusted);
 
     match enroller.enroll(token, options).await? {
         Enrolled::Already { host_id } => {
@@ -218,6 +283,20 @@ async fn enroll(
             restart_daemon();
         }
     }
+    Ok(())
+}
+
+/// `updawgctl keygen --out org.key`.
+fn keygen(out: &std::path::Path) -> Result<()> {
+    let key = updawg_crypto::OrgKeyPair::generate().context("generating a key")?;
+    key.save_new(out)
+        .with_context(|| format!("writing {}", out.display()))?;
+    println!("Wrote the private key to {} (mode 0600).", out.display());
+    println!("Keep it safe and keep a copy: if it is lost, every host has to be re-enrolled.");
+    println!();
+    println!("Public key (for the portal, and trusted_org_key on each host):");
+    println!("  {}", key.public_spki_base64());
+    println!("Fingerprint: {}", key.public().fingerprint());
     Ok(())
 }
 
@@ -302,11 +381,32 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
                 }
                 Err(e) => say!(out, "cert:      UNREADABLE — {e}"),
             }
+            let trusted = AgentConfig::load(&cli.config)
+                .ok()
+                .and_then(|c| c.trusted_org_key().ok().flatten());
             match PinnedKeys::from_wire(&identity.org_signing_keys) {
                 Ok(pinned) => {
                     say!(out, "Pinned organization signing keys:");
                     for key in pinned.describe() {
                         say!(out, "  {key}");
+                    }
+                    // A host told to trust its organization's own key that has
+                    // not pinned it enrolled before the setting. It follows the
+                    // key at its next renewal once the organization has taken
+                    // its key over, which is the endorsement it needs.
+                    if let Some(trusted) = trusted {
+                        if pinned.contains_material(&trusted) {
+                            say!(out, "trusted:   {} (pinned)", trusted.fingerprint());
+                        } else {
+                            say!(
+                                out,
+                                "trusted:   {} NOT PINNED YET — this host enrolled before \
+                                 trusted_org_key was set. It follows the key at its next \
+                                 certificate renewal once your organization has taken over \
+                                 signing; `updawgctl enroll --force` pins it now",
+                                trusted.fingerprint()
+                            );
+                        }
                     }
                 }
                 // Worth surfacing rather than hiding: an identity whose pinned

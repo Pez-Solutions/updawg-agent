@@ -76,6 +76,15 @@ pub enum EnrollError {
     OrgKeyNotEndorsed { detail: String },
 
     #[error(
+        "the server offered organization signing keys that do not lead back to the key in \
+         trusted_org_key: {detail}\n\
+         This host is configured to trust only your organization's own key. Nothing was \
+         written. Check that trusted_org_key is your organization's current or a previous key; \
+         if it is, the server is offering a key you did not endorse."
+    )]
+    NotTheTrustedKey { detail: String },
+
+    #[error(
         "the enrollment token was rejected. Tokens expire, have a limited number of uses, and \
          are shown only once — generate a fresh one in the portal."
     )]
@@ -161,6 +170,7 @@ pub struct Enroller<'a> {
     exchange: &'a dyn EnrollExchange,
     facts: EnrollmentCollector,
     agent_version: String,
+    trusted_org_key: Option<updawg_crypto::OrgPublicKey>,
 }
 
 impl<'a> Enroller<'a> {
@@ -171,7 +181,16 @@ impl<'a> Enroller<'a> {
             exchange,
             facts: EnrollmentCollector::default(),
             agent_version: crate::VERSION.to_string(),
+            trusted_org_key: None,
         }
+    }
+
+    /// Pin only keys that lead back to this one: `trusted_org_key` from
+    /// `agent.toml` (DAWG-157). See [`PinnedKeys::anchored`].
+    #[must_use]
+    pub fn with_trusted_org_key(mut self, key: Option<updawg_crypto::OrgPublicKey>) -> Self {
+        self.trusted_org_key = key;
+        self
     }
 
     /// Point fact collection at a different filesystem root. For tests.
@@ -215,6 +234,18 @@ impl<'a> Enroller<'a> {
         let response = self.exchange.post_enroll(&request).await?;
 
         let pinned = validate(&response)?;
+
+        // Before the re-enrollment checks, and not subject to
+        // --accept-new-org-key: that flag is the operator overriding the
+        // chain from what this host pinned before, and the anchor is the
+        // operator having already said which key to trust.
+        if let Some(anchor) = &self.trusted_org_key {
+            PinnedKeys::anchored(anchor, &response.org_signing_keys).map_err(|e| {
+                EnrollError::NotTheTrustedKey {
+                    detail: e.to_string(),
+                }
+            })?;
+        }
 
         if let Some(current) = &existing {
             check_key_continuity(current, &pinned, options)?;
@@ -1302,5 +1333,61 @@ mod tests {
         );
         assert_eq!(detail, "This enrollment token expired on 2026-09-01.");
         assert_eq!(problem_detail("plain text"), "plain text");
+    }
+
+    // ---- trusted_org_key (DAWG-157, ADR 0006) ----
+
+    fn anchor_of(key: &TestOrgKey) -> updawg_crypto::OrgPublicKey {
+        updawg_crypto::OrgPublicKey::parse("anchor", &key.wire).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_host_anchored_on_the_customers_key_enrolls_onto_it() {
+        let fx = Fixture::new();
+        let updawg = TestOrgKey::new();
+        let customer = TestOrgKey::new();
+        let mut customer_wire = customer.offered("sk_customer", SigningKeyStatus::Active);
+        customer_wire.endorsement = Some(updawg.endorse("sk_updawg", "sk_customer", &customer));
+        let gateway = FakeGateway::ok(response_with(
+            "hst_01J9ZC6Q",
+            vec![
+                customer_wire,
+                updawg.offered("sk_updawg", SigningKeyStatus::Retired),
+            ],
+        ));
+
+        fx.enroller(&gateway)
+            .with_trusted_org_key(Some(anchor_of(&customer)))
+            .enroll("t", EnrollOptions::default())
+            .await
+            .unwrap();
+        assert!(fx.state.is_enrolled());
+    }
+
+    /// ⚠️ Property 2 of ADR 0006, end to end: an enrollment answer offering a
+    /// key the customer did not endorse writes nothing, and the operator's
+    /// override for a broken rotation chain does not override the anchor.
+    #[tokio::test]
+    async fn a_host_anchored_on_the_customers_key_refuses_one_the_server_made_up() {
+        let fx = Fixture::new();
+        let customer = TestOrgKey::new();
+        for accept_new_org_key in [false, true] {
+            let gateway = FakeGateway::ok(good_response());
+            let err = fx
+                .enroller(&gateway)
+                .with_trusted_org_key(Some(anchor_of(&customer)))
+                .enroll(
+                    "t",
+                    EnrollOptions {
+                        force: true,
+                        accept_new_org_key,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(err, EnrollError::NotTheTrustedKey { .. }), "{err}");
+            assert!(!fx.state.is_enrolled(), "nothing may be written");
+            assert!(!fx.enroller(&gateway).key_path().exists());
+        }
     }
 }

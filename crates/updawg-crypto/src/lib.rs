@@ -18,12 +18,14 @@
 
 pub mod cert;
 pub mod key;
+pub mod org_key;
 
 use std::fmt;
 use updawg_protocol::{OrgSigningKey, SigningKeyStatus};
 
 pub use cert::ClientCertificate;
 pub use key::AgentKey;
+pub use org_key::OrgKeyPair;
 
 /// DER header of an Ed25519 `SubjectPublicKeyInfo`, ahead of the 32 key bytes.
 ///
@@ -78,6 +80,11 @@ pub enum CryptoError {
     KeyRetired { key_id: String },
     #[error("the server offered no usable organization signing key")]
     NoUsableOrgKey,
+    #[error(
+        "the server did not offer the organization key this host is configured to trust \
+         ({fingerprint}, `trusted_org_key` in agent.toml); refusing to pin anything else"
+    )]
+    AnchorNotOffered { fingerprint: String },
     #[error("could not generate a key pair: {0}")]
     KeyGeneration(String),
     #[error("could not build a certificate signing request: {0}")]
@@ -152,6 +159,21 @@ impl OrgPublicKey {
         }
 
         Ok(Self(der[ED25519_SPKI_PREFIX.len()..].to_vec()))
+    }
+
+    /// Parse a key an operator wrote down: the wire form, or the base64 SPKI
+    /// without its `ed25519:` prefix, which is what `updawgctl keygen` prints
+    /// and what is easiest to paste.
+    ///
+    /// # Errors
+    /// [`CryptoError::MalformedOrgKey`], exactly as [`OrgPublicKey::parse`].
+    pub fn parse_configured(name: &str, encoded: &str) -> Result<Self> {
+        let encoded = encoded.trim();
+        if encoded.starts_with("ed25519:") {
+            Self::parse(name, encoded)
+        } else {
+            Self::parse(name, &format!("ed25519:{encoded}"))
+        }
     }
 
     /// Encode back to the wire form, so what was pinned can be shown.
@@ -277,6 +299,13 @@ impl PinnedKeys {
             .any(|k| k.key_id == key_id && &k.key == key)
     }
 
+    /// Whether this set holds the given key material, under any id and in any
+    /// status.
+    #[must_use]
+    pub fn contains_material(&self, key: &OrgPublicKey) -> bool {
+        self.keys.iter().any(|k| &k.key == key)
+    }
+
     /// The keys that are still allowed to sign new work.
     #[must_use]
     pub fn usable(&self) -> Vec<(&str, &OrgPublicKey)> {
@@ -309,6 +338,12 @@ impl PinnedKeys {
     /// - A key **not already pinned** needs an endorsement that verifies under
     ///   a key this host currently holds as `active` or `retiring`, and whose
     ///   statement names this key by **material as well as by id**.
+    /// - …unless it is offered as `retired`. A retired key verifies nothing and
+    ///   endorses nothing, so pinning one can only make this host refuse more,
+    ///   and it is what lets a job signed by it fail as *revoked*. Without this
+    ///   a host anchored on a customer's key (DAWG-157) would refuse every
+    ///   renewal that lists the Updawg key the customer took over from, and
+    ///   stop following rotations for good.
     /// - ⚠️ If any offered key fails, **the whole set is rejected** and the
     ///   caller keeps what it had. Partially adopting a key set is how a host
     ///   ends up trusting half of a rotation, and a renewal is not a moment an
@@ -365,6 +400,10 @@ impl PinnedKeys {
                     }
                     trusted.push(key.clone());
                 }
+                // Never joins `authority`: a retired key endorses nothing.
+                None if matches!(key.status, SigningKeyStatus::Retired) => {
+                    trusted.push(key.clone());
+                }
                 None => pending.push((key, wire)),
             }
         }
@@ -394,6 +433,47 @@ impl PinnedKeys {
         }
 
         Ok(Self { keys: trusted })
+    }
+
+    /// Pin an enrollment's keys against a key the operator named in advance
+    /// (`trusted_org_key` in `agent.toml`, DAWG-157, ADR 0006).
+    ///
+    /// Enrollment otherwise trusts what the server offers on first use,
+    /// anchored only by the enrollment token. An organization that holds its
+    /// own key does not want even that: a compromised server could hand a new
+    /// host a key of its own choosing, and "Updawg cannot create a job your
+    /// hosts will run" would be true only of hosts that enrolled before the
+    /// compromise.
+    ///
+    /// So the anchor stands where an already-pinned key would at a renewal,
+    /// and [`PinnedKeys::adopt`] does the rest: the anchor must be offered
+    /// (under whatever id the server gave it), and every other key must be
+    /// endorsed by a chain from it — or be offered as retired, which can only
+    /// narrow what this host accepts. The anchor is treated as active for
+    /// endorsing whatever status it is offered at: the operator's word is what
+    /// makes it trusted, and a key the customer has since rotated away from
+    /// must still lead a newly provisioned host to its successor.
+    ///
+    /// # Errors
+    /// [`CryptoError::AnchorNotOffered`] if no offered key has the anchor's
+    /// material, and every error [`PinnedKeys::adopt`] returns.
+    pub fn anchored(anchor: &OrgPublicKey, offered: &[OrgSigningKey]) -> Result<Self> {
+        let parsed = Self::from_wire(offered)?;
+        let root = parsed
+            .keys
+            .iter()
+            .find(|k| &k.key == anchor)
+            .ok_or_else(|| CryptoError::AnchorNotOffered {
+                fingerprint: anchor.fingerprint(),
+            })?;
+        let base = Self {
+            keys: vec![PinnedKey {
+                key_id: root.key_id.clone(),
+                key: root.key.clone(),
+                status: SigningKeyStatus::Active,
+            }],
+        };
+        base.adopt(offered)
     }
 
     /// Verify a job: its signature, over [`updawg_protocol::Job::signing_bytes`],
@@ -998,6 +1078,149 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    // ---- Customer-held keys (DAWG-157, ADR 0006) ----
+
+    fn anchor(key: &TestOrgKey) -> OrgPublicKey {
+        OrgPublicKey::parse("anchor", &key.wire).unwrap()
+    }
+
+    /// A host told to trust the customer's key pins it, and the retired Updawg
+    /// key the customer took over from, and nothing else.
+    #[test]
+    fn an_anchored_enrollment_pins_the_customers_key() {
+        let updawg = TestOrgKey::new();
+        let customer = TestOrgKey::new();
+        let mut customer_wire = offered("sk_customer", &customer.wire, SigningKeyStatus::Active);
+        customer_wire.endorsement = Some(updawg.endorse("sk_updawg", "sk_customer", &customer));
+
+        let keys = PinnedKeys::anchored(
+            &anchor(&customer),
+            &[
+                customer_wire,
+                offered("sk_updawg", &updawg.wire, SigningKeyStatus::Retired),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(keys.usable().len(), 1);
+        keys.verify_job(&signed_job(&customer, "sk_customer"))
+            .expect("the customer's own signature verifies");
+        assert!(matches!(
+            keys.verify_job(&signed_job(&updawg, "sk_updawg")),
+            Err(CryptoError::KeyRetired { .. })
+        ));
+    }
+
+    /// ⚠️ Property 2 of ADR 0006: a server that offers a key of its own
+    /// choosing to a host anchored on the customer's is refused, whether or
+    /// not it also offers the customer's.
+    #[test]
+    fn an_anchored_enrollment_refuses_a_key_the_customer_did_not_endorse() {
+        let customer = TestOrgKey::new();
+        let server = TestOrgKey::new();
+
+        let err = PinnedKeys::anchored(
+            &anchor(&customer),
+            &[offered("sk_server", &server.wire, SigningKeyStatus::Active)],
+        )
+        .unwrap_err();
+        assert!(matches!(err, CryptoError::AnchorNotOffered { .. }), "{err}");
+
+        // Offered beside the customer's key, as the active one.
+        let err = PinnedKeys::anchored(
+            &anchor(&customer),
+            &[
+                offered("sk_customer", &customer.wire, SigningKeyStatus::Retiring),
+                offered("sk_server", &server.wire, SigningKeyStatus::Active),
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(err, CryptoError::UnendorsedKey { .. }), "{err}");
+
+        // Endorsed, but by itself rather than by the customer.
+        let mut endorsed = offered("sk_server", &server.wire, SigningKeyStatus::Active);
+        endorsed.endorsement = Some(server.endorse("sk_server", "sk_server", &server));
+        assert!(
+            PinnedKeys::anchored(
+                &anchor(&customer),
+                &[
+                    offered("sk_customer", &customer.wire, SigningKeyStatus::Retiring),
+                    endorsed,
+                ],
+            )
+            .is_err()
+        );
+    }
+
+    /// The customer rotated after this host's config was written: the anchor
+    /// is offered retired, and leads the host to its successor.
+    #[test]
+    fn an_anchor_the_customer_rotated_away_from_still_leads_to_its_successor() {
+        let first = TestOrgKey::new();
+        let second = TestOrgKey::new();
+        let mut second_wire = offered("sk_second", &second.wire, SigningKeyStatus::Active);
+        second_wire.endorsement = Some(first.endorse("sk_first", "sk_second", &second));
+
+        let keys = PinnedKeys::anchored(
+            &anchor(&first),
+            &[
+                offered("sk_first", &first.wire, SigningKeyStatus::Retired),
+                second_wire,
+            ],
+        )
+        .unwrap();
+        keys.verify_job(&signed_job(&second, "sk_second"))
+            .expect("the successor verifies");
+        assert!(matches!(
+            keys.verify_job(&signed_job(&first, "sk_first")),
+            Err(CryptoError::KeyRetired { .. })
+        ));
+    }
+
+    /// A retired key verifies nothing, so it needs no endorsement to be
+    /// pinned — and it must not then be able to endorse anything itself.
+    #[test]
+    fn an_unknown_retired_key_is_pinned_as_revoked_and_endorses_nothing() {
+        let current = TestOrgKey::new();
+        let old = TestOrgKey::new();
+        let sneaky = TestOrgKey::new();
+        let host = pinned(&[("sk_current", &current, SigningKeyStatus::Active)]);
+
+        let keys = host
+            .adopt(&[
+                offered("sk_current", &current.wire, SigningKeyStatus::Active),
+                offered("sk_old", &old.wire, SigningKeyStatus::Retired),
+            ])
+            .unwrap();
+        assert!(matches!(
+            keys.verify_job(&signed_job(&old, "sk_old")),
+            Err(CryptoError::KeyRetired { .. })
+        ));
+
+        let mut sneaky_wire = offered("sk_sneaky", &sneaky.wire, SigningKeyStatus::Active);
+        sneaky_wire.endorsement = Some(old.endorse("sk_old", "sk_sneaky", &sneaky));
+        assert!(
+            host.adopt(&[
+                offered("sk_current", &current.wire, SigningKeyStatus::Active),
+                offered("sk_old", &old.wire, SigningKeyStatus::Retired),
+                sneaky_wire,
+            ])
+            .is_err(),
+            "a retired key adopted in the same breath must not endorse"
+        );
+    }
+
+    #[test]
+    fn a_configured_key_parses_with_or_without_its_prefix() {
+        let key = TestOrgKey::new();
+        let bare = key.wire.strip_prefix("ed25519:").unwrap();
+        assert_eq!(
+            OrgPublicKey::parse_configured("trusted_org_key", bare).unwrap(),
+            OrgPublicKey::parse_configured("trusted_org_key", &format!(" {} ", key.wire)).unwrap(),
+        );
+        assert!(OrgPublicKey::parse_configured("trusted_org_key", "bm90IGEga2V5").is_err());
     }
 
     /// ⚠️ All or nothing. A host that adopted the keys that checked out and

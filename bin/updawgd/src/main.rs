@@ -173,7 +173,7 @@ async fn main() -> Result<()> {
     // read the pending-reboot record: reading it takes it, and a report taken
     // and not sent leaves the job running on the server for ever.
 
-    report_identity(&state).context("reading identity")?;
+    report_identity(&config, &state).context("reading identity")?;
     report_host(&Root::default());
 
     // Renewal on the way up catches the host that was powered off through its
@@ -250,19 +250,32 @@ fn transport(
 /// The pinned keys go in the log on purpose. An operator should be able to
 /// compare this line against what the portal shows without running anything:
 /// pinning nobody can check is pinning nobody trusts.
-fn report_identity(state: &LocalState) -> Result<()> {
+fn report_identity(config: &AgentConfig, state: &LocalState) -> Result<()> {
     let Some(identity) = state.identity()? else {
         tracing::warn!("not enrolled — run `updawgctl enroll --token ...`");
         return Ok(());
     };
 
     match PinnedKeys::from_wire(&identity.org_signing_keys) {
-        Ok(pinned) => tracing::info!(
-            host_id = %identity.host_id,
-            enrolled_at = %identity.enrolled_at,
-            org_signing_keys = ?pinned.describe(),
-            "enrolled"
-        ),
+        Ok(pinned) => {
+            tracing::info!(
+                host_id = %identity.host_id,
+                enrolled_at = %identity.enrolled_at,
+                org_signing_keys = ?pinned.describe(),
+                "enrolled"
+            );
+            // `load` already refused a malformed one.
+            if let Ok(Some(trusted)) = config.trusted_org_key()
+                && !pinned.contains_material(&trusted)
+            {
+                tracing::warn!(
+                    trusted_org_key = %trusted.fingerprint(),
+                    "trusted_org_key is not pinned yet: this host enrolled before it was set, and \
+                     follows it at its next certificate renewal once the organization has taken \
+                     over signing (or `updawgctl enroll --force` pins it now)"
+                );
+            }
+        }
         // Not a warning: a host whose pinned keys no longer parse will reject
         // every job it is sent, and would otherwise look perfectly healthy
         // until one arrived.

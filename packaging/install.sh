@@ -15,6 +15,11 @@
 # The package writes /etc/updawg/agent.toml only if there is none: local
 # config always wins. UPDAWG_CHANNEL=beta for every build as it passes tests.
 #
+# If your organization holds its own signing key (Enterprise), also pass
+# UPDAWG_ORG_KEY=<public key from `updawgctl keygen`>: it is written to
+# agent.toml as trusted_org_key before enrolling, and the host then refuses any
+# organization key that does not lead back to yours.
+#
 # The same steps by hand, and a path with no package manager at all:
 # https://docs.updawg.net/install/
 set -eu
@@ -36,6 +41,10 @@ esac
 case "$CHANNEL" in
   stable | beta) ;;
   *) fail "UPDAWG_CHANNEL is stable or beta, not $CHANNEL. Nothing was changed." ;;
+esac
+ORG_KEY="${UPDAWG_ORG_KEY:-}"
+case "$ORG_KEY" in
+  *[!A-Za-z0-9+/=:]*) fail "UPDAWG_ORG_KEY is not a public key (base64, as updawgctl keygen prints it). Nothing was changed." ;;
 esac
 
 [ -r /etc/os-release ] || fail "no /etc/os-release, so the distribution cannot be identified. Nothing was changed."
@@ -96,6 +105,23 @@ say "installed $(updawgctl --version)"
 if grep -qs /usr/local/bin/updawgd /etc/systemd/system/updawgd.service; then
   rm -f /etc/systemd/system/updawgd.service /usr/local/bin/updawgd /usr/local/bin/updawgctl
   say "replaced the agent an earlier install.sh put in /usr/local/bin"
+fi
+
+# --------------------------------------------------------- trusted org key
+# Before enrolling, because enrolling is when the key is pinned. updawgctl
+# checks the key itself; a host already set to trust a different one is left
+# alone rather than silently switched.
+if [ -n "$ORG_KEY" ]; then
+  conf=/etc/updawg/agent.toml
+  have=$(sed -n 's/^trusted_org_key *= *"\(.*\)"/\1/p' "$conf")
+  if [ -z "$have" ]; then
+    # First line, so it is a top-level key and not part of a [table].
+    { printf 'trusted_org_key = "%s"\n' "$ORG_KEY"; cat "$conf"; } > "$tmp/agent.toml"
+    cat "$tmp/agent.toml" > "$conf"
+    say "this host trusts only your organization's key from now on (trusted_org_key in $conf)"
+  elif [ "$have" != "$ORG_KEY" ]; then
+    fail "$conf already trusts a different organization key; not changing it. Edit trusted_org_key by hand if that is intended."
+  fi
 fi
 
 # ------------------------------------------------------------------ enroll

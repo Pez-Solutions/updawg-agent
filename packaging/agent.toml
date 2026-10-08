@@ -9,6 +9,11 @@
 server = "https://agents.updawg.net"
 mode = "managed"
 
+# Enterprise, when your organization holds its own signing key: the public key
+# `updawgctl keygen` printed. This host then pins only that key, and any key
+# that does not lead back to it is refused.
+# trusted_org_key = "MCowBQYDK2VwAyEA..."
+
 [permissions]
 # Every kind of job. Each one still has to be approved and signed by your
 # organization first. Take a kind out, or add it to deny, to keep this host

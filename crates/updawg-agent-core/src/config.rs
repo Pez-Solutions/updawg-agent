@@ -293,6 +293,17 @@ pub struct AgentConfig {
     /// `[[health_check]]` entries, in the order they were written.
     #[serde(default, rename = "health_check")]
     pub health_checks: Vec<HealthCheck>,
+    /// The organization signing key this host trusts, when the organization
+    /// holds its own (DAWG-157, ADR 0006): the base64 SPKI `updawgctl keygen`
+    /// prints, with or without its `ed25519:` prefix.
+    ///
+    /// Set, it is what enrollment pins: the server must offer this key, and
+    /// any other key it offers must be endorsed by a chain from it. That is
+    /// what makes "Updawg cannot create a job this host will run" hold for a
+    /// host enrolled *after* a server compromise, and it lives here because
+    /// this file is the customer's and the server cannot change it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_org_key: Option<String>,
 }
 
 impl AgentConfig {
@@ -318,10 +329,28 @@ impl AgentConfig {
             path: path.display().to_string(),
             source,
         })?;
-        Self::from_toml(&raw).map_err(|source| ConfigError::Parse {
+        let config = Self::from_toml(&raw).map_err(|source| ConfigError::Parse {
             path: path.display().to_string(),
             source,
-        })
+        })?;
+        // Checked here, so a mistyped key stops the agent at start-up rather
+        // than at the enrollment it was written for.
+        config.trusted_org_key()?;
+        Ok(config)
+    }
+
+    /// The organization key this host is told to trust, parsed.
+    ///
+    /// # Errors
+    /// [`ConfigError::TrustedOrgKey`] if it is set and is not an Ed25519 key.
+    pub fn trusted_org_key(&self) -> Result<Option<updawg_crypto::OrgPublicKey>, ConfigError> {
+        self.trusted_org_key
+            .as_deref()
+            .map(|encoded| {
+                updawg_crypto::OrgPublicKey::parse_configured("trusted_org_key", encoded)
+                    .map_err(|e| ConfigError::TrustedOrgKey(e.to_string()))
+            })
+            .transpose()
     }
 
     /// What this file permits, in the shape the server is told about it
@@ -376,6 +405,8 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
+    #[error("trusted_org_key is not usable: {0}")]
+    TrustedOrgKey(String),
 }
 
 #[cfg(test)]
@@ -398,6 +429,7 @@ mod tests {
             snapshots: Snapshots::default(),
             reboot: RebootSettings::default(),
             health_checks: Vec::new(),
+            trusted_org_key: None,
         }
     }
 
@@ -425,6 +457,28 @@ mod tests {
             ..managed(&[], &[])
         };
         assert!(!cfg.admits(JobKind::RefreshInventory, None));
+    }
+
+    #[test]
+    fn a_trusted_org_key_is_optional_and_checked_when_present() {
+        let without = AgentConfig::from_toml("server = \"https://a\"\n").unwrap();
+        assert!(without.trusted_org_key().unwrap().is_none());
+
+        let with = AgentConfig::from_toml(
+            "server = \"https://a\"\n\
+             trusted_org_key = \"MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\"\n",
+        )
+        .unwrap();
+        assert!(with.trusted_org_key().unwrap().is_some());
+
+        let typo = AgentConfig::from_toml(
+            "server = \"https://a\"\ntrusted_org_key = \"MCowBQYDK2VwAyEAGb9E\"\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            typo.trusted_org_key(),
+            Err(ConfigError::TrustedOrgKey(_))
+        ));
     }
 
     #[test]
@@ -612,6 +666,7 @@ mod policy_tests {
             snapshots: Snapshots::default(),
             reboot: RebootSettings::default(),
             health_checks: Vec::new(),
+            trusted_org_key: None,
         }
     }
 
