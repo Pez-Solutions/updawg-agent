@@ -1,0 +1,41 @@
+name: Privacy review
+
+# What the agent sends about a host is a promise to customers
+# (docs.updawg.net/agent/collected-data, DAWG-171). A pull request that changes
+# what is collected — the field list the protocol tests generate, or a
+# collector — needs somebody to have read it against that promise, and says
+# so with the `privacy-reviewed` label. Until then this check fails.
+#
+# Its own workflow because CI does not run again when a label is added.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  privacy:
+    name: what is collected was reviewed
+    runs-on: [self-hosted, copenhagen]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: compare with ${{ github.base_ref }}
+        env:
+          REVIEWED: ${{ contains(github.event.pull_request.labels.*.name, 'privacy-reviewed') }}
+        run: |
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- \
+            crates/updawg-protocol/collected-fields.txt \
+            crates/updawg-collectors/)
+          if [ -z "$changed" ]; then
+            echo "nothing here changes what the agent collects"
+            exit 0
+          fi
+          echo "this changes what the agent collects:"
+          echo "$changed" | sed 's/^/  /'
+          if [ "$REVIEWED" = "true" ]; then
+            echo "reviewed: labelled privacy-reviewed"
+            exit 0
+          fi
+          echo "::error::Read the change against docs.updawg.net/agent/collected-data (and the field list), update that page if needed, then label the PR privacy-reviewed. See CONTRIBUTING.md." >&2
+          exit 1

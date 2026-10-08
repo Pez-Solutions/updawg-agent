@@ -243,7 +243,7 @@ fn parse_needrestart(output: &str) -> NeedRestart {
         let line = line.trim();
         if let Some(svc) = line.strip_prefix("NEEDRESTART-SVC:") {
             let svc = svc.trim();
-            if !svc.is_empty() {
+            if is_reportable_service(svc) {
                 services.push(svc.to_string());
             }
         } else if let Some(ksta) = line.strip_prefix("NEEDRESTART-KSTA:") {
@@ -264,12 +264,23 @@ fn parse_needs_restarting(output: &str) -> Vec<String> {
     let mut services: Vec<String> = output
         .lines()
         .map(|l| l.rsplit(" : ").next().unwrap_or(l).trim())
-        .filter(|l| !l.is_empty() && !l.starts_with("Updating") && l.ends_with(".service"))
+        .filter(|l| !l.starts_with("Updating") && is_reportable_service(l))
         .map(ToString::to_string)
         .collect();
     services.sort();
     services.dedup();
     services
+}
+
+/// Whether a unit needing a restart is reported (DAWG-171).
+///
+/// System services only. `user@1000.service` is somebody's session manager:
+/// it names a user who is logged in, which the agent promises never to send,
+/// and it is not Updawg's to restart either — it goes when they log out.
+fn is_reportable_service(unit: &str) -> bool {
+    unit.ends_with(".service")
+        && !unit.starts_with("user@")
+        && !unit.starts_with("user-runtime-dir@")
 }
 
 /// Pull a `MemTotal:  16316816 kB` value out of `/proc/meminfo`.
@@ -364,6 +375,21 @@ mod tests {
         assert_eq!(state.reboot_required, RebootRequired::Unknown);
         assert!(!state.reboot_required.is_known());
         assert!(!state.reboot_required.is_yes());
+    }
+
+    /// DAWG-171: a user's session manager names a logged-in user, and is
+    /// never reported, from either tool.
+    #[test]
+    fn a_users_session_manager_is_not_reported() {
+        let report = parse_needrestart(
+            "NEEDRESTART-KSTA: 1\nNEEDRESTART-SVC: nginx.service\n\
+             NEEDRESTART-SVC: user@1000.service\nNEEDRESTART-SVC: user-runtime-dir@1000.service\n",
+        );
+        assert_eq!(report.services, vec!["nginx.service".to_owned()]);
+        assert_eq!(
+            parse_needs_restarting("sshd.service\nuser@1000.service\n"),
+            vec!["sshd.service".to_owned()]
+        );
     }
 
     #[test]

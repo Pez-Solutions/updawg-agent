@@ -104,16 +104,21 @@ async fn attempt(kind: &CheckKind) -> Result<Option<String>, String> {
                 .no_proxy()
                 .build()
                 .map_err(|e| format!("could not build an HTTP client: {e}"))?;
+            // The detail goes to the service, so it names the URL without
+            // anything secret in it (DAWG-171).
+            let shown = shown_url(url);
             let response = client
                 .get(url)
                 .send()
                 .await
-                .map_err(|e| format!("{url}: {}", short(&e)))?;
+                .map_err(|e| format!("{shown}: {}", short(&e)))?;
             let status = response.status().as_u16();
             if status == *expect_status {
                 Ok(None)
             } else {
-                Err(format!("{url} answered {status}, expected {expect_status}"))
+                Err(format!(
+                    "{shown} answered {status}, expected {expect_status}"
+                ))
             }
         }
         CheckKind::Command { argv } => {
@@ -148,6 +153,23 @@ async fn output(program: &str, args: &[String]) -> Result<std::process::Output, 
         .map_err(|e| format!("could not run {program}: {e}"))
 }
 
+/// A check's URL as it may leave the host (DAWG-171): without `user:password@`,
+/// `?query` or `#fragment`, which is where a health endpoint's token goes. The
+/// operator wrote the URL into `agent.toml` and knows it; the service only
+/// needs to know which check failed.
+fn shown_url(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let shown = if scheme.is_empty() {
+        format!("{host}/{path}")
+    } else {
+        format!("{scheme}://{host}/{path}")
+    };
+    shown.trim_end_matches('/').to_owned()
+}
+
 /// reqwest's errors carry a chain; the innermost cause is the useful part
 /// ("Connection refused"), and the full chain is too long for a report.
 fn short(error: &reqwest::Error) -> String {
@@ -163,6 +185,21 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use super::*;
+
+    /// DAWG-171: a failed check's detail is sent to the service, and a health
+    /// URL is where people put tokens.
+    #[test]
+    fn a_failed_http_check_names_its_url_without_credentials() {
+        assert_eq!(
+            shown_url("https://ops:hunter2@127.0.0.1:8080/health?token=abc#x"),
+            "https://127.0.0.1:8080/health"
+        );
+        assert_eq!(shown_url("http://localhost/"), "http://localhost");
+        assert_eq!(
+            shown_url("localhost:9000/ready?k=v"),
+            "localhost:9000/ready"
+        );
+    }
 
     fn command(argv: &[&str], timeout_ms: u64) -> Check {
         Check {
