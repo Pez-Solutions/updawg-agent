@@ -20,6 +20,7 @@ use updawg_agent_core::{
 use updawg_collectors::{PlatformFacts, Root};
 use updawg_crypto::{ClientCertificate, PinnedKeys};
 
+mod server;
 mod sign;
 
 #[derive(Debug, Parser)]
@@ -107,7 +108,14 @@ enum Command {
         #[arg(long, env = "UPDAWG_TOKEN")]
         token: String,
 
+        /// The gateway to report to, for an organization outside the EU
+        /// (DAWG-296): written to the config as `server` before enrolling.
+        /// The portal's install command sets it when it is needed.
+        #[arg(long, env = "UPDAWG_SERVER")]
+        server: Option<String>,
+
         /// Replace an existing identity. The current certificate stops working.
+        /// With --server, also move a host that reports somewhere else.
         #[arg(long)]
         force: bool,
 
@@ -199,9 +207,21 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Enroll {
             token,
+            server,
             force,
             accept_new_org_key,
         } => {
+            if let Some(server) = server {
+                let current = AgentConfig::load(&cli.config)
+                    .with_context(|| format!("reading {}", cli.config))?
+                    .server;
+                if server::point_at(&cli.config, &current, &server, force)? {
+                    println!(
+                        "This host reports to {} from now on.",
+                        server::origin(&server)?
+                    );
+                }
+            }
             // Deliberately never echo the token back, not even truncated.
             enroll(
                 &cli.config,

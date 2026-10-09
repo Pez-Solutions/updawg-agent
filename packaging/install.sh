@@ -16,6 +16,9 @@
 # config always wins. UPDAWG_CHANNEL=beta for every build as it passes tests.
 #
 # If your organization holds its own signing key (Enterprise), also pass
+# UPDAWG_SERVER=https://agents.us.updawg.net: another region's gateway;
+# updawgctl enroll reads it and writes it to agent.toml first.
+#
 # UPDAWG_ORG_KEY=<public key from `updawgctl keygen`>: it is written to
 # agent.toml as trusted_org_key before enrolling, and the host then refuses any
 # organization key that does not lead back to yours.
