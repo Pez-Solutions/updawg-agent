@@ -11,6 +11,7 @@ checkin.max_hold_s
 checkin.metrics.load1
 checkin.metrics.mem_used_pct
 checkin.metrics.root_free_bytes
+checkin.pinned_keys[]
 checkin.running_job_ids[]
 checkin.snapshots.provider
 checkin.snapshots.reason

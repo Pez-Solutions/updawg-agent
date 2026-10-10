@@ -274,6 +274,30 @@ impl GatewayCheckIn {
             // upgrade` by hand) still reaches the hosts list.
             agent_version: Some(crate::VERSION.to_owned()),
             install: self.install.clone(),
+            // Read each time rather than once: a certificate renewal adopts a
+            // rotated key, and the organization watching its hosts move onto
+            // its own key (DAWG-293) should see that at the next check-in.
+            pinned_keys: self.pinned_keys(),
+        }
+    }
+
+    /// The ids of the organization keys this host verifies jobs against.
+    /// `None` if the identity cannot be read, which says nothing rather than
+    /// claiming the host pins no key.
+    fn pinned_keys(&self) -> Option<Vec<updawg_protocol::SigningKeyId>> {
+        match self.state.identity() {
+            Ok(Some(identity)) => Some(
+                identity
+                    .org_signing_keys
+                    .into_iter()
+                    .map(|k| k.key_id)
+                    .collect(),
+            ),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(%error, "could not read the pinned keys; checking in without them");
+                None
+            }
         }
     }
 }

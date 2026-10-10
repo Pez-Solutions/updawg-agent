@@ -10,7 +10,7 @@
 
 use crate::{
     config::{LocalPolicy, ServerConfig},
-    ids::JobId,
+    ids::{JobId, SigningKeyId},
     job::Job,
 };
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,17 @@ pub struct CheckinRequest {
     /// 0.9). `None` from an agent too old to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<AgentInstall>,
+    /// The organization signing keys this agent has pinned, by id (protocol
+    /// 0.11, DAWG-293).
+    ///
+    /// What the agent holds, not what the server offered it: a host keeps
+    /// verifying against the keys it pinned at enrollment and adopted at a
+    /// renewal, and the server's record of offers cannot tell whether an
+    /// endorsement was refused or a renewal never happened. An organization
+    /// handing signing over to its own key needs this to see every host is on
+    /// it before retiring Updawg's. `None` means an agent too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_keys: Option<Vec<SigningKeyId>>,
 }
 
 impl CheckinRequest {
@@ -261,6 +272,7 @@ mod tests {
             snapshots: None,
             agent_version: None,
             install: None,
+            pinned_keys: None,
         }
     }
 

@@ -108,6 +108,28 @@ async fn the_check_in_carries_what_the_collectors_found() {
     assert!((body["metrics"]["mem_used_pct"].as_f64().unwrap() - 25.0).abs() < 0.01);
 }
 
+/// Every check-in says which organization keys the host verifies against
+/// (DAWG-293), read from its own identity rather than from anything the
+/// server offered, so a rotation adopted at renewal shows at the next one.
+#[tokio::test]
+async fn the_check_in_says_which_keys_the_host_has_pinned() {
+    let h = harness(vec![Reply::Now(200, empty_response())]).await;
+    let mut identity = h.host.state.identity().unwrap().unwrap();
+    identity.org_signing_keys = vec![updawg_protocol::OrgSigningKey {
+        key_id: updawg_protocol::SigningKeyId::new("sk_01J8"),
+        public_key: "ed25519:AAAA".into(),
+        status: updawg_protocol::SigningKeyStatus::Active,
+        endorsement: None,
+    }];
+    h.host.state.save_identity(&identity).unwrap();
+
+    h.checkin.check_in().await.unwrap();
+
+    let seen = h.gateway.seen.lock().unwrap();
+    let body: serde_json::Value = serde_json::from_str(&seen[0].body).unwrap();
+    assert_eq!(body["pinned_keys"], serde_json::json!(["sk_01J8"]));
+}
+
 /// The point of a long poll: it comes back the moment there is something to
 /// come back with, not on the next tick of a timer.
 #[tokio::test]

@@ -387,6 +387,7 @@ pub(crate) fn checkin_request() -> CheckinRequest {
         snapshots: None,
         agent_version: None,
         install: None,
+        pinned_keys: None,
     }
 }
 

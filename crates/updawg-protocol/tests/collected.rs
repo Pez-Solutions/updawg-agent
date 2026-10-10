@@ -35,7 +35,8 @@ use updawg_protocol::{
     HostFacts, HostMetrics, HostStateReport, InstallMethod, InstalledPackage, InventoryKind,
     InventoryUpload, JobAck, JobComplete, JobId, JobKind, JobStatus, LocalPolicy, LogLine,
     LogStream, PackageChange, PackageDelta, PendingRemoval, PreflightCheck, RebootRequired,
-    RemovedPackage, Replacement, Repository, SnapshotSupport, SourcePackage, SystemFacts,
+    RemovedPackage, Replacement, Repository, SigningKeyId, SnapshotSupport, SourcePackage,
+    SystemFacts,
 };
 
 const FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/collected-fields.txt");
@@ -127,6 +128,7 @@ fn checkin() -> CheckinRequest {
             method: InstallMethod::Apt,
             channel: Some("stable".into()),
         }),
+        pinned_keys: Some(vec![SigningKeyId::new("sk_x")]),
     }
 }
 
