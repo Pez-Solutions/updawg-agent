@@ -168,6 +168,67 @@ pub(crate) fn prove_key(org: &str, source: &KeySource) -> Result<()> {
     Ok(())
 }
 
+/* --------------------------------------------------------------- endorse */
+
+/// `updawgctl endorse --org org_… --from sk_… --next-public-key ed25519:…
+/// (--key FILE | --command … --public-key …)`.
+///
+/// Your active key endorsing the next one (DAWG-293), for rotating a key your
+/// organization holds. Hosts follow it as they follow any rotation: from a
+/// key they already pin, at their next certificate renewal. The portal also
+/// wants the next key's own proof (`prove-key` with it), so a rotation to a
+/// key nobody holds cannot happen.
+pub(crate) fn endorse(org: &str, from: &str, next: &str, source: &KeySource) -> Result<()> {
+    let signer = source.signer()?;
+    let next = OrgPublicKey::parse_configured("--next-public-key", next)?;
+    let endorsement = endorsement(org, from, &next, &signer, chrono::Utc::now())?;
+    let statement = endorsement.statement()?;
+    println!("{}", serde_json::to_string(&endorsement)?);
+    eprintln!(
+        "Paste the line above into the portal (Settings → Signing keys → Rotate your key) \
+         within 24 hours, with the output of `updawgctl prove-key --org {org}` run with the \
+         next key. The next key will be {} (fingerprint {}).",
+        statement.new_key.key_id.as_str(),
+        next.fingerprint()
+    );
+    Ok(())
+}
+
+/// The endorsement itself, signed, with the next key's id minted here: the
+/// statement names it, and is signed before the server has a row for it.
+fn endorsement(
+    org: &str,
+    from: &str,
+    next: &OrgPublicKey,
+    signer: &Signer,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Endorsement> {
+    if !org.starts_with("org_") {
+        bail!("--org is your organization's id, `org_…`, as the portal shows it");
+    }
+    if !from.starts_with("sk_") {
+        bail!("--from is your active key's id, `sk_…`, as the portal lists it");
+    }
+    if *next == signer.public {
+        bail!("the next key is the key you are rotating away from");
+    }
+    let millis = u64::try_from(now.timestamp_millis()).context("a clock before 1970")?;
+    let statement = EndorsementStatement {
+        org_id: OrgId::new(org),
+        issued_at: now,
+        previous_key: EndorsedKey {
+            key_id: SigningKeyId::new(from),
+            public_key: signer.public.to_wire(),
+        },
+        new_key: EndorsedKey {
+            key_id: SigningKeyId::new(updawg_crypto::org_key::new_signing_key_id(millis)?),
+            public_key: next.to_wire(),
+        },
+    };
+    let signature = signer.sign(&statement.signing_bytes()?)?;
+    Ok(Endorsement::new(&statement, signature)?)
+}
+
 /* ------------------------------------------------------------------ sign */
 
 #[derive(Debug, serde::Deserialize)]
@@ -422,6 +483,51 @@ impl Api {
 mod tests {
     use super::*;
     use updawg_protocol::job::ApplyUpdates;
+
+    fn file_signer(key: OrgKeyPair) -> Signer {
+        Signer {
+            public: key.public(),
+            how: How::File(Box::new(key)),
+        }
+    }
+
+    /// DAWG-293: the active key endorses the next, under its own id and
+    /// material, naming a fresh id for the next, and the signature is one a
+    /// host holding the active key accepts.
+    #[test]
+    fn an_endorsement_is_the_active_key_vouching_for_the_next() {
+        let active = OrgKeyPair::generate().unwrap();
+        let active_public = active.public();
+        let next = OrgKeyPair::generate().unwrap().public();
+        let signer = file_signer(active);
+
+        let e = endorsement("org_1", "sk_active", &next, &signer, chrono::Utc::now()).unwrap();
+        let statement = e.statement().unwrap();
+        assert_eq!(statement.org_id.as_str(), "org_1");
+        assert_eq!(statement.previous_key.key_id.as_str(), "sk_active");
+        assert_eq!(statement.previous_key.public_key, active_public.to_wire());
+        assert_eq!(statement.new_key.public_key, next.to_wire());
+        assert!(statement.new_key.key_id.as_str().starts_with("sk_"));
+        assert_ne!(statement.new_key.key_id.as_str(), "sk_active");
+        let signature = base64::engine::general_purpose::STANDARD
+            .decode(&e.signature)
+            .unwrap();
+        active_public
+            .verify(&e.signing_bytes(), &signature)
+            .expect("verifies under the active key");
+
+        assert!(
+            endorsement(
+                "org_1",
+                "sk_active",
+                &active_public,
+                &signer,
+                chrono::Utc::now()
+            )
+            .is_err(),
+            "a key is not its own successor"
+        );
+    }
 
     fn job() -> Job {
         Job {

@@ -150,9 +150,55 @@ fn decode_pem(pem: &str) -> Result<Vec<u8>> {
         .map_err(|e| CryptoError::MalformedKeyFile(e.to_string()))
 }
 
+/// A fresh signing key id, `sk_` and a `UUIDv7` in simple form, for a key the
+/// organization is about to endorse (DAWG-293).
+///
+/// The customer's side names the next key's id, because the endorsement has
+/// to name it and is signed before the server has a row to give it one. A
+/// `UUIDv7`, like every id the server mints, so keys still sort by when they
+/// were made: 48 bits of Unix milliseconds, the version, the variant, and 74
+/// random bits.
+///
+/// # Errors
+/// Fails only if the platform's random source is unavailable.
+pub fn new_signing_key_id(unix_millis: u64) -> Result<String> {
+    use aws_lc_rs::rand::SecureRandom as _;
+    let mut bytes = [0_u8; 16];
+    aws_lc_rs::rand::SystemRandom::new()
+        .fill(&mut bytes[6..])
+        .map_err(|_| CryptoError::KeyGeneration("no random source".into()))?;
+    bytes[..6].copy_from_slice(&unix_millis.to_be_bytes()[2..]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let mut id = String::with_capacity(35);
+    id.push_str("sk_");
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(id, "{b:02x}");
+    }
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_key_id_is_a_version_7_uuid_that_sorts_by_time() {
+        let earlier = new_signing_key_id(1_760_000_000_000).unwrap();
+        let later = new_signing_key_id(1_760_000_000_001).unwrap();
+        assert!(earlier.starts_with("sk_"));
+        let hex = &earlier[3..];
+        assert_eq!(hex.len(), 32);
+        assert!(hex.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(&hex[12..13], "7", "version");
+        assert!(matches!(&hex[16..17], "8" | "9" | "a" | "b"), "variant");
+        assert!(earlier < later);
+        assert_ne!(
+            new_signing_key_id(1).unwrap(),
+            new_signing_key_id(1).unwrap()
+        );
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir =

@@ -168,6 +168,23 @@ enum Command {
         #[command(flatten)]
         source: sign::KeySource,
     },
+    /// Endorse the next key with your active one, to rotate a key your
+    /// organization holds (Enterprise, DAWG-293). Prints one line to paste,
+    /// beside `prove-key` run with the next key.
+    Endorse {
+        /// Your organization's id, `org_…`, as the portal shows it.
+        #[arg(long)]
+        org: String,
+        /// Your active key's id, `sk_…`, as the portal lists it.
+        #[arg(long)]
+        from: String,
+        /// The next key's public half, as `keygen` printed it.
+        #[arg(long)]
+        next_public_key: String,
+        /// Where your active key is.
+        #[command(flatten)]
+        source: sign::KeySource,
+    },
     /// Sign the jobs waiting for your organization's own key (Enterprise,
     /// DAWG-157).
     ///
@@ -241,6 +258,12 @@ async fn main() -> Result<()> {
         Command::Preflight { release } => preflight(&cli.config, release).await?,
         Command::Keygen { out } => keygen(&out)?,
         Command::ProveKey { org, source } => sign::prove_key(&org, &source)?,
+        Command::Endorse {
+            org,
+            from,
+            next_public_key,
+            source,
+        } => sign::endorse(&org, &from, &next_public_key, &source)?,
         Command::Sign {
             org,
             api,
