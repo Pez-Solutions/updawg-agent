@@ -27,7 +27,7 @@ authors = ["Updawg"]
 [workspace.dependencies]
 # Internal crates. updawg-protocol is the one we publish; everything else is
 # internal to the agent.
-updawg-protocol = { path = "crates/updawg-protocol", version = "0.11.0" }
+updawg-protocol = { path = "crates/updawg-protocol", version = "0.12.0" }
 updawg-crypto = { path = "crates/updawg-crypto" }
 updawg-collectors = { path = "crates/updawg-collectors" }
 updawg-backends = { path = "crates/updawg-backends" }

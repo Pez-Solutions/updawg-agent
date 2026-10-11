@@ -279,6 +279,7 @@ fn answer(
                 config_version: 1,
                 jobs: vec![],
                 config: None,
+                renew_certificate: false,
             };
             (200, serde_json::to_value(response).unwrap())
         }

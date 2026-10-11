@@ -38,12 +38,12 @@
 use crate::{
     scheduler::{CheckIn, CheckinOutcome},
     state::LocalState,
-    transport::{MtlsTransport, TransportError},
+    transport::{MtlsTransport, Renewal, TransportError},
 };
 use async_trait::async_trait;
 use std::{
-    sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    sync::{Arc, Mutex, RwLock},
+    time::{Duration, Instant, SystemTime},
 };
 use updawg_collectors::{StateCollector, SystemState};
 use updawg_protocol::{CheckinRequest, HostStateReport, Job, LocalPolicy};
@@ -89,6 +89,81 @@ impl JobSink for UnhandledJobs {
     }
 }
 
+/// How often a running agent looks at whether its certificate is due
+/// (DAWG-308). Renewal used to happen only when `updawgd` started, so a
+/// daemon that ran for a month without a restart let its certificate lapse.
+const RENEWAL_CHECK: Duration = Duration::from_secs(3600);
+
+/// The window a renewal the server asks for is spread across, by this host's
+/// stable offset, so a fleet told at once does not renew at once.
+const RENEW_NOW_SPREAD: Duration = Duration::from_secs(600);
+
+/// How long to wait before trying an asked-for renewal again after it failed.
+const RENEW_NOW_RETRY: Duration = Duration::from_secs(600);
+
+/// When this agent next renews, or looks at whether to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenewalPlan {
+    /// The next look at whether the certificate is due.
+    next_check: Instant,
+    /// A renewal asked for, by the server or by hand, and when to do it.
+    forced_at: Option<Instant>,
+}
+
+/// What to do about renewal after a check-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenewalStep {
+    Nothing,
+    /// Renew if the certificate is due.
+    Check,
+    /// Renew now, whatever its age.
+    Force,
+}
+
+impl RenewalPlan {
+    fn new(now: Instant) -> Self {
+        // `updawgd` renews on the way up, so the first look is an hour out.
+        Self {
+            next_check: now + RENEWAL_CHECK,
+            forced_at: None,
+        }
+    }
+
+    /// Take in what this check-in brought and say what to do. A request by
+    /// hand goes now; the server's is spread by `spread` (0 to 1) and not
+    /// pushed back by being repeated on every check-in until it happens.
+    fn step(
+        &mut self,
+        now: Instant,
+        server_asked: bool,
+        asked_by_hand: bool,
+        spread: f64,
+    ) -> RenewalStep {
+        if asked_by_hand {
+            self.forced_at = Some(now);
+        } else if server_asked && self.forced_at.is_none() {
+            self.forced_at = Some(now + RENEW_NOW_SPREAD.mul_f64(spread.clamp(0.0, 1.0)));
+        }
+        if self.forced_at.is_some_and(|at| at <= now) {
+            return RenewalStep::Force;
+        }
+        if now >= self.next_check {
+            self.next_check = now + RENEWAL_CHECK;
+            return RenewalStep::Check;
+        }
+        RenewalStep::Nothing
+    }
+
+    fn renewed(&mut self, now: Instant) {
+        self.forced_at = None;
+        self.next_check = now + RENEWAL_CHECK;
+    }
+
+    fn failed(&mut self, now: Instant) {
+        self.forced_at = Some(now + RENEW_NOW_RETRY);
+    }
+}
+
 /// Checks in with the gateway.
 pub struct GatewayCheckIn {
     transport: Arc<MtlsTransport>,
@@ -114,6 +189,8 @@ pub struct GatewayCheckIn {
     /// gateway closes idle connections after about thirty seconds", which is a
     /// sentence somebody can do something with.
     observed_idle_limit: RwLock<Option<Duration>>,
+    /// When the client certificate is next renewed, or looked at (DAWG-308).
+    renewal: Mutex<RenewalPlan>,
 }
 
 impl std::fmt::Debug for GatewayCheckIn {
@@ -142,6 +219,7 @@ impl GatewayCheckIn {
             snapshots: None,
             install: None,
             observed_idle_limit: RwLock::new(None),
+            renewal: Mutex::new(RenewalPlan::new(Instant::now())),
         }
     }
 
@@ -322,6 +400,59 @@ impl CheckIn for GatewayCheckIn {
 }
 
 impl GatewayCheckIn {
+    /// Renew the certificate if the server asked, an operator asked, or it is
+    /// due (DAWG-308). Never fails the check-in: a renewal that did not work
+    /// is retried, and the certificate in use stays in use.
+    async fn renew(&self, server_asked: bool) {
+        let by_hand = self.state.take_renewal_request();
+        let step = {
+            let Ok(mut plan) = self.renewal.lock() else {
+                return;
+            };
+            plan.step(
+                Instant::now(),
+                server_asked,
+                by_hand,
+                self.transport.spread(),
+            )
+        };
+        if server_asked && step == RenewalStep::Nothing {
+            tracing::debug!("the server asked for a certificate renewal; it is scheduled");
+        }
+        match step {
+            RenewalStep::Nothing => {}
+            RenewalStep::Force => {
+                let result = self.transport.renew_now().await;
+                if let Ok(mut plan) = self.renewal.lock() {
+                    match &result {
+                        Ok(_) => plan.renewed(Instant::now()),
+                        Err(_) => plan.failed(Instant::now()),
+                    }
+                }
+                match result {
+                    Ok(renewal) => tracing::info!(
+                        ?renewal,
+                        "client certificate renewed as asked, picking up the organization's keys"
+                    ),
+                    Err(error) => {
+                        tracing::warn!(%error, "an asked-for certificate renewal failed; trying again later");
+                    }
+                }
+            }
+            RenewalStep::Check => match self.transport.renew_if_due(SystemTime::now()).await {
+                Ok(Renewal::Renewed { expires_in }) => tracing::info!(
+                    expires_in_days = expires_in.as_secs() / 86_400,
+                    "client certificate renewed"
+                ),
+                Ok(Renewal::NotDue { .. }) => {}
+                Err(error) => tracing::error!(
+                    %error,
+                    "certificate renewal failed; the host will go stale if this keeps failing"
+                ),
+            },
+        }
+    }
+
     async fn check_in_once(&self) -> anyhow::Result<CheckinOutcome> {
         let request = self.request().await;
         if request.boot_id.is_empty() {
@@ -364,6 +495,8 @@ impl GatewayCheckIn {
                 "server configuration received"
             );
         }
+
+        self.renew(response.renew_certificate).await;
 
         Ok(CheckinOutcome {
             next_checkin: Duration::from_secs(response.next_checkin_s),

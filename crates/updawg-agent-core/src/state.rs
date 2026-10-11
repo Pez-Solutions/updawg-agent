@@ -23,6 +23,9 @@ use std::{
 };
 use updawg_protocol::{HostId, JobId, OrgSigningKey};
 
+/// The file `updawgctl renew` leaves for `updawgd` (DAWG-308).
+const RENEWAL_REQUEST: &str = "renew-requested";
+
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     #[error("could not create state directory {path}")]
@@ -442,6 +445,21 @@ impl LocalState {
     /// Whether the helper has written its word yet.
     pub fn self_update_outcome(&self) -> Result<Option<crate::self_update::Outcome>> {
         self.read_json(SELF_UPDATE_OUTCOME)
+    }
+
+    /* ------------------------------- renewal asked for by hand (DAWG-308) */
+
+    /// Ask the running agent to renew its certificate at its next check-in:
+    /// `updawgctl renew`, after a key rotation an operator does not want to
+    /// wait for.
+    pub fn request_renewal(&self) -> Result<()> {
+        self.write_atomic(RENEWAL_REQUEST, b"")
+    }
+
+    /// Whether a renewal was asked for by hand, forgetting the request.
+    #[must_use]
+    pub fn take_renewal_request(&self) -> bool {
+        fs::remove_file(self.root().join(RENEWAL_REQUEST)).is_ok()
     }
 
     /* ------------------------------------- what updawgctl shows (DAWG-37) */

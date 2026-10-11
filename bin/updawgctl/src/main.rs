@@ -160,6 +160,11 @@ enum Command {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Renew this host's certificate at the agent's next check-in, picking up
+    /// any signing key the organization has rotated to (DAWG-308). The
+    /// gateway asks hosts to do this by itself after a rotation; this is for
+    /// not waiting even minutes.
+    Renew,
     /// Prove you hold an organization key, for handing signing over to it
     /// in the portal (Enterprise, DAWG-157). Prints one line to paste.
     ProveKey {
@@ -262,6 +267,18 @@ async fn main() -> Result<()> {
         Command::Jobs => jobs(&state)?,
         Command::Preflight { release } => preflight(&cli.config, release).await?,
         Command::Keygen { out } => keygen(&out)?,
+        Command::Renew => {
+            if !state.is_enrolled() {
+                anyhow::bail!("this host is not enrolled");
+            }
+            state
+                .request_renewal()
+                .context("asking the agent to renew (run as root)")?;
+            println!(
+                "updawgd renews this host's certificate at its next check-in, within about a minute. \
+                 `updawgctl status` shows the keys it pins afterwards."
+            );
+        }
         Command::ProveKey { org, source } => sign::prove_key(&org, &source)?,
         Command::Endorse {
             org,

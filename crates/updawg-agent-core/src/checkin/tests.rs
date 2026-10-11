@@ -312,3 +312,58 @@ async fn the_inventory_hash_is_reported_and_survives_a_restart() {
     assert_eq!(first["inventory_hash"], "");
     assert_eq!(second["inventory_hash"], "sha256:9f86d0");
 }
+
+/// DAWG-308: a running agent looks at its certificate every hour, not only at
+/// start, so a daemon up for a month does not let it lapse.
+#[test]
+fn a_running_agent_looks_at_its_certificate_every_hour() {
+    let start = Instant::now();
+    let mut plan = RenewalPlan::new(start);
+    assert_eq!(plan.step(start, false, false, 0.5), RenewalStep::Nothing);
+    let later = start + RENEWAL_CHECK;
+    assert_eq!(plan.step(later, false, false, 0.5), RenewalStep::Check);
+    assert_eq!(
+        plan.step(later, false, false, 0.5),
+        RenewalStep::Nothing,
+        "once an hour"
+    );
+}
+
+/// What the server asks for happens within the spread window, at this host's
+/// offset, and asking again on every check-in does not push it back.
+#[test]
+fn a_renewal_the_server_asks_for_is_spread_and_not_postponed() {
+    let start = Instant::now();
+    let mut plan = RenewalPlan::new(start);
+    let at = start + RENEW_NOW_SPREAD.mul_f64(0.5);
+    assert_eq!(plan.step(start, true, false, 0.5), RenewalStep::Nothing);
+    assert_eq!(
+        plan.step(start + RENEW_NOW_SPREAD.mul_f64(0.4), true, false, 0.5),
+        RenewalStep::Nothing
+    );
+    assert_eq!(plan.step(at, true, false, 0.5), RenewalStep::Force);
+    plan.renewed(at);
+    assert_eq!(plan.step(at, false, false, 0.5), RenewalStep::Nothing);
+}
+
+/// A host at the start of the window renews at once; one asked by hand
+/// renews at once whatever its offset; a failure is tried again later.
+#[test]
+fn by_hand_is_now_and_a_failure_is_retried() {
+    let start = Instant::now();
+    let mut plan = RenewalPlan::new(start);
+    assert_eq!(plan.step(start, true, false, 0.0), RenewalStep::Force);
+    plan.failed(start);
+    assert_eq!(
+        plan.step(start, true, false, 0.0),
+        RenewalStep::Nothing,
+        "not straight away"
+    );
+    assert_eq!(
+        plan.step(start + RENEW_NOW_RETRY, true, false, 0.0),
+        RenewalStep::Force
+    );
+
+    let mut plan = RenewalPlan::new(start);
+    assert_eq!(plan.step(start, false, true, 1.0), RenewalStep::Force);
+}

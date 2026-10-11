@@ -178,9 +178,8 @@ async fn main() -> Result<()> {
 
     // Renewal on the way up catches the host that was powered off through its
     // whole renewal window, which is the common way a certificate is allowed to
-    // expire. Renewing on a cadence while the daemon is up attaches to the
-    // check-in loop in DAWG-32; it belongs there because that loop is what
-    // already knows whether the gateway is reachable.
+    // expire. While the daemon is up, the check-in loop looks every hour, and
+    // renews within minutes when the gateway asks (DAWG-308).
     if state.is_enrolled() {
         renew_certificate(&config, &state, extra_root.as_deref()).await;
     }

@@ -277,6 +277,14 @@ impl MtlsTransport {
             .await
     }
 
+    /// This host's offset into a window, between 0 and 1, stable across
+    /// restarts. Used to spread renewals the server asks for (DAWG-308) the
+    /// way it spreads the scheduled ones.
+    #[must_use]
+    pub const fn spread(&self) -> f64 {
+        self.spread
+    }
+
     /// Renew the client certificate if it is time, and start using the new one.
     ///
     /// The key is *not* rotated. A new key would mean writing two files that
@@ -296,7 +304,16 @@ impl MtlsTransport {
                 remaining: certificate.remaining(now).unwrap_or(Duration::ZERO),
             });
         }
+        self.renew_now().await
+    }
 
+    /// Renew the client certificate now, whatever its age (DAWG-308): the
+    /// server asked, because the organization has a signing key newer than
+    /// any this host was offered, or an operator ran `updawgctl renew`.
+    ///
+    /// # Errors
+    /// See [`Self::renew_if_due`].
+    pub async fn renew_now(&self) -> Result<Renewal> {
         let mut last = None;
         for attempt in 1..=RENEW_ATTEMPTS {
             match self.renew_once().await {

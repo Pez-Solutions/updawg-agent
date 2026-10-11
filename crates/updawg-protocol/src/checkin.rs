@@ -249,6 +249,17 @@ pub struct CheckinResponse {
     /// trip on the hot path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<ServerConfig>,
+    /// Renew the client certificate now rather than when it falls due
+    /// (protocol 0.12, DAWG-308).
+    ///
+    /// The organization has a signing key newer than any this host was
+    /// offered, and a host adopts keys at renewal: after a rotation, a
+    /// hand-over or a compromise, waiting for the scheduled renewal would leave
+    /// it verifying against the old key for weeks. The agent renews within
+    /// minutes, spread per host so a fleet does not arrive at once. Absent from
+    /// an older gateway, which never asks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub renew_certificate: bool,
 }
 
 #[cfg(test)]
@@ -390,6 +401,7 @@ mod tests {
             config_version: 7,
             jobs: vec![],
             config: None,
+            renew_certificate: false,
         };
         let json = serde_json::to_string(&resp).unwrap();
         // The common case is "nothing for you". It rides on every check-in
