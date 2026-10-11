@@ -20,6 +20,7 @@ use updawg_agent_core::{
 use updawg_collectors::{PlatformFacts, Root};
 use updawg_crypto::{ClientCertificate, PinnedKeys};
 
+mod policy;
 mod server;
 mod sign;
 
@@ -206,6 +207,10 @@ enum Command {
         /// Sign every waiting job without asking.
         #[arg(long)]
         yes: bool,
+        /// Sign only what this policy file allows (DAWG-293); anything else
+        /// is left waiting for a person. Meant for --yes on a schedule.
+        #[arg(long)]
+        policy: Option<std::path::PathBuf>,
         #[command(flatten)]
         source: sign::KeySource,
     },
@@ -269,14 +274,20 @@ async fn main() -> Result<()> {
             api,
             token,
             yes,
+            policy,
             source,
         } => {
+            let policy = policy
+                .as_deref()
+                .map(policy::SignPolicy::load)
+                .transpose()?;
             sign::sign(
                 sign::SignOptions {
                     api,
                     org,
                     token,
                     yes,
+                    policy,
                 },
                 &source,
             )

@@ -33,6 +33,8 @@ clap.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `updawgctl sign --policy` (DAWG-293).
+toml.workspace = true
 tokio.workspace = true
 
 [lints]

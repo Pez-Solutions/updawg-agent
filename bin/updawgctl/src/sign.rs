@@ -262,6 +262,9 @@ pub(crate) struct SignOptions {
     pub(crate) org: String,
     pub(crate) token: String,
     pub(crate) yes: bool,
+    /// What unattended signing may sign (DAWG-293). `None`: everything this
+    /// key is asked for, as before.
+    pub(crate) policy: Option<crate::policy::SignPolicy>,
 }
 
 /// `updawgctl sign`: every job waiting for this key, shown, confirmed,
@@ -310,6 +313,11 @@ pub(crate) async fn sign(options: SignOptions, source: &KeySource) -> Result<()>
         );
         if job.key_id.as_str() != mine {
             println!("  skipped: it names {}, not this key ({mine})", job.key_id);
+            skipped += 1;
+            continue;
+        }
+        if let Some(why) = options.policy.as_ref().and_then(|p| p.refuses(&job)) {
+            println!("  left waiting: {why}");
             skipped += 1;
             continue;
         }
@@ -398,7 +406,7 @@ fn pins(out: &mut String, packages: &[PackagePin]) {
 }
 
 /// An enum's wire spelling, which is what the portal shows too.
-fn word<T: serde::Serialize>(value: &T) -> String {
+pub(crate) fn word<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
