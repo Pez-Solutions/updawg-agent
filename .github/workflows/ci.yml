@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A clean run, to time CI from nothing (DAWG-300): Actions → CI → Run
+  # workflow, cache unticked.
+  workflow_dispatch:
+    inputs:
+      cache:
+        description: Use the caches
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,46 +39,54 @@ jobs:
             exit 1
           fi
 
-  check:
-    name: fmt, clippy, test
+  # rustfmt, clippy, the tests and cargo deny, shared with updawg-server
+  # (DAWG-300). ⚠️ From updawg-server's main: a change there reaches this CI
+  # without a pull request here.
+  rust:
+    name: Rust
+    uses: Pez-Solutions/updawg-server/.github/workflows/rust.yml@main
+    with:
+      cache: ${{ github.event_name != 'workflow_dispatch' || inputs.cache }}
+      # The release signer's tests hand what it writes to the verifiers apt
+      # and dnf use (DAWG-45). Required, so a runner without them fails
+      # instead of passing having verified nothing; sqv is best effort, as
+      # not every runner's release packages it.
+      prepare: |
+        command -v gpgv >/dev/null || (sudo apt-get update && sudo apt-get install -y gpgv)
+        command -v sqv >/dev/null || sudo apt-get install -y sqv || true
+        echo "UPDAWG_REQUIRE_GPGV=1" >> "$GITHUB_ENV"
+
+  # Everything only the agent checks, beside `rust` rather than after it.
+  agent:
+    name: feature builds and musl
     runs-on: [self-hosted, copenhagen]
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
 
+      - name: start from an empty CARGO_HOME
+        if: github.event_name == 'workflow_dispatch' && !inputs.cache
+        run: echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
+        if: github.event_name != 'workflow_dispatch' || inputs.cache
 
-      # Formatting first: it is the fastest signal and the least interesting
-      # thing to argue about in review.
-      - name: rustfmt
-        run: cargo fmt --all -- --check
-
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # The release signer's tests hand what it writes to the verifiers apt
-      # and dnf use (DAWG-45). Required, so a runner without them fails
-      # instead of passing having verified nothing; sqv is best effort, as
-      # not every runner's release packages it.
       - name: OpenPGP verifiers for the release signer's tests
         run: |
           command -v gpgv >/dev/null || (sudo apt-get update && sudo apt-get install -y gpgv)
           command -v sqv >/dev/null || sudo apt-get install -y sqv || true
-
-      - name: test
-        run: cargo test --workspace
-        env:
-          UPDAWG_REQUIRE_GPGV: "1"
 
       # `insecure-extra-root` is off by default and a release does not set it,
       # so nothing above compiles a line of it. A feature-gated module whose
       # tests never run in CI is a module that is already broken and does not
       # know it yet.
       - name: the insecure-extra-root feature builds, lints and passes its tests
+        env:
+          UPDAWG_REQUIRE_GPGV: "1"
         run: |
           cargo clippy --workspace --all-targets \
             --features updawgd/insecure-extra-root,updawgctl/insecure-extra-root -- -D warnings
@@ -98,9 +114,6 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           sudo apt-get update && sudo apt-get install -y musl-tools
           cargo check --workspace --target x86_64-unknown-linux-musl
-
-  # Advisories, licences and sources are dependencies.yml (DAWG-165), which
-  # also runs daily.
 
   # install.sh is piped into a root shell on somebody else's machine (DAWG-44).
   # Lint it, and prove the refusals refuse — before anything is downloaded or
@@ -176,7 +189,12 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           command -v musl-gcc >/dev/null || (sudo apt-get update && sudo apt-get install -y musl-tools)
 
+      - name: start from an empty CARGO_HOME
+        if: github.event_name == 'workflow_dispatch' && !inputs.cache
+        run: echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
+        if: github.event_name != 'workflow_dispatch' || inputs.cache
         with:
           key: distro-matrix
 
