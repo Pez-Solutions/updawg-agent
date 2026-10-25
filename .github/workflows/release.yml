@@ -17,16 +17,16 @@ on:
       - ".github/workflows/release.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # On main, every job (not just `publish`) uses the release runner group,
-  # since the builds produce what gets signed. PRs build on the shared runners
-  # and publish nothing.
   x86_64:
     name: x86_64-unknown-linux-musl
-    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -69,7 +69,7 @@ jobs:
 
   aarch64:
     name: aarch64-unknown-linux-musl
-    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       CROSS_VERSION: v0.2.5
@@ -125,7 +125,7 @@ jobs:
   agent:
     name: assemble
     needs: [x86_64, aarch64]
-    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -163,7 +163,7 @@ jobs:
   packages:
     name: .deb and .rpm
     needs: [x86_64, aarch64]
-    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -246,7 +246,7 @@ jobs:
   packages-test:
     name: packages on the distro matrix
     needs: packages
-    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -261,7 +261,6 @@ jobs:
           name: packages-next
           path: next/
 
-      # One job for all images; a job per image tied up too many runners.
       - name: install, upgrade, remove
         run: |
           deb_old=$(ls out/*_amd64.deb) deb_new=$(ls next/*_amd64.deb)
@@ -292,7 +291,7 @@ jobs:
     name: publish to pkg.updawg.net (beta)
     needs: [packages, packages-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PKG_PUBLISH == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # Each publish rebuilds the channel index, so they can't overlap.
     concurrency:

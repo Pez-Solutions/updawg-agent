@@ -6,6 +6,9 @@ name: Privacy review
 #
 # Separate from CI because CI doesn't re-run when a label is added.
 
+permissions:
+  contents: read
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -13,7 +16,7 @@ on:
 jobs:
   privacy:
     name: what is collected was reviewed
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:

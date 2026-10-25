@@ -1,0 +1,84 @@
+name: Rust
+
+# fmt, clippy, tests and cargo deny. Called by ci.yml on every change and by
+# dependencies.yml daily.
+
+on:
+  workflow_call:
+    inputs:
+      check:
+        description: rustfmt, clippy and the tests
+        type: boolean
+        default: true
+      cache:
+        description: false for a clean run, with no rust-cache and an empty CARGO_HOME
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, test
+    if: inputs.check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: start from an empty CARGO_HOME
+        if: ${{ !inputs.cache }}
+        run: echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        if: inputs.cache
+
+      # release-sign's tests check its output with gpgv. Required so the
+      # tests can't silently skip; sqv is optional.
+      - name: OpenPGP verifiers
+        run: |
+          command -v gpgv >/dev/null || (sudo apt-get update && sudo apt-get install -y gpgv)
+          command -v sqv >/dev/null || sudo apt-get install -y sqv || true
+          echo "UPDAWG_REQUIRE_GPGV=1" >> "$GITHUB_ENV"
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
+
+  # To get past an advisory that can't be fixed yet, add it to
+  # `advisories.ignore` in deny.toml with a `reason`.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: "0.20.2"
+      SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install cargo-deny
+        run: |
+          set -eu
+          name="cargo-deny-${VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${VERSION}/$name.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/$name.tar.gz" | sha256sum --check --quiet
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - name: Advisories, licences, bans and sources
+        run: cargo-deny --log-level warn check

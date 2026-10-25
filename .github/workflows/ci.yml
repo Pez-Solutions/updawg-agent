@@ -12,6 +12,9 @@ on:
         type: boolean
         default: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -22,7 +25,7 @@ jobs:
   version:
     name: the version does not go backwards
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -38,25 +41,16 @@ jobs:
             exit 1
           fi
 
-  # rustfmt, clippy, tests and cargo deny. Shared with updawg-server and
-  # pinned to its main branch.
   rust:
     name: Rust
-    uses: Pez-Solutions/updawg-server/.github/workflows/rust.yml@main
+    uses: ./.github/workflows/rust.yml
     with:
       cache: ${{ github.event_name != 'workflow_dispatch' || inputs.cache }}
-      # release-sign's tests check its output with gpgv. Required so the
-      # tests can't silently skip; sqv is optional since not every runner
-      # has it packaged.
-      prepare: |
-        command -v gpgv >/dev/null || (sudo apt-get update && sudo apt-get install -y gpgv)
-        command -v sqv >/dev/null || sudo apt-get install -y sqv || true
-        echo "UPDAWG_REQUIRE_GPGV=1" >> "$GITHUB_ENV"
 
   # Agent-specific checks, run in parallel with `rust`.
   agent:
     name: feature builds and musl
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -111,7 +105,7 @@ jobs:
   # downloading or changing anything.
   install-sh:
     name: install.sh
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
@@ -164,7 +158,7 @@ jobs:
   # insecure-extra-root so the agent trusts the fake gateway's CA.
   distros:
     name: agent on the distro matrix
-    runs-on: [self-hosted, copenhagen]
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
@@ -196,7 +190,6 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/updawgd target/x86_64-unknown-linux-musl/release/updawgctl mbin/
           cp target/release/examples/fake_gateway mbin/
 
-      # One job for all distros; a job each tied up too many runners.
       - name: enroll, check in, upload an inventory
         run: |
           sh .github/distros/run.sh \

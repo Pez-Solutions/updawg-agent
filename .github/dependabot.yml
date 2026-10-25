@@ -1,5 +1,4 @@
-# Weekly, grouped per ecosystem to keep the CI queue short. Security updates
-# still arrive immediately.
+# Weekly, grouped per ecosystem. Security updates still arrive immediately.
 version: 2
 updates:
   - package-ecosystem: cargo

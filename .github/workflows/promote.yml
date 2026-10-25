@@ -21,9 +21,7 @@ jobs:
   promote:
     name: promote ${{ inputs.release }} to stable
     if: github.ref == 'refs/heads/main'
-    # The release runner group is limited to main, so PR jobs never run on
-    # the machine holding these credentials.
-    runs-on: [self-hosted, release]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
