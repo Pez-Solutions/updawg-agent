@@ -1,10 +1,6 @@
-//! Tests for the check-in loop.
-//!
-//! Against a real TLS gateway that can hold a request open and hang up
-//! mid-poll, because the interesting behaviour here is entirely about timing
-//! and about telling a trimmed idle connection apart from an outage. A mock
-//! that returns errors instantly cannot tell those apart either, which is the
-//! bug this is guarding.
+//! These run against a real TLS gateway that can hold a request and hang up
+//! mid-poll. The behaviour under test depends on timing, which a mock that
+//! fails instantly can't reproduce.
 
 use super::*;
 use crate::testing::{EnrolledHost, Reply, TestCa, TestGateway, transport};
@@ -13,7 +9,6 @@ use updawg_collectors::testing::FakeHost;
 
 const THIRTY_DAYS: Duration = Duration::from_secs(30 * 86_400);
 
-/// Records what it was handed instead of running it.
 #[derive(Debug, Default)]
 struct RecordingSink {
     delivered: std::sync::Mutex<Vec<String>>,
@@ -33,7 +28,7 @@ impl JobSink for RecordingSink {
 
 struct Harness {
     host: EnrolledHost,
-    /// Kept alive: dropping it removes the fixture directory the collector reads.
+    /// dropping it removes the fixture directory the collector reads
     _fake: FakeHost,
     checkin: GatewayCheckIn,
     sink: Arc<RecordingSink>,
@@ -89,8 +84,6 @@ fn response_with_job() -> String {
     .to_string()
 }
 
-/// The check-in body is what the whole system runs on. It must carry what the
-/// collectors found, and it must be assembled from them rather than invented.
 #[tokio::test]
 async fn the_check_in_carries_what_the_collectors_found() {
     let h = harness(vec![Reply::Now(200, empty_response())]).await;
@@ -102,15 +95,12 @@ async fn the_check_in_carries_what_the_collectors_found() {
     assert_eq!(seen[0].path, "/agent/v1/checkin");
     assert_eq!(body["boot_id"], "b81e5c7a-1f2d-4c3b-9a8e-0d1f2a3b4c5d");
     assert_eq!(body["uptime_s"], 864_000);
-    // A word since protocol 0.4 (DAWG-210): a Debian host with no flag file.
+    // Debian fixture has no reboot-required flag file
     assert_eq!(body["state"]["reboot_required"], "no");
     // 16 GB total, 12 GB available.
     assert!((body["metrics"]["mem_used_pct"].as_f64().unwrap() - 25.0).abs() < 0.01);
 }
 
-/// Every check-in says which organization keys the host verifies against
-/// (DAWG-293), read from its own identity rather than from anything the
-/// server offered, so a rotation adopted at renewal shows at the next one.
 #[tokio::test]
 async fn the_check_in_says_which_keys_the_host_has_pinned() {
     let h = harness(vec![Reply::Now(200, empty_response())]).await;
@@ -130,8 +120,6 @@ async fn the_check_in_says_which_keys_the_host_has_pinned() {
     assert_eq!(body["pinned_keys"], serde_json::json!(["sk_01J8"]));
 }
 
-/// The point of a long poll: it comes back the moment there is something to
-/// come back with, not on the next tick of a timer.
 #[tokio::test]
 async fn a_job_arriving_mid_poll_returns_promptly() {
     let h = harness(vec![Reply::After(
@@ -147,9 +135,7 @@ async fn a_job_arriving_mid_poll_returns_promptly() {
 
     assert_eq!(h.sink.count.load(Ordering::SeqCst), 1);
     assert_eq!(h.sink.delivered.lock().unwrap()[0], "job_01J9ZD");
-    // It waited for the job rather than giving up...
     assert!(elapsed >= Duration::from_millis(280), "returned too early");
-    // ...and came back with it rather than sitting out the rest of the hold.
     assert!(
         elapsed < Duration::from_secs(5),
         "took {elapsed:?}; a job should return immediately, not at the end of the hold"
@@ -157,9 +143,6 @@ async fn a_job_arriving_mid_poll_returns_promptly() {
     assert_eq!(outcome.next_checkin, Duration::ZERO);
 }
 
-/// The acceptance criterion, and the reason this module exists. A proxy that
-/// hangs up on an idle long poll must not look like an outage: backing off
-/// there makes the agent slow to reach for no reason at all.
 #[tokio::test]
 async fn a_proxy_hanging_up_mid_poll_is_not_treated_as_a_failure() {
     let h = harness(vec![Reply::HangUpAfter(Duration::from_secs(6))]).await;
@@ -178,9 +161,6 @@ async fn a_proxy_hanging_up_mid_poll_is_not_treated_as_a_failure() {
     assert!(!outcome.inventory_requested);
 }
 
-/// The observation is recorded so it can be reported, and the hold is left
-/// alone. Shortening the agent's own timeout would only make it abandon polls
-/// the gateway was about to answer — the gateway decides the hold, not us.
 #[tokio::test]
 async fn a_trimmed_poll_is_recorded_without_changing_the_hold() {
     let h = harness(vec![Reply::HangUpAfter(Duration::from_secs(6))]).await;
@@ -203,14 +183,13 @@ async fn a_trimmed_poll_is_recorded_without_changing_the_hold() {
     );
 }
 
-/// A gateway that is genuinely unreachable fails fast, and that *is* a failure.
-/// If this were also swallowed, an agent would spin against a dead gateway
-/// forever instead of backing off.
+/// Otherwise the agent would spin against a dead gateway instead of backing
+/// off.
 #[tokio::test]
 async fn a_gateway_that_fails_immediately_is_still_a_failure() {
     let ca = TestCa::new();
     let host = EnrolledHost::new(&ca, THIRTY_DAYS);
-    // Nothing listening on this port.
+    // nothing listens on port 1
     let transport = Arc::new(
         MtlsTransport::with_extra_root(
             "https://localhost:1",
@@ -241,8 +220,6 @@ async fn a_gateway_that_fails_immediately_is_still_a_failure() {
     );
 }
 
-/// Only the shortest observation is kept, so a network that trims every poll
-/// produces one log line rather than a stream of them.
 #[tokio::test]
 async fn only_the_shortest_idle_limit_is_kept() {
     let h = harness(vec![]).await;
@@ -259,9 +236,6 @@ async fn only_the_shortest_idle_limit_is_kept() {
     );
 }
 
-/// A host that cannot read its own state still checks in. A heartbeat that
-/// says less is worth much more than no heartbeat: a host that goes quiet is
-/// indistinguishable from one that was switched off.
 #[tokio::test]
 async fn a_host_that_cannot_read_its_state_still_checks_in() {
     let ca = TestCa::new();
@@ -291,9 +265,8 @@ async fn a_host_that_cannot_read_its_state_still_checks_in() {
     assert_eq!(body["boot_id"], "b81e5c7a-1f2d-4c3b-9a8e-0d1f2a3b4c5d");
 }
 
-/// The inventory hash rides on every check-in so the server can notice the two
-/// have diverged. Before anything has been uploaded it is empty, which is
-/// correct and is what makes the server ask.
+/// The hash is empty until an inventory has been uploaded; that's what makes
+/// the server ask for one.
 #[tokio::test]
 async fn the_inventory_hash_is_reported_and_survives_a_restart() {
     let h = harness(vec![
@@ -313,8 +286,6 @@ async fn the_inventory_hash_is_reported_and_survives_a_restart() {
     assert_eq!(second["inventory_hash"], "sha256:9f86d0");
 }
 
-/// DAWG-308: a running agent looks at its certificate every hour, not only at
-/// start, so a daemon up for a month does not let it lapse.
 #[test]
 fn a_running_agent_looks_at_its_certificate_every_hour() {
     let start = Instant::now();
@@ -329,8 +300,6 @@ fn a_running_agent_looks_at_its_certificate_every_hour() {
     );
 }
 
-/// What the server asks for happens within the spread window, at this host's
-/// offset, and asking again on every check-in does not push it back.
 #[test]
 fn a_renewal_the_server_asks_for_is_spread_and_not_postponed() {
     let start = Instant::now();
@@ -346,8 +315,8 @@ fn a_renewal_the_server_asks_for_is_spread_and_not_postponed() {
     assert_eq!(plan.step(at, false, false, 0.5), RenewalStep::Nothing);
 }
 
-/// A host at the start of the window renews at once; one asked by hand
-/// renews at once whatever its offset; a failure is tried again later.
+/// Spread 0.0 puts the host at the start of the window, so the server's
+/// request is immediate too.
 #[test]
 fn by_hand_is_now_and_a_failure_is_retried() {
     let start = Instant::now();

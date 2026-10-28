@@ -3,16 +3,10 @@
 #
 #   sh packaging/bump-version.sh minor     # 0.2.3 -> 0.3.0
 #
-# Edits [workspace.package] version in Cargo.toml and the lock file, and
-# says what to commit. Open a pull request with it like any change: CI checks
-# the version never goes backwards (ci.yml), and every build after the merge
-# is <version>-<time>.g<sha>, which sorts above every build of the version
-# before it.
+# Updates [workspace.package] version in Cargo.toml and Cargo.lock.
 #
-# When: minor for a feature, patch for a fix, major when an agent of the old
-# major cannot talk to the server any more. updawg-protocol has its own
-# version (crates/updawg-protocol), bumped when the wire format changes and
-# published separately.
+# Minor for features, patch for fixes, major when old agents can no longer
+# talk to the server. updawg-protocol is versioned separately.
 set -eu
 level=${1:?major, minor or patch}
 cd "$(dirname "$0")/.."
@@ -26,8 +20,7 @@ case $level in
   patch) next="$major.$minor.$((patch + 1))" ;;
   *) echo "bump-version.sh: major, minor or patch, not $level" >&2; exit 2 ;;
 esac
-# Only the [workspace.package] line: crates with their own version (the
-# protocol) are not this script's.
+# Only the workspace version; the protocol crate has its own.
 awk -v next_version="$next" '
   /^\[workspace.package\]/ { in_pkg = 1 }
   /^\[/ && !/^\[workspace.package\]/ { in_pkg = 0 }

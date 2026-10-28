@@ -4,8 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # A clean run, to time CI from nothing (DAWG-300): Actions → CI → Run
-  # workflow, cache unticked.
+  # Manual run without the cache, to time CI from scratch.
   workflow_dispatch:
     inputs:
       cache:
@@ -18,8 +17,8 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # The version only goes up (packaging/bump-version.sh). Lowered on main,
-  # every build after it would sort below the ones hosts already have.
+  # The version may only go up (see packaging/bump-version.sh). A lower one
+  # on main would sort below builds hosts already have.
   version:
     name: the version does not go backwards
     if: github.event_name == 'pull_request'
@@ -39,24 +38,22 @@ jobs:
             exit 1
           fi
 
-  # rustfmt, clippy, the tests and cargo deny, shared with updawg-server
-  # (DAWG-300). ⚠️ From updawg-server's main: a change there reaches this CI
-  # without a pull request here.
+  # rustfmt, clippy, tests and cargo deny. Shared with updawg-server and
+  # pinned to its main branch.
   rust:
     name: Rust
     uses: Pez-Solutions/updawg-server/.github/workflows/rust.yml@main
     with:
       cache: ${{ github.event_name != 'workflow_dispatch' || inputs.cache }}
-      # The release signer's tests hand what it writes to the verifiers apt
-      # and dnf use (DAWG-45). Required, so a runner without them fails
-      # instead of passing having verified nothing; sqv is best effort, as
-      # not every runner's release packages it.
+      # release-sign's tests check its output with gpgv. Required so the
+      # tests can't silently skip; sqv is optional since not every runner
+      # has it packaged.
       prepare: |
         command -v gpgv >/dev/null || (sudo apt-get update && sudo apt-get install -y gpgv)
         command -v sqv >/dev/null || sudo apt-get install -y sqv || true
         echo "UPDAWG_REQUIRE_GPGV=1" >> "$GITHUB_ENV"
 
-  # Everything only the agent checks, beside `rust` rather than after it.
+  # Agent-specific checks, run in parallel with `rust`.
   agent:
     name: feature builds and musl
     runs-on: [self-hosted, copenhagen]
@@ -80,10 +77,8 @@ jobs:
           command -v gpgv >/dev/null || (sudo apt-get update && sudo apt-get install -y gpgv)
           command -v sqv >/dev/null || sudo apt-get install -y sqv || true
 
-      # `insecure-extra-root` is off by default and a release does not set it,
-      # so nothing above compiles a line of it. A feature-gated module whose
-      # tests never run in CI is a module that is already broken and does not
-      # know it yet.
+      # `insecure-extra-root` is off by default, so the steps above never
+      # compile it.
       - name: the insecure-extra-root feature builds, lints and passes its tests
         env:
           UPDAWG_REQUIRE_GPGV: "1"
@@ -93,9 +88,7 @@ jobs:
           cargo test --workspace \
             --features updawgd/insecure-extra-root,updawgctl/insecure-extra-root
 
-      # And the property the feature exists for: with it off, the flag is not
-      # something the binary refuses, it is something the binary has never
-      # heard of. This is the check, because it is the whole argument.
+      # Without the feature the flag must not exist at all.
       - name: a default build has never heard of --insecure-extra-root
         run: |
           cargo build --bin updawgctl
@@ -106,18 +99,16 @@ jobs:
             *) echo "FAIL: a default build accepted --insecure-extra-root"; exit 1 ;;
           esac
 
-      # The agent is statically linked against musl so one build per
-      # architecture runs on every supported distro. Checking it here stops a
-      # dependency that needs glibc from landing unnoticed.
+      # Release builds are static musl binaries; catch dependencies that
+      # need glibc.
       - name: check musl target builds
         run: |
           rustup target add x86_64-unknown-linux-musl
           sudo apt-get update && sudo apt-get install -y musl-tools
           cargo check --workspace --target x86_64-unknown-linux-musl
 
-  # install.sh is piped into a root shell on somebody else's machine (DAWG-44).
-  # Lint it, and prove the refusals refuse — before anything is downloaded or
-  # changed — on the platforms it must turn away.
+  # Lint install.sh and check that it refuses unsupported platforms before
+  # downloading or changing anything.
   install-sh:
     name: install.sh
     runs-on: [self-hosted, copenhagen]
@@ -141,11 +132,10 @@ jobs:
           # Debian with no systemd in the container: refused before download.
           refuse debian:13 "no systemctl"
 
-      # The real thing, from pkg.updawg.net's beta channel, in stock images:
-      # key, repository, package, and a host an older install.sh set up handed
-      # over to the package with its config kept. No systemd in a container,
-      # so systemctl is a stub that says yes; the package's own scripts skip
-      # systemd when it is not running.
+      # A real install from the beta channel in stock images, including a
+      # host set up by an older install.sh migrating to the package with its
+      # config kept. There's no systemd in the container, so systemctl is
+      # stubbed; the package scripts skip systemd when it isn't running.
       - name: installs from the signed repository
         run: |
           install_ok() {
@@ -153,7 +143,7 @@ jobs:
               command -v curl >/dev/null 2>&1 ||
                 { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } >/dev/null 2>&1
               printf "#!/bin/sh\nexit 0\n" > /usr/local/bin/systemctl && chmod +x /usr/local/bin/systemctl
-              # As an older install.sh left a host: its binary, its unit, an edited config.
+              # Layout left by an older install.sh: binary, unit, edited config.
               mkdir -p /etc/systemd/system /etc/updawg
               echo "ExecStart=/usr/local/bin/updawgd" > /etc/systemd/system/updawgd.service
               touch /usr/local/bin/updawgd /usr/local/bin/updawgctl
@@ -169,12 +159,9 @@ jobs:
             install_ok "$image"
           done
 
-  # The agent on every distribution it supports (DAWG-40): the real updawgctl
-  # enrolls and the real updawgd checks in and uploads an inventory, in a
-  # container of each, against a fake gateway that records what it got
-  # (crates/updawg-agent-core/examples/fake_gateway.rs). Built once with
-  # insecure-extra-root, which only this build has, so the agent trusts the
-  # fake's CA.
+  # Enroll and check in from a container of each supported distro against
+  # crates/updawg-agent-core/examples/fake_gateway.rs. Built with
+  # insecure-extra-root so the agent trusts the fake gateway's CA.
   distros:
     name: agent on the distro matrix
     runs-on: [self-hosted, copenhagen]
@@ -198,7 +185,7 @@ jobs:
         with:
           key: distro-matrix
 
-      # Not into bin/: that is where the updawgd and updawgctl crates live.
+      # Not bin/, which holds the crates.
       - name: build
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
@@ -209,8 +196,7 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/updawgd target/x86_64-unknown-linux-musl/release/updawgctl mbin/
           cp target/release/examples/fake_gateway mbin/
 
-      # All of them at once, in one job: twelve jobs of half a minute each
-      # held twelve runner slots and starved main's release jobs.
+      # One job for all distros; a job each tied up too many runners.
       - name: enroll, check in, upload an inventory
         run: |
           sh .github/distros/run.sh \

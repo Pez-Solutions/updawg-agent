@@ -1,6 +1,5 @@
-# The Updawg agent. Installed by install.sh (DAWG-44), which runs it from
-# /usr/local/bin, and by the .deb and .rpm (DAWG-42), whose build rewrites
-# ExecStart to /usr/bin.
+# install.sh runs the agent from /usr/local/bin; the .deb/.rpm build
+# rewrites ExecStart to /usr/bin.
 [Unit]
 Description=Updawg agent
 Documentation=https://github.com/Pez-Solutions/updawg-agent
@@ -9,28 +8,19 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/updawgd
-# ⚠️ Root, and sandboxed only as far as the package manager can bear (DAWG-43,
-# agreed with Pez 2026-09-28). The agent's jobs *are* running apt and dnf, whose
-# maintainer scripts can do anything to the system; a restriction they trip on
-# makes an install fail in a way that looks like a broken package. What limits
-# this process is the closed job set and /etc/updawg/agent.toml, which the
-# server can narrow and never widen. These two cost the package managers
-# nothing — checked by upgrading and installing and removing packages under
-# them on Debian 13 and Rocky 9:
-#
-# Its own /tmp, so nothing on the host can plant files where it or a
-# maintainer script will read them.
+# Runs as root with light sandboxing. Jobs run apt and dnf, and package
+# maintainer scripts break in confusing ways under tighter restrictions. The
+# agent is limited by its fixed job set and agent.toml instead. The settings
+# below were tested with installs, upgrades and removals on Debian 13 and
+# Rocky 9.
 PrivateTmp=yes
-# The networking a package manager and its scripts use: the gateway and the
-# mirrors (inet, inet6), systemd and D-Bus (unix), udev and ip (netlink). Not
-# raw packets, not bluetooth, not anything else.
+# inet for the gateway and mirrors, unix for systemd/D-Bus, netlink for
+# udev and ip.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-# Not set, and on purpose: maintainer scripts run setuid helpers (su, newgrp,
-# passwd for adduser) and some postinsts need them. The systemd default,
-# spelled out so nobody "fixes" it.
+# Maintainer scripts need setuid helpers (su, newgrp, passwd). This is the
+# default, set explicitly so it doesn't get changed.
 NoNewPrivileges=no
-# Not ProtectHome: it would make /root read-only to maintainer scripts and to
-# a snapper rollback of files under /root.
+# No ProtectHome: maintainer scripts and snapper rollbacks write to /root.
 Restart=on-failure
 RestartSec=5s
 

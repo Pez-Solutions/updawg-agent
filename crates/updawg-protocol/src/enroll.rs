@@ -61,18 +61,14 @@ pub struct OrgSigningKey {
     pub status: SigningKeyStatus,
     /// The outgoing key's statement about this one, and the signature over it.
     ///
-    /// ⚠️ **Absent means trust-on-first-use, and nothing else.** An agent that
-    /// has pinned no keys accepts an unendorsed key — that is enrollment,
-    /// anchored by the enrollment token. An agent that has pinned keys already
-    /// requires an endorsement for any key it does not hold, because otherwise
-    /// a rotation is the agent believing whatever the server sends, which is
-    /// exactly what the design says it does not do.
+    /// Absent is only acceptable on first use. An agent with no pinned keys
+    /// accepts an unendorsed key at enrollment, anchored by the enrollment
+    /// token. Once it has pinned keys, any new key needs an endorsement, or
+    /// the agent would be trusting whatever the server sends.
     ///
-    /// ⚠️ **In 0.2 this was an `Option<String>` holding a bare signature.**
-    /// Nothing produced one and nothing read one. A bare signature is
-    /// unverifiable: the statement it covers names an `issued_at` the agent
-    /// cannot derive, and a rebuilt statement is not a byte-identical statement.
-    /// See [`Endorsement`].
+    /// In 0.2 this was an `Option<String>` holding a bare signature, which
+    /// couldn't be verified because the agent had no way to rebuild the exact
+    /// statement (it includes an `issued_at`). See [`Endorsement`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endorsement: Option<Endorsement>,
 }
@@ -83,8 +79,8 @@ pub enum SigningKeyStatus {
     Active,
     /// Still accepted for verification, no longer used for new jobs.
     Retiring,
-    /// No longer accepted. Present so an agent can tell "revoked" from
-    /// "unknown" and refuse loudly rather than silently.
+    /// No longer accepted. Kept so an agent can tell revoked from unknown and
+    /// say so when it refuses.
     Retired,
 }
 

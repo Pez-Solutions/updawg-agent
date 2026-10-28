@@ -1,4 +1,3 @@
-# cross builds aarch64 in a container (release.yml); the build id has to reach
-# build.rs in there too.
+# build.rs needs the build id inside the cross container.
 [build.env]
 passthrough = ["UPDAWG_BUILD"]

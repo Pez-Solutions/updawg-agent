@@ -1,39 +1,34 @@
-//! ZFS, for a root filesystem on a ZFS dataset (DAWG-117).
+//! ZFS, for a root filesystem on a ZFS dataset.
 //!
 //! # What is snapshotted
 //!
-//! The dataset mounted at `/` and **every dataset below it**, recursively and
-//! atomically (`zfs snapshot -r`). Ubuntu's layout puts `var`, `var/lib`,
-//! `var/lib/dpkg` and others in datasets of their own under the root one, and
-//! a snapshot of the root alone would restore the files and not the package
-//! database that says which versions they are. Datasets that are not below
-//! the root — `rpool/USERDATA` for homes, `bpool` for `/boot` — are not
-//! touched. `/boot` being left out is why a rollback that would take away a
-//! kernel is refused when `/boot` is its own filesystem (see the executor).
+//! The dataset mounted at `/` and every dataset below it, atomically
+//! (`zfs snapshot -r`). Ubuntu puts `var`, `var/lib`, `var/lib/dpkg` and
+//! others in child datasets, so snapshotting only the root would restore files
+//! without the matching package database. Datasets outside the root
+//! (`rpool/USERDATA`, `bpool` for `/boot`) are left alone, which is why the
+//! executor refuses a rollback that would remove a kernel.
 //!
-//! # Rolling back destroys what came after (agreed with Pez, 2026-09-28)
+//! # Rollback destroys newer snapshots
 //!
-//! `zfs rollback` goes back only to a dataset's newest snapshot, and `-r`
-//! destroys every snapshot newer than the target to make it so — an
-//! administrator's included. There is no other way back on ZFS short of
-//! cloning, which is a different product.
+//! `zfs rollback` can only go back to a dataset's newest snapshot, so `-r`
+//! destroys every snapshot newer than the target, including an
+//! administrator's. The only alternative on ZFS is cloning.
 //!
-//! # Marked as ours
+//! # Ownership
 //!
-//! Each snapshot is named `@updawg-<job>` and carries the user property
-//! `updawg:job`. Only those are listed, restored or pruned. The name alone
-//! is the identity: ZFS never reuses one, and `zfs:<dataset>@updawg-<job>`
-//! names exactly one snapshot.
+//! Snapshots are named `@updawg-<job>` and carry the user property
+//! `updawg:job`. Only those are listed, restored or pruned. ZFS names are
+//! unique, so `zfs:<dataset>@updawg-<job>` identifies exactly one snapshot.
 
 use crate::{Provider, Restored, Result, Snapshot, SnapshotError, SnapshotProvider};
 use async_trait::async_trait;
 
 const TOOL: &str = "zfs";
-/// The user property that marks a snapshot as the agent's.
 const MARK: &str = "updawg:job";
 const DESCRIPTION: &str = "updawg:description";
 
-/// ZFS, snapshotting one dataset and everything below it.
+/// Snapshots one dataset and everything below it.
 #[derive(Debug, Clone)]
 pub struct Zfs {
     dataset: String,
@@ -58,7 +53,7 @@ impl Zfs {
         }
     }
 
-    /// Another dataset. Tests, which must not touch the real root.
+    /// Uses a specific dataset instead of `/`. For tests.
     #[must_use]
     pub fn with_dataset(dataset: &str) -> Self {
         Self {
@@ -70,7 +65,7 @@ impl Zfs {
         format!("updawg-{job}")
     }
 
-    /// Every dataset under ours with this snapshot, ours first.
+    /// Every dataset at or below ours that has this snapshot, ours first.
     async fn with_snapshot(&self, name: &str) -> Result<Vec<String>> {
         let out = run(&[
             "list",
@@ -100,7 +95,7 @@ impl Zfs {
         )
     }
 
-    /// Our snapshot named by `id`, checked to be one of ours.
+    /// The snapshot name for `id`, if it is one of ours.
     async fn ours(&self, id: &str) -> Result<String> {
         let (dataset, name) = parse_id(id)?;
         if dataset != self.dataset || !self.list().await?.iter().any(|s| s.id == id) {
@@ -217,11 +212,11 @@ impl SnapshotProvider for Zfs {
     }
 }
 
-/// `zfs:<dataset>@<snapshot>`, as the dataset and the snapshot's name.
+/// Splits `zfs:<dataset>@<snapshot>` into dataset and snapshot name.
 ///
 /// # Errors
-/// [`SnapshotError::ForeignId`] for anything else, including a snapshot the
-/// agent could not have named.
+/// [`SnapshotError::ForeignId`] for anything else, including a snapshot name
+/// without the `updawg-` prefix.
 pub fn parse_id(id: &str) -> Result<(&str, &str)> {
     id.strip_prefix("zfs:")
         .and_then(|rest| rest.split_once('@'))
@@ -232,16 +227,16 @@ pub fn parse_id(id: &str) -> Result<(&str, &str)> {
         })
 }
 
-/// `findmnt -n -o SOURCE,FSTYPE`: the source and the filesystem type.
+/// Parses `findmnt -n -o SOURCE,FSTYPE`.
 #[must_use]
 pub fn parse_findmnt(out: &str) -> Option<(String, String)> {
     let mut words = out.split_whitespace();
     Some((words.next()?.to_owned(), words.next()?.to_owned()))
 }
 
-/// `zfs list -H -p -t snapshot -o name,creation,updawg:job[,updawg:description]`:
-/// the agent's own, as ZFS sorted them. ZFS prints `-` for an unset property,
-/// which is how an administrator's snapshot looks.
+/// Parses `zfs list -H -p -t snapshot -o name,creation,updawg:job[,updawg:description]`,
+/// keeping only the agent's snapshots, in ZFS order. ZFS prints `-` for an
+/// unset property, which filters out everyone else's.
 #[must_use]
 pub fn parse_list(out: &str) -> Vec<Snapshot> {
     out.lines()
@@ -264,13 +259,13 @@ pub fn parse_list(out: &str) -> Vec<Snapshot> {
         .collect()
 }
 
-/// `zfs diff -H <snapshot>`: what a rollback to it puts back, and the kernel
-/// module directories it would take away.
+/// Parses `zfs diff -H <snapshot>` into what a rollback would restore and the
+/// kernel module directories it would remove.
 ///
-/// The first column is what happened **since** the snapshot, so a rollback
-/// does the opposite: `+` (created since) is removed, `-` (removed since) is
-/// put back, `M` and `R` are restored. Paths are absolute on the live system;
-/// `mountpoint` is where the snapshotted tree is mounted, `/` for a root.
+/// The first column describes changes since the snapshot, so a rollback
+/// inverts them: `+` gets removed, `-` gets put back, `M` and `R` are
+/// restored. Paths are absolute on the live system; `mountpoint` is where the
+/// snapshotted tree is mounted.
 #[must_use]
 pub fn parse_diff(out: &str, mountpoint: &str) -> (Restored, Vec<String>) {
     let mut restored = Restored::default();

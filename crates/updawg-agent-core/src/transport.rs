@@ -1,23 +1,14 @@
 //! Outbound HTTPS transport, authenticated with the host's client certificate.
 //!
-//! The agent only ever makes outbound connections. There is no listener, no
-//! inbound port and no SSH, which is what lets it work behind NAT and strict
-//! egress firewalls.
+//! The agent only makes outbound connections (no listener, no SSH), so it
+//! works behind NAT and strict egress firewalls.
 //!
-//! Every request after enrollment presents the client certificate issued at
-//! enrollment. Those certificates are short-lived — thirty days — so a host
-//! that is decommissioned or revoked drops out of the fleet on its own rather
-//! than needing to be chased. The cost is that renewal has to work, which is
-//! most of what this module is about.
+//! Client certificates are valid for 30 days, so a decommissioned or revoked
+//! host drops out on its own. Most of this module is about renewing them.
 //!
-//! # Why the client lives behind a lock
-//!
-//! `reqwest` fixes the client certificate when the client is built, so rotating
-//! a certificate means building a new client. Swapping it behind a lock keeps
-//! rotation invisible to callers: a check-in in flight finishes on the old
-//! connection pool and the next one uses the new certificate.
-//!
-//! Scope note: DAWG-31 implements this. DAWG-32 drives the check-in loop.
+//! `reqwest` fixes the client certificate when the client is built, so the
+//! client sits behind a lock and is swapped on renewal. Requests in flight
+//! finish on the old connection pool.
 
 use crate::{
     enroll::KEY_FILE,
@@ -38,21 +29,16 @@ use updawg_protocol::{
 /// How long any single request may take, other than a long-poll check-in.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Attempts made before giving up on one renewal pass.
-///
-/// Small, because the caller comes back. Renewal starts with a third of the
-/// certificate's life left, so there is room for many passes before it matters.
+/// Attempts per renewal pass. The caller retries later, and renewal starts
+/// with a third of the certificate's life left.
 const RENEW_ATTEMPTS: u32 = 3;
 
-/// zstd level 3, its default.
-///
-/// The body is a few hundred kilobytes of repetitive text and the host is
-/// somebody's production server. Higher levels cost noticeably more CPU for a few
-/// percent less over the wire, and the agent's job is to be unnoticeable.
+/// zstd's default level. Higher levels cost noticeably more CPU on the host
+/// for a few percent smaller bodies.
 const COMPRESSION_LEVEL: i32 = 3;
 
-/// Longer than a normal request: this one is a few hundred kilobytes and the
-/// gateway writes several thousand rows before answering.
+/// The upload is a few hundred KB and the gateway writes thousands of rows
+/// before answering.
 const INVENTORY_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, thiserror::Error)]
@@ -75,7 +61,7 @@ pub enum TransportError {
 
     #[error(
         "this host's client certificate expired {ago} ago, so the gateway will refuse it. \
-         Renewal should have happened with ten days to spare — check whether the host was \
+         Renewal should have happened with ten days to spare; check whether the host was \
          powered off, or whether {url} has been reachable. Re-enroll with \
          `updawgctl enroll --token <new token> --force` to recover."
     )]
@@ -94,8 +80,7 @@ pub enum TransportError {
     #[error("could not understand the response from {url}: {detail}")]
     BadResponse { url: String, detail: String },
 
-    /// 429: this host is over its rate limit (DAWG-131), and the gateway said
-    /// how long to wait.
+    /// 429, with the wait the gateway asked for.
     #[error("{url} is rate limiting this host; waiting {}s before asking again", retry_after.as_secs())]
     RateLimited { url: String, retry_after: Duration },
 
@@ -109,7 +94,7 @@ pub enum TransportError {
 }
 
 impl TransportError {
-    /// How long the gateway asked this host to wait, when it did (DAWG-131).
+    /// How long the gateway asked this host to wait, if it did.
     #[must_use]
     pub const fn retry_after(&self) -> Option<Duration> {
         match self {
@@ -118,14 +103,11 @@ impl TransportError {
         }
     }
 
-    /// Whether the gateway refused an inventory delta because it does not hold
+    /// Whether the gateway refused an inventory delta because it doesn't hold
     /// the base it was computed against.
     ///
-    /// Branching on the **code**, never the message: the protocol says so
-    /// explicitly, so the gateway's wording can change without breaking hosts
-    /// running older builds. The status is checked too, because a 409 is the only
-    /// thing that carries this code and reading it from any other status would
-    /// mean trusting a body we have not authenticated as meaning what we think.
+    /// Matches on the error code rather than the message, which may change.
+    /// Only a 409 carries this code, so the status is checked too.
     #[must_use]
     pub fn is_inventory_base_mismatch(&self) -> bool {
         matches!(
@@ -139,11 +121,8 @@ impl TransportError {
 
 pub type Result<T> = std::result::Result<T, TransportError>;
 
-/// A 429, as the error that says how long to wait (DAWG-131).
-///
-/// From `Retry-After` in seconds, which the gateway always sends with one. A
-/// 429 without it is still a request to slow down, so it waits a minute
-/// rather than retrying at once.
+/// Maps a 429 to [`TransportError::RateLimited`] using `Retry-After` (in
+/// seconds). Falls back to a minute if the header is missing.
 fn rate_limited(url: &str, response: &reqwest::Response) -> Option<TransportError> {
     if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
         return None;
@@ -180,28 +159,22 @@ pub enum Renewal {
 pub struct MtlsTransport {
     base: String,
     state: LocalState,
-    /// Rebuilt whenever the certificate rotates. See the module docs.
     client: RwLock<reqwest::Client>,
     certificate: RwLock<ClientCertificate>,
-    /// Per-host offset into the renewal window, so a fleet does not renew in
-    /// lockstep. Derived from the certificate serial rather than a clock, so it
-    /// is stable across restarts — a host that keeps rebooting should not keep
-    /// drawing a new renewal time.
+    /// Per-host offset into the renewal window, derived from the certificate
+    /// serial so it stays the same across restarts.
     spread: f64,
     extra_root: Option<Vec<u8>>,
 }
 
-/// The exact bytes an inventory upload sends, before compression (DAWG-37).
-///
-/// One function for two callers — the upload, and `updawgctl print-inventory
-/// --json` — so what a person is shown is byte for byte what leaves their
-/// host. A test holds the wire to this.
+/// The bytes an inventory upload sends, before compression. Also used by
+/// `updawgctl print-inventory --json` so it shows exactly what is sent.
 pub fn inventory_body(upload: &updawg_protocol::InventoryUpload) -> serde_json::Result<Vec<u8>> {
     serde_json::to_vec(upload)
 }
 
 impl MtlsTransport {
-    /// Build a transport from the identity written at enrollment.
+    /// Builds a transport from the identity written at enrollment.
     ///
     /// # Errors
     /// [`TransportError::NotEnrolled`] if there is no identity yet, and
@@ -211,9 +184,7 @@ impl MtlsTransport {
     }
 
     /// As [`Self::new`], additionally trusting a PEM CA for the server side.
-    ///
-    /// For a gateway behind an organization's own CA, and for the tests below.
-    /// It adds to the platform trust store rather than replacing it.
+    /// Adds to the platform trust store rather than replacing it.
     ///
     /// # Errors
     /// As [`Self::new`].
@@ -258,13 +229,8 @@ impl MtlsTransport {
         format!("{}{API_PATH}{path}", self.base)
     }
 
-    /// Check in, holding the long poll open for up to `hold`.
-    ///
-    /// The caller picks the hold rather than this taking the protocol constant,
-    /// because on a network that trims idle connections the agent converges on
-    /// something shorter than the gateway would allow (see
-    /// [`crate::checkin`]). A margin is added so a poll that is working
-    /// normally is never cut off by the client's own clock first.
+    /// Checks in, holding the long poll open for up to `hold`. Adds a margin
+    /// so the client's timeout doesn't fire before the gateway answers.
     ///
     /// # Errors
     /// See [`TransportError`].
@@ -278,21 +244,17 @@ impl MtlsTransport {
     }
 
     /// This host's offset into a window, between 0 and 1, stable across
-    /// restarts. Used to spread renewals the server asks for (DAWG-308) the
-    /// way it spreads the scheduled ones.
+    /// restarts. Also used to spread server-requested renewals.
     #[must_use]
     pub const fn spread(&self) -> f64 {
         self.spread
     }
 
-    /// Renew the client certificate if it is time, and start using the new one.
+    /// Renews the client certificate if it's due and starts using the new one.
     ///
-    /// The key is *not* rotated. A new key would mean writing two files that
-    /// must both land or neither, and a crash between them leaves a host that
-    /// cannot authenticate and cannot renew — recoverable only by hand. The
-    /// certificate is the short-lived credential; keeping the key makes its
-    /// replacement one atomic write. Rotating the key too would need an
-    /// explicit two-file swap protocol, and is not worth it for this.
+    /// The key is not rotated. That would mean replacing two files atomically,
+    /// and a crash in between would leave a host that can neither authenticate
+    /// nor renew. Keeping the key makes renewal a single write.
     ///
     /// # Errors
     /// See [`TransportError`]. A failure here leaves the current certificate in
@@ -307,9 +269,9 @@ impl MtlsTransport {
         self.renew_now().await
     }
 
-    /// Renew the client certificate now, whatever its age (DAWG-308): the
-    /// server asked, because the organization has a signing key newer than
-    /// any this host was offered, or an operator ran `updawgctl renew`.
+    /// Renews the client certificate regardless of age. Used when the server
+    /// asks (the organization has a newer signing key than this host was
+    /// offered) or an operator runs `updawgctl renew`.
     ///
     /// # Errors
     /// See [`Self::renew_if_due`].
@@ -350,7 +312,6 @@ impl MtlsTransport {
         self.adopt(&key, &identity, &response)
     }
 
-    /// Validate a renewal response and put the new certificate into service.
     fn adopt(
         &self,
         key: &AgentKey,
@@ -367,9 +328,8 @@ impl MtlsTransport {
         if response.ca_chain.is_empty() {
             return Err(bad("the renewal returned no CA chain".into()));
         }
-        // The check that matters: a certificate issued for someone else's key
-        // would be accepted by the parser and then fail every handshake, which
-        // is a miserable thing to debug at renewal time.
+        // a certificate for another key would parse fine and then fail every
+        // handshake
         if certificate.public_key_spki() != key.public_key_spki() {
             return Err(bad(
                 "the renewed certificate is for a different key than this host holds".into(),
@@ -388,10 +348,8 @@ impl MtlsTransport {
             org_signing_keys,
             ..identity.clone()
         };
-        // Build the client before writing anything, for the same reason
-        // enrollment holds the key back until the server has answered: if the
-        // new certificate cannot actually be loaded into a TLS client, the
-        // working one should still be on disk when the daemon next starts.
+        // Build the client before saving, so a certificate that can't be
+        // loaded never replaces the working one on disk.
         let client = build_client(&self.state, &renewed, self.extra_root.as_deref())?;
         self.state.save_identity(&renewed)?;
 
@@ -411,24 +369,15 @@ impl MtlsTransport {
     }
 }
 
-/// Take organization signing keys offered at renewal, conservatively.
+/// Merges organization signing keys offered at renewal.
 ///
-/// Two ways a renewal can change what this host trusts, and both are refused
-/// unless they are the safe direction:
+/// A key missing from the offer is kept, since dropping it would undo the
+/// pinning done at enrollment. A new key is adopted only if it is endorsed by
+/// one this host already holds ([`PinnedKeys::adopt`]).
 ///
-/// - **A key goes missing.** Following that blindly would undo the pinning done
-///   at enrollment. Kept.
-/// - **A key appears.** Adopted only if it is endorsed by one this host already
-///   holds — [`PinnedKeys::adopt`]. That is DAWG-99, and until it existed this
-///   function adopted whatever arrived, which made the renewal path the widest
-///   way to change a fleet's trusted keys without anybody agreeing to it.
-///
-/// ⚠️ **A renewal is not a moment an operator is watching**, which is why this
-/// never fails the renewal and never asks. It keeps the working set and logs at
-/// `error`. A certificate that cannot be renewed takes the host off the air; a
-/// key set that was not adopted costs nothing until somebody rotates for real,
-/// and there is no `--accept-new-org-key` here because there is no operator
-/// present to mean it.
+/// Nobody is watching during a renewal, so a rejected key set doesn't fail
+/// the renewal. It keeps the current set and logs an error. There's no
+/// `--accept-new-org-key` override here for the same reason.
 fn merge_org_keys(
     identity: &Identity,
     response: &CertRenewResponse,
@@ -451,7 +400,7 @@ fn merge_org_keys(
             dropped = ?dropped,
             "the renewal dropped an organization signing key this host relies on; keeping the \
              pinned set. If the organization really rotated its key, re-enroll with \
-             --accept-new-org-key (DAWG-99)"
+             --accept-new-org-key"
         );
         return Ok(identity.org_signing_keys.clone());
     }
@@ -461,7 +410,7 @@ fn merge_org_keys(
             reason = %e,
             "the renewal offered an organization signing key this host cannot follow; keeping \
              the pinned set. A new key has to be endorsed by one this host already trusts. If \
-             the chain really is broken, re-enroll with --accept-new-org-key (DAWG-99)"
+             the chain really is broken, re-enroll with --accept-new-org-key"
         );
         return Ok(identity.org_signing_keys.clone());
     }
@@ -473,20 +422,19 @@ fn merge_org_keys(
     Ok(response.org_signing_keys.clone())
 }
 
-/// How long an answer about a job may take. Short: it is a row update.
 const JOB_ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What the gateway said to an answer about a job.
+/// The gateway's reply to a job ack or completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobAnswer {
     Recorded,
-    /// `409 job_out_of_order`: the job had already moved on — this answer, or
-    /// a later one, arrived before. Not worth retrying, and not a failure.
+    /// `409 job_out_of_order`: this answer or a later one already arrived.
+    /// Not a failure and not worth retrying.
     AlreadyMoved,
 }
 
 impl MtlsTransport {
-    /// `POST /agent/v1/jobs/{id}/ack` (DAWG-100).
+    /// `POST /agent/v1/jobs/{id}/ack`.
     ///
     /// # Errors
     /// Transport failures, and any refusal other than "already moved".
@@ -499,7 +447,7 @@ impl MtlsTransport {
             .await
     }
 
-    /// `POST /agent/v1/jobs/{id}/complete` (DAWG-100, DAWG-105).
+    /// `POST /agent/v1/jobs/{id}/complete`.
     ///
     /// # Errors
     /// Transport failures, and any refusal other than "already moved".
@@ -512,11 +460,11 @@ impl MtlsTransport {
             .await
     }
 
-    /// `POST /agent/v1/jobs/{id}/logs` (DAWG-101): a batch of NDJSON lines.
+    /// `POST /agent/v1/jobs/{id}/logs`: a batch of NDJSON lines.
     ///
-    /// `Ok(false)` when the gateway will never take this batch — it is
-    /// malformed, or the job is closed to logs — so the caller drops it rather
-    /// than retrying for ever. `Err` is worth retrying.
+    /// `Ok(false)` if the gateway will never accept this batch (malformed, or
+    /// the job no longer takes logs) and the caller should drop it. `Err` is
+    /// worth retrying.
     ///
     /// # Errors
     /// Transport failures and server errors.
@@ -539,7 +487,7 @@ impl MtlsTransport {
         match status {
             401 | 403 => Err(self.certificate_rejected()),
             200..=299 => Ok(true),
-            // Refused for good: not ours, not open, or not log lines.
+            // permanent refusals
             400 | 404 | 409 | 413 => Ok(false),
             _ => {
                 let detail = response
@@ -638,18 +586,12 @@ impl MtlsTransport {
 
     /// `PUT /agent/v1/inventory`, zstd-compressed.
     ///
-    /// A full package list is 800–2,500 entries. Compressing it is not a
-    /// micro-optimisation: across a fleet on a six-hourly cycle it is most of
-    /// what the gateway receives, and the body is highly repetitive text, which
-    /// is the case zstd is best at.
+    /// A full package list is typically 800 to 2,500 entries of repetitive
+    /// text, and inventory is most of what the gateway receives, so it's worth
+    /// compressing. The gateway decodes by `Content-Encoding`.
     ///
-    /// The gateway decompresses by `Content-Encoding` and passes an unlabelled
-    /// body through untouched, so this is safe to send at any point after the
-    /// server side has shipped and needs no negotiation.
-    ///
-    /// Returns `()` — the gateway's answer carries nothing the agent acts on
-    /// except its status, and [`TransportError::is_inventory_base_mismatch`] is
-    /// how the one case that matters is recognised.
+    /// Only the status matters. Use
+    /// [`TransportError::is_inventory_base_mismatch`] to detect a stale delta.
     pub async fn upload_inventory(&self, upload: &updawg_protocol::InventoryUpload) -> Result<()> {
         let url = self.url("/inventory");
         let json = inventory_body(upload).map_err(|e| TransportError::BadResponse {
@@ -696,12 +638,9 @@ impl MtlsTransport {
         Ok(())
     }
 
-    /// Turn a connection failure into something worth reading.
-    ///
-    /// A gateway refusing an expired client certificate shows up as a TLS
-    /// handshake failure, not as an HTTP status, and matching on alert strings
-    /// to work out why is guesswork. The certificate's own expiry is a local
-    /// fact, so check that first and say so plainly.
+    /// An expired client certificate shows up as a TLS handshake failure
+    /// rather than an HTTP status, so check the local expiry first and report
+    /// that if it applies.
     fn connection_error(&self, url: &str, error: &reqwest::Error) -> TransportError {
         let certificate = self.certificate();
         let now = SystemTime::now();
@@ -732,7 +671,6 @@ impl MtlsTransport {
     }
 }
 
-/// Build a `reqwest` client that presents this host's certificate.
 fn build_client(
     state: &LocalState,
     identity: &Identity,
@@ -740,9 +678,7 @@ fn build_client(
 ) -> Result<reqwest::Client> {
     let key = AgentKey::load(state.root().join(KEY_FILE))?;
 
-    // reqwest wants one PEM document holding the key and the certificate
-    // chain. Built in memory; the key is never written anywhere but its own
-    // file.
+    // reqwest wants the key and chain in one PEM. Kept in memory only.
     let mut bundle = key.private_key_pem();
     bundle.push_str(&identity.certificate);
     for ca in &identity.ca_chain {
@@ -775,26 +711,17 @@ fn build_client(
     })
 }
 
-/// The CSR subject to use when renewing.
-///
-/// The host id, not the machine id this host used at enrollment: by now the
-/// server has named it, and that name is what the renewed certificate will
-/// carry. Either way the subject is only a request — the gateway decides
-/// identity from the certificate presented on the renewal call, not from what
-/// the CSR asks for.
+/// The CSR subject for a renewal: the server-assigned host id rather than the
+/// machine id used at enrollment. The gateway takes identity from the
+/// presented certificate, not the CSR, so this is only a request.
 fn renewal_subject(identity: &Identity) -> &str {
     identity.host_id.as_str()
 }
 
 /// A stable per-host offset in `[0, 1)`, derived from the certificate serial.
-///
-/// Stable is the point. Drawing this from a clock would give a host that keeps
-/// restarting a new renewal time each boot, which is the opposite of spreading
-/// load.
 fn spread_from(serial: &str) -> f64 {
-    // FNV-1a. A simple `acc * 31 + b` fold leaves the low bits dominated by the
-    // last byte, and certificate serials issued in sequence differ only there —
-    // which clusters exactly the hosts this is meant to separate.
+    // FNV-1a. A simple `acc * 31 + b` fold leaves the low bits dominated by
+    // the last byte, and sequential serials differ mostly there.
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x1000_0000_01b3;
     let hash = serial
@@ -806,7 +733,7 @@ fn spread_from(serial: &str) -> f64 {
     }
 }
 
-/// "3 days", "4 hours", "12 minutes" — enough for an operator to act on.
+/// Rough human duration: "3 days", "4 hours", "12 minutes".
 fn approximate(d: Duration) -> String {
     let s = d.as_secs();
     match s {

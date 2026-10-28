@@ -1,5 +1,5 @@
-//! The LVM parsers, against output captured from a real LVM (DAWG-118). See
-//! `fixtures/lvm/README.md`, and `lvm_live.rs` for the round run for real.
+//! The LVM parsers, against captured output (see `fixtures/lvm/README.md`).
+//! `lvm_live.rs` runs the same commands against a real thin pool.
 
 #![allow(
     clippy::expect_used,
@@ -21,7 +21,6 @@ fn fixture(name: &str) -> String {
     .unwrap()
 }
 
-/// The root is found by the device findmnt names, and must be thin.
 #[test]
 fn volumes_say_which_is_thin() {
     let volumes = parse_volumes(&fixture("lvs-all.json")).unwrap();
@@ -41,12 +40,11 @@ fn only_the_agents_own_snapshots_of_this_volume_are_listed() {
     assert_eq!(ours.len(), 1, "{ours:?}");
     assert_eq!(ours[0].id, "lvm:testvg/updawg_job_x");
     assert_eq!(ours[0].job, "job_x");
-    // Of another volume: not this one's.
     let home = parse_ours(&fixture("lvs-ours.json"), "home").unwrap();
     assert!(matches!(home.as_slice(), []), "{home:?}");
 }
 
-/// 1 GiB, 6.32% used.
+// 1 GiB, 6.32% used
 #[test]
 fn the_pools_free_space_is_its_size_less_what_is_used() {
     let free = parse_pool_free(&fixture("pool.json")).unwrap();
@@ -56,7 +54,6 @@ fn the_pools_free_space_is_its_size_less_what_is_used() {
     assert!((got - expected).abs() < 2.0, "{free}");
 }
 
-/// A mounted root cannot merge now; LVM says it will at the next boot.
 #[test]
 fn a_merge_into_a_mounted_volume_is_put_off_to_its_next_activation() {
     assert!(parse_deferred(&fixture("merge-deferred.txt")));

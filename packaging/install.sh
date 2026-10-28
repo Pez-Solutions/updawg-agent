@@ -3,28 +3,23 @@
 #
 #   curl -fsSL https://get.updawg.net | sudo UPDAWG_TOKEN=enr_... sh
 #
-# It is piped into a root shell, so it is short enough to read first:
+# To read it first:
 #   curl -fsSL https://get.updawg.net | less
 #
-# What it does: checks this is a supported Linux on a supported CPU, adds the
-# signed apt or dnf repository at https://pkg.updawg.net with its key, installs
-# the updawg-agent package, and enrolls if UPDAWG_TOKEN is set. From then on
-# the agent is updated with everything else, by your package manager, and every
-# package it installs is checked against the repository's signature.
+# Checks the OS and CPU are supported, adds the signed apt or dnf repository
+# from https://pkg.updawg.net, installs the updawg-agent package and enrolls
+# if UPDAWG_TOKEN is set. After that the agent is updated by the package
+# manager like everything else. An existing /etc/updawg/agent.toml is kept.
 #
-# The package writes /etc/updawg/agent.toml only if there is none: local
-# config always wins. UPDAWG_CHANNEL=beta for every build as it passes tests.
+# Optional:
+#   UPDAWG_CHANNEL=beta     every build that passes tests (default: stable)
+#   UPDAWG_SERVER=https://agents.us.updawg.net
+#                           a different region's gateway
+#   UPDAWG_ORG_KEY=<key>    your organization's own signing key (from
+#                           `updawgctl keygen`), written to agent.toml as
+#                           trusted_org_key before enrolling
 #
-# If your organization holds its own signing key (Enterprise), also pass
-# UPDAWG_SERVER=https://agents.us.updawg.net: another region's gateway;
-# updawgctl enroll reads it and writes it to agent.toml first.
-#
-# UPDAWG_ORG_KEY=<public key from `updawgctl keygen`>: it is written to
-# agent.toml as trusted_org_key before enrolling, and the host then refuses any
-# organization key that does not lead back to yours.
-#
-# The same steps by hand, and a path with no package manager at all:
-# https://docs.updawg.net/install/
+# Manual install steps: https://docs.updawg.net/install/
 set -eu
 
 PKG="${UPDAWG_PKG:-https://pkg.updawg.net}"
@@ -39,7 +34,7 @@ fail() { printf 'updawg: %s\n' "$*" >&2; exit 1; }
 
 case "$(uname -m)" in
   x86_64 | amd64 | aarch64 | arm64) ;;
-  *) fail "no agent build for $(uname -m) — only x86_64 and aarch64. Nothing was changed." ;;
+  *) fail "no agent build for $(uname -m) (only x86_64 and aarch64 are). Nothing was changed." ;;
 esac
 case "$CHANNEL" in
   stable | beta) ;;
@@ -56,7 +51,7 @@ esac
 case " ${ID:-} ${ID_LIKE:-} " in
   *" debian "* | *" ubuntu "*) family=apt ;;
   *" rhel "* | *" fedora "* | *" centos "*) family=dnf ;;
-  *) fail "${PRETTY_NAME:-this distribution} is not supported — Debian, Ubuntu and the RHEL family are. Nothing was changed." ;;
+  *) fail "${PRETTY_NAME:-this distribution} is not supported (Debian, Ubuntu and the RHEL family are). Nothing was changed." ;;
 esac
 [ "$family" = apt ] || command -v dnf >/dev/null 2>&1 \
   || fail "the RHEL family's agent package installs with dnf, and there is no dnf. Nothing was changed."
@@ -76,7 +71,7 @@ trap 'rm -rf "$tmp"' EXIT
 fetch "$PKG/updawg.asc" "$tmp/updawg.asc" || fail "could not download $PKG/updawg.asc. Nothing was changed."
 
 # -------------------------------------------------------------- repository
-# The key signs the repository's indexes and nothing else is trusted for it.
+# The key is only trusted for this repository.
 say "adding the $CHANNEL channel of $PKG for ${PRETTY_NAME:-Linux}"
 if [ "$family" = apt ]; then
   install -d -m 0755 /etc/apt/keyrings
@@ -85,7 +80,7 @@ if [ "$family" = apt ]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq -o Dir::Etc::sourcelist=sources.list.d/updawg.list \
     -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
-  # confold: an agent.toml already here (from an older install.sh) is kept.
+  # confold keeps an agent.toml from an older install.sh.
   apt-get install -y -qq -o Dpkg::Options::=--force-confold updawg-agent
 else
   rpm --import "$tmp/updawg.asc"
@@ -102,23 +97,21 @@ REPO
 fi
 say "installed $(updawgctl --version)"
 
-# An agent from an older install.sh: its unit in /etc outranks the package's,
-# and runs /usr/local/bin/updawgd. Hand over to the package; the identity in
-# /var/lib/updawg and the config in /etc/updawg are the host's and stay.
+# Older install.sh versions put a unit in /etc that overrides the package's
+# and runs /usr/local/bin/updawgd. Remove those; identity and config stay.
 if grep -qs /usr/local/bin/updawgd /etc/systemd/system/updawgd.service; then
   rm -f /etc/systemd/system/updawgd.service /usr/local/bin/updawgd /usr/local/bin/updawgctl
   say "replaced the agent an earlier install.sh put in /usr/local/bin"
 fi
 
 # --------------------------------------------------------- trusted org key
-# Before enrolling, because enrolling is when the key is pinned. updawgctl
-# checks the key itself; a host already set to trust a different one is left
-# alone rather than silently switched.
+# Must happen before enrolling, which pins the key. A host that already
+# trusts a different key is left alone.
 if [ -n "$ORG_KEY" ]; then
   conf=/etc/updawg/agent.toml
   have=$(sed -n 's/^trusted_org_key *= *"\(.*\)"/\1/p' "$conf")
   if [ -z "$have" ]; then
-    # First line, so it is a top-level key and not part of a [table].
+    # Prepend so it isn't inside a [table].
     { printf 'trusted_org_key = "%s"\n' "$ORG_KEY"; cat "$conf"; } > "$tmp/agent.toml"
     cat "$tmp/agent.toml" > "$conf"
     say "this host trusts only your organization's key from now on (trusted_org_key in $conf)"
@@ -128,8 +121,7 @@ if [ -n "$ORG_KEY" ]; then
 fi
 
 # ------------------------------------------------------------------ enroll
-# The token reaches updawgctl through its environment, which only root can read,
-# rather than its arguments, which every user on the host can see in `ps`.
+# Pass the token via the environment; arguments are visible in `ps`.
 if [ -n "${UPDAWG_TOKEN:-}" ]; then
   UPDAWG_TOKEN="$UPDAWG_TOKEN" updawgctl enroll
 else
@@ -139,7 +131,7 @@ fi
 if [ -d /run/systemd/system ]; then
   systemctl daemon-reload
   systemctl enable updawgd.service >/dev/null 2>&1
-  # restart, not start: it reads its identity, and a new binary, when it starts.
+  # restart so it picks up the new identity and binary.
   systemctl restart updawgd.service
   say "updawgd is running. Check it with: sudo updawgctl status"
 fi

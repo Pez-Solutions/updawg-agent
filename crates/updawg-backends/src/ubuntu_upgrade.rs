@@ -1,36 +1,33 @@
-//! An Ubuntu release upgrade (DAWG-150): Canonical's `do-release-upgrade`,
-//! driven non-interactively, its output in the job log.
+//! Ubuntu release upgrade via Canonical's `do-release-upgrade`, run
+//! non-interactively with its output in the job log.
 //!
-//! Unlike Debian's, nothing here rewrites sources: the upgrader does that
-//! itself, from Canonical's meta-release list, and comments out third-party
-//! repositories as it goes (the preflight's `third_party_repos` names them).
-//! What the agent adds is making it go where it was approved to, and
-//! refusing, before anything changes, what the upgrader would refuse.
+//! The upgrader rewrites sources itself from Canonical's meta-release list
+//! and comments out third-party repositories. The agent's job is to make sure
+//! it goes to the approved release and to catch, up front, anything the
+//! upgrader would refuse.
 //!
-//! 1. **Refuse** ([`blockers`], which a preflight asks too). Ubuntu only; a
-//!    newer release; not `Prompt=never` in `/etc/update-manager/release-upgrades`,
-//!    which is local configuration and wins; `do-release-upgrade` installed;
-//!    nothing held; nothing half-installed. And the upgrader's own two
-//!    refusals, as `/usr/bin/do-release-upgrade` decides them (22.04's
-//!    1:22.04.21): an update not yet installed that is not phasing, and a
-//!    reboot owed for `libc6`, `linux-base` or a kernel. Both mean a patch
-//!    proposal, and a reboot, first.
-//! 2. **The release it would go to is the approved one.** It cannot be told
-//!    a target: `do-release-upgrade -c` says which release `Prompt` and the
-//!    meta-release list lead to, and anything else is refused. Canonical
-//!    offers an LTS to the previous LTS from its first point release
-//!    (24.04.1), so for months after an LTS comes out, this refuses.
-//! 3. **`do-release-upgrade -f DistUpgradeViewNonInteractive`**, keeping
-//!    every configuration file edited on the host: an `apt.conf.d` drop-in
-//!    for dpkg (`--force-confold`, `--force-confdef`), `UCF_FORCE_CONFFOLD`
-//!    for ucf. The frontend answers a conffile prompt "keep" on its own too,
-//!    but by writing to a terminal after a five-second sleep. It never
-//!    reboots; the job's reboot policy does that.
-//! 4. **It says it is the target now**, in `/etc/os-release`. Otherwise the
-//!    job failed, whatever the upgrader said.
+//! 1. Check for blockers ([`blockers`], also used by the preflight): Ubuntu
+//!    only, a newer release, no `Prompt=never` in
+//!    `/etc/update-manager/release-upgrades` (local config wins),
+//!    `do-release-upgrade` installed, nothing held or half-installed. Also
+//!    the upgrader's own checks (as of 22.04's 1:22.04.21): no pending
+//!    non-phased updates, and no reboot pending for `libc6`, `linux-base` or
+//!    a kernel.
+//! 2. Confirm the offered release is the approved one. The upgrader can't be
+//!    given a target, so `do-release-upgrade -c` shows where `Prompt` and the
+//!    meta-release list lead. Canonical only offers LTS-to-LTS upgrades from
+//!    the first point release (24.04.1), so this refuses for months after an
+//!    LTS ships.
+//! 3. Run `do-release-upgrade -f DistUpgradeViewNonInteractive`, keeping
+//!    locally edited config files via an `apt.conf.d` drop-in for dpkg and
+//!    `UCF_FORCE_CONFFOLD` for ucf. The frontend would also keep them on its
+//!    own, but only by writing to a terminal after a five-second sleep. It
+//!    never reboots; the job's reboot policy handles that.
+//! 4. Check `/etc/os-release` reports the target. If not, the job failed
+//!    regardless of the upgrader's exit status.
 //!
-//! `apt-get update` runs between 1 and 2 in the job, so the pending-update
-//! refusal is against today's lists; it changes no package.
+//! The job runs `apt-get update` between steps 1 and 2 so the pending-update
+//! check uses current lists.
 
 use crate::debian_upgrade::{apt, changes, half_installed, held, streamed};
 use crate::release::{self, Host};
@@ -40,21 +37,18 @@ use std::path::Path;
 const UPGRADER: &str = "/usr/bin/do-release-upgrade";
 const PROMPT_FILE: &str = "/etc/update-manager/release-upgrades";
 const REBOOT_PKGS: &str = "/var/run/reboot-required.pkgs";
-/// dpkg's options for the upgrade, removed after it.
+/// Removed after the upgrade.
 const DROP_IN: &str = "/etc/apt/apt.conf.d/99updawg-release-upgrade";
 
-/// The upgrader's pending-update rule, in its own terms (python3-apt, which
-/// it needs anyway): upgradable, and not phasing.
+/// The upgrader's own pending-update rule (upgradable and not phasing),
+/// via python3-apt, which the upgrader depends on anyway.
 const PENDING: &str = "import apt\nfor p in apt.Cache():\n    if p.is_upgradable and 'Phased-Update-Percentage' not in p.candidate.record:\n        print(p.name)\n";
 
-/// `22.04` as `(22, 4)`.
 fn version(v: &str) -> Option<(u32, u32)> {
     let (year, month) = v.trim().split_once('.')?;
     Some((year.parse().ok()?, month.parse().ok()?))
 }
 
-/// Whether this host may be upgraded to `target` at all.
-///
 /// # Errors
 /// Why not.
 pub fn plan(host: &Host, target: &str) -> std::result::Result<(), String> {
@@ -88,8 +82,8 @@ pub fn prompt(text: &str) -> Option<String> {
     })
 }
 
-/// The packages in `/var/run/reboot-required.pkgs` the upgrader will not
-/// go on without a reboot for.
+/// Packages in `/var/run/reboot-required.pkgs` that make the upgrader
+/// insist on a reboot first.
 #[must_use]
 pub fn reboot_owed(pkgs: &str) -> Vec<String> {
     pkgs.lines()
@@ -99,8 +93,8 @@ pub fn reboot_owed(pkgs: &str) -> Vec<String> {
         .collect()
 }
 
-/// The release `do-release-upgrade -c` offers: `New release '24.04.3 LTS'
-/// available.` is `24.04.3`.
+/// The release `do-release-upgrade -c` offers, so `New release '24.04.3 LTS'
+/// available.` gives `24.04.3`.
 #[must_use]
 pub fn offered(out: &str) -> Option<String> {
     out.lines().find_map(|l| {
@@ -116,7 +110,7 @@ pub fn is_target(offered: &str, target: &str) -> bool {
     offered == target || offered.starts_with(&format!("{target}."))
 }
 
-/// What a check-only run printed, without its banner, on one line.
+/// Check-only output without the banner, on one line.
 fn said(out: &str) -> String {
     out.lines()
         .map(str::trim)
@@ -125,7 +119,6 @@ fn said(out: &str) -> String {
         .join(" ")
 }
 
-/// Run `program` and keep what it printed. Reads only.
 pub(crate) async fn read(program: &'static str, args: &[&str]) -> Result<(i32, String)> {
     let out = tokio::process::Command::new(program)
         .args(args)
@@ -146,10 +139,8 @@ pub(crate) async fn read(program: &'static str, args: &[&str]) -> Result<(i32, S
     Ok((out.status.code().unwrap_or(-1), text))
 }
 
-/// Why this host would refuse to be upgraded to `target`, found without
-/// changing anything (see the module note, step 1 and 2). What [`upgrade`]
-/// checks after `apt-get update`, and what a preflight asks ahead of time.
-/// Empty when nothing stands in the way.
+/// Reasons [`upgrade`] would refuse `target` (steps 1 and 2 in the module
+/// docs). Changes nothing. Empty when nothing blocks the upgrade.
 ///
 /// # Errors
 /// When the host could not be asked.
@@ -199,7 +190,7 @@ pub async fn blockers(
             "{} update(s) for this release are not installed, and Canonical's upgrader will not start until they are: {}{}",
             pending.len(),
             pending.iter().take(10).copied().collect::<Vec<_>>().join(", "),
-            if pending.len() > 10 { ", …" } else { "" }
+            if pending.len() > 10 { ", ..." } else { "" }
         ));
     }
     if tool && prompt.as_deref() != Some("never") {
@@ -220,7 +211,7 @@ pub async fn blockers(
     Ok(out)
 }
 
-/// The drop-in that keeps edited configuration files, removed when dropped.
+/// Writes the conffile drop-in and removes it on drop.
 struct KeepConffiles;
 
 impl KeepConffiles {
@@ -242,7 +233,7 @@ impl Drop for KeepConffiles {
     }
 }
 
-/// Upgrade this host to Ubuntu `target`. See the module note.
+/// Upgrades this host to Ubuntu `target`. See the module docs.
 ///
 /// # Errors
 /// [`BackendError::Refused`] when nothing was changed; any other error once

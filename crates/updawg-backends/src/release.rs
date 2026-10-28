@@ -1,9 +1,7 @@
-//! Releases by name: a version's codename, and a suite renamed from one
-//! release to the next. Shared by the release-upgrade preflight
-//! (`updawg-agent-core`'s readiness, DAWG-149) and the Debian upgrade itself
-//! ([`crate::debian_upgrade`], DAWG-151), so the suite a preflight asks a
-//! repository about is the suite the upgrade writes. And which release this
-//! host is on ([`Host`]), which both upgrades start from.
+//! Release names: codenames, renaming suites between releases, and the
+//! host's current release ([`Host`]). Shared by the release-upgrade preflight
+//! in `updawg-agent-core` and [`crate::debian_upgrade`], so the preflight
+//! checks the same suite the upgrade writes.
 
 /// The codename of a release named by version (`13`, `24.04`) or already by
 /// codename (`forky`). `None` for a version this build does not know.
@@ -36,9 +34,8 @@ pub fn codename_for(target: &str) -> Option<String> {
         .map(|(_, codename)| (*codename).to_owned())
 }
 
-/// `suite` renamed from the `current` release to `target`, where it names
-/// the current release as one of its `-`-separated words. `None` when it
-/// names none, and so is not tied to a release.
+/// `suite` with the `current` release renamed to `target`, matching whole
+/// `-`-separated words. `None` if the suite isn't tied to `current`.
 #[must_use]
 pub fn target_suite(suite: &str, current: &str, target: &str) -> Option<String> {
     let mut renamed = false;
@@ -64,8 +61,7 @@ pub struct Host {
     pub codename: String,
 }
 
-/// `ID` and `VERSION_ID`, where both are there, and `VERSION_CODENAME`,
-/// empty where there is none.
+/// Requires `ID` and `VERSION_ID`. `VERSION_CODENAME` is empty if absent.
 #[must_use]
 pub fn read_os_release(text: &str) -> Option<Host> {
     let value = |key: &str| {
@@ -84,8 +80,6 @@ pub fn read_os_release(text: &str) -> Option<Host> {
     })
 }
 
-/// This host's release, read now.
-///
 /// # Errors
 /// Reading the file, or [`crate::BackendError::Refused`] when it does not
 /// say which release this is.

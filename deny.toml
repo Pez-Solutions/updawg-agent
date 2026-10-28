@@ -1,19 +1,10 @@
-# cargo deny (DAWG-165): run in CI on every change and daily on main.
+# cargo deny: runs in CI and daily on main.
 #
-# One tool for what `cargo audit` checks (the RustSec advisory database) and
-# for licences and sources, so there is one exception list and one place to
-# read it.
-#
-# ## Exceptions
-#
-# An advisory that cannot be fixed yet goes in `advisories.ignore` with its
-# id and a `reason` saying why it does not apply or what it waits on, in the
-# same pull request that makes the build green again. Nothing is ignored
-# without one; the list is reviewed like code.
+# An advisory that can't be fixed yet goes in `advisories.ignore` with a
+# `reason`.
 
 [advisories]
-# Unmaintained crates too: an abandoned dependency is where an unfixed
-# vulnerability comes from next.
+# Flag unmaintained crates too.
 unmaintained = "all"
 yanked = "deny"
 ignore = []
@@ -41,7 +32,7 @@ allow = [
 confidence-threshold = 0.9
 
 [licenses.private]
-# Our own crates are not published and carry no licence of their own.
+# Workspace crates other than updawg-protocol aren't published.
 ignore = true
 
 [bans]

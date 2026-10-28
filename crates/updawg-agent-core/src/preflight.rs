@@ -1,17 +1,16 @@
-//! Preflight: checks that change nothing and report everything (DAWG-147,
-//! DAWG-148).
+//! Preflight checks: read-only checks run before a change.
 //!
-//! A `run_preflight` job asks whether a change — these packages at these
-//! versions, or a release upgrade — can go ahead, and the answer is one
-//! [`PreflightCheck`] per check, each `pass`, `warn` or `fail` with a sentence
-//! saying what to do and the specifics as a list.
+//! A `run_preflight` job asks whether a change (a set of package versions, or
+//! a release upgrade) can go ahead. The answer is one [`PreflightCheck`] per
+//! check, each `pass`, `warn` or `fail`, with a one-sentence summary and a
+//! list of specifics.
 //!
-//! Two halves, so the thresholds are tested without a host: [`gather`] reads
-//! the host, and [`evaluate`] decides. Gathering runs only commands that read
-//! — `df`, `findmnt`, `dpkg-query`, `rpm -V`, `md5sum`, `dkms status` — and
-//! the package backend's `held_packages`, which is `apt-mark showhold` or
-//! `dnf versionlock list`. Nothing here installs, refreshes, snapshots or
-//! reboots, and the executor's tests hold it to that.
+//! [`gather`] reads the host and [`evaluate`] applies the thresholds, so the
+//! thresholds can be tested without a host. Gathering only runs read-only
+//! commands (`df`, `findmnt`, `dpkg-query`, `rpm -V`, `md5sum`,
+//! `dkms status`) plus the backend's `held_packages` (`apt-mark showhold` or
+//! `dnf versionlock list`). Nothing here installs, refreshes, snapshots or
+//! reboots; the executor's tests check that.
 //!
 //! # Thresholds
 //!
@@ -20,28 +19,28 @@
 //! | `disk_space` (`/`) | under 500 MiB (2 GiB for a release upgrade) | under 2 GiB (5 GiB) |
 //! | `disk_space` (`/boot`, when separate and a kernel is involved) | under 50 MiB | under 150 MiB |
 //! | `held_packages` | a package in the change is held | a release upgrade with anything held |
-//! | `modified_conffiles` | — | a package in the change has an edited configuration file |
-//! | `dkms_modules` | — | modules to rebuild for a new kernel |
-//! | `snapshot` | — | no snapshot provider, so no rollback |
-//! | `reboot` | — | the change needs a reboot, or the host already does |
+//! | `modified_conffiles` | | a package in the change has an edited configuration file |
+//! | `dkms_modules` | | modules to rebuild for a new kernel |
+//! | `snapshot` | | no snapshot provider, so no rollback |
+//! | `reboot` | | the change needs a reboot, or the host already does |
 //! | `release_upgrade` (a release upgrade only) | the upgrade would refuse to begin: a newer release that is not the target, updates not installed, a reboot owed (Ubuntu) | the host could not be asked, or its package lists are over a day old |
 //! | `third_party_repos` (a release upgrade on Debian or Ubuntu; leapp checks the RHEL family's itself) | a third-party repository publishes nothing for the target | one could not be asked |
 //! | `approved_only` (a package change only) | installing it would change something nobody approved, or cannot be done | the package manager could not be asked |
 //!
-//! `approved_only` runs the simulation the install itself runs first
-//! ([`updawg_backends::PackageBackend::check_pins`]), so what a preflight
-//! passes, the install does not refuse (2026-09-29: a kernel update passed
-//! every check and was then refused for the new ABI package it installs).
+//! `approved_only` runs the same simulation the install runs first
+//! ([`updawg_backends::PackageBackend::check_pins`]), so the install won't
+//! refuse something preflight passed. Otherwise a kernel update can pass every
+//! check and then be refused for the new ABI package it pulls in.
 //!
-//! `release_upgrade` asks the backend the questions the upgrade itself asks
-//! before it begins ([`updawg_backends::PackageBackend::release_upgrade_blockers`]),
-//! for the same reason.
+//! `release_upgrade` likewise asks the backend what the upgrade itself checks
+//! before starting
+//! ([`updawg_backends::PackageBackend::release_upgrade_blockers`]).
 //!
-//! `third_party_repos` ([`crate::readiness`], DAWG-149) is the one check that
-//! goes off the host: it reads each third-party repository's index for the
-//! target release over HTTP.
+//! `third_party_repos` ([`crate::readiness`]) is the only check that leaves the
+//! host: it fetches each third-party repository's index for the target release
+//! over HTTP.
 //!
-//! A check that cannot find out says `warn`, with why. Never `pass`.
+//! If a check can't determine the answer it reports `warn` with the reason.
 
 use std::collections::BTreeSet;
 use updawg_protocol::{CheckStatus, PreflightCheck, RebootRequired, job::Preflight};
@@ -67,15 +66,14 @@ pub struct Facts {
     pub snapshots: Result<String, String>,
     pub reboot_now: RebootRequired,
     /// For a release upgrade: its target, and what each third-party
-    /// repository has for it (DAWG-149).
+    /// repository has for it.
     pub third_party: Option<(String, Result<Vec<crate::readiness::Repo>, String>)>,
     /// For a package change: what simulating the install said.
     pub simulation: Option<Simulated>,
-    /// For a release upgrade: why it would refuse to begin (DAWG-150).
+    /// For a release upgrade: why it would refuse to begin.
     pub blockers: Option<Result<Vec<String>, String>>,
-    /// How old the package lists those answers came from are, where the
-    /// agent can tell (apt). A preflight does not refresh them; the upgrade
-    /// does, and can find an update they did not know about.
+    /// Age of the package lists, where known (apt). Preflight doesn't refresh
+    /// them but the upgrade does, and may then find a newer update.
     pub lists_age: Option<std::time::Duration>,
 }
 
@@ -91,8 +89,7 @@ pub enum Simulated {
     Unknown(String),
 }
 
-/// Nothing known: every "could not tell" is a warning, so this is the
-/// cautious starting point, not a healthy host.
+/// Everything unknown, so every check that depends on it warns.
 impl Default for Facts {
     fn default() -> Self {
         Self {
@@ -163,7 +160,6 @@ fn mib(bytes: u64) -> String {
     format!("{} MiB", bytes / MIB)
 }
 
-/// Decide every check from what was gathered.
 #[must_use]
 pub fn evaluate(f: &Facts) -> Vec<PreflightCheck> {
     let mut checks = vec![
@@ -525,9 +521,8 @@ pub async fn gather(
             }
         })
     };
-    // Not on the RHEL family: its repositories name the release with
-    // `$releasever` rather than a codename, and leapp asks about them
-    // itself, which `release_upgrade` reports (DAWG-152).
+    // Skipped on the RHEL family: repos there use `$releasever` instead of a
+    // codename, and leapp checks them itself (reported via `release_upgrade`).
     let third_party = match &preflight.target_release {
         Some(_) if ecosystem == Some(updawg_protocol::Ecosystem::Rpm) => None,
         Some(target) => Some((
@@ -653,14 +648,14 @@ async fn deb_modified_conffiles(planned: &[String]) -> Result<Vec<String>, Strin
         return Ok(vec![]);
     }
     let files: Vec<&str> = recorded.iter().map(|(f, _)| f.as_str()).collect();
-    // `md5sum` reads; a file removed since is simply absent from its output.
+    // files removed since are just missing from md5sum's output
     let Some((_, sums)) = read("md5sum", &files).await else {
         return Err("md5sum could not be run".into());
     };
     Ok(modified(&recorded, &sums))
 }
 
-/// ` /etc/x 0123abcd…` lines from `dpkg-query -f='${Conffiles}'`, skipping
+/// ` /etc/x 0123abcd...` lines from `dpkg-query -f='${Conffiles}'`, skipping
 /// the ones dpkg marks obsolete.
 #[must_use]
 pub fn parse_conffiles(out: &str) -> Vec<(String, String)> {
@@ -702,7 +697,7 @@ async fn rpm_modified_conffiles(planned: &[String]) -> Result<Vec<String>, Strin
         args.push("-a");
     }
     args.extend(planned.iter().map(String::as_str));
-    // Exits 1 when anything differs, which is the answer, not a failure.
+    // exits 1 when anything differs, so the status is ignored
     let Some((_, out)) = read("rpm", &args).await else {
         return Err("rpm could not be run".into());
     };
@@ -778,8 +773,7 @@ mod tests {
         assert_eq!(refused.items, ["a reboot is owed for libc6"]);
         assert_eq!(with(Err("no python3".into())).status, CheckStatus::Warn);
 
-        // Passing against lists over a day old is a warning: the upgrade
-        // refreshes them and can find an update they did not know of.
+        // lists over a day old turn a pass into a warning
         let aged = |hours: u64| {
             evaluate(&Facts {
                 release_upgrade: true,

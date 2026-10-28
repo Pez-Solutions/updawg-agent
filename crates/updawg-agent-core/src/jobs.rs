@@ -1,34 +1,30 @@
-//! Running the jobs a check-in delivers (DAWG-38, DAWG-39, DAWG-102).
+//! Running the jobs a check-in delivers.
 //!
-//! Replaces `UnhandledJobs`, which logged every job and ran none. What happens
-//! to one, in order — and every step before the last can only say no:
+//! Each job goes through these steps, and every one before the last can only
+//! refuse it:
 //!
-//! 1. **Seen before?** A job id already recorded is ignored. The record is
-//!    written *before* anything runs, so a crash halfway through an install
-//!    cannot run it a second time on restart (DAWG-39).
-//! 2. **Is it really a job for this host?** It names this host, it verifies
-//!    under an organization key pinned at enrollment that may still sign, and
-//!    that key is the one it names; it has not expired, and it is not early.
-//! 3. **Does this host allow it?** Local configuration always wins: observe
-//!    mode refuses every job that changes anything, and the deny list refuses
-//!    what it names (DAWG-38). Refusing is a normal outcome, reported with a
-//!    reason, and it halts the proposal for a person to look at.
-//! 4. **Run it**, in the background and one at a time (DAWG-106), then say how
-//!    it went and upload a fresh inventory so the server sees the new state.
+//! 1. Job ids already recorded are ignored. The id is recorded before anything
+//!    runs, so a crash mid-install can't run it again on restart.
+//! 2. The job must name this host, verify under an organization key pinned at
+//!    enrollment that may still sign (and be the key it names), not have
+//!    expired, and not be early.
+//! 3. Local configuration wins: observe mode refuses every job that changes
+//!    anything, and the deny list refuses what it names. A refusal is reported
+//!    with a reason and halts the proposal for someone to review.
+//! 4. Run it in the background, one at a time, report the result and upload a
+//!    fresh inventory.
 //!
-//! `apply_updates`, `reboot` (DAWG-103), `snapshot`, `rollback` (DAWG-119)
-//! and `run_preflight` (DAWG-147) run. The others are refused as not built,
-//! which is honest and halts rather
-//! than pretends.
+//! `refresh_inventory` jobs are refused as not implemented yet, which halts
+//! the proposal.
 //!
 //! # Snapshots
 //!
-//! An `apply_updates` job whose policy asks for one takes a snapshot before
-//! it changes anything, and reports its id whatever happens next — a failed
-//! install is exactly the one somebody wants to roll back. `required` with no
-//! snapshot (no provider, not permitted, or it failed) changes nothing and
-//! says why; `if_available` carries on without and says that too. The agent's
-//! own snapshots beyond `[snapshots] keep` are pruned each time one is taken.
+//! If the policy asks for one, `apply_updates` takes a snapshot before changing
+//! anything and always reports its id, since a failed install is the likeliest
+//! thing to roll back. With `required` and no snapshot (no provider, not
+//! permitted, or it failed) nothing is changed; with `if_available` the job
+//! carries on without one. Either way the report says why. The agent's own
+//! snapshots beyond `[snapshots] keep` are pruned after each new one.
 
 use crate::{
     config::AgentConfig,
@@ -54,7 +50,7 @@ use updawg_snapshots::SnapshotProvider;
 /// The snapshot provider this host has, or why it has none.
 pub type Snapshots = std::result::Result<Arc<dyn SnapshotProvider>, String>;
 
-/// What the server is told about `snapshots` (DAWG-115).
+/// Snapshot support as reported to the server.
 #[must_use]
 pub fn snapshot_support(snapshots: &Snapshots) -> updawg_protocol::SnapshotSupport {
     match snapshots {
@@ -69,26 +65,25 @@ pub fn snapshot_support(snapshots: &Snapshots) -> updawg_protocol::SnapshotSuppo
     }
 }
 
-/// How far ahead of `not_before` a job may arrive and still be taken. The
-/// gateway withholds a job until then, so this is only clock skew.
+/// Allowed clock skew before `not_before`. The gateway holds jobs back until
+/// then anyway.
 const EARLY: Duration = Duration::minutes(5);
 
-/// Rebooting, behind a seam, because it is the one thing a test must never do
-/// for real (DAWG-103).
+/// Rebooting, behind a trait so tests never do it for real.
 #[async_trait]
 pub trait Rebooter: Send + Sync {
-    /// This boot's id. A different one after a reboot is the proof it happened.
+    /// The kernel boot id. A changed id proves a reboot happened.
     fn boot_id(&self) -> Option<String>;
-    /// Whether the host still needs a reboot, as the distribution says.
+    /// Whether the distribution says a reboot is needed.
     async fn reboot_required(&self) -> bool;
-    /// Ask the system to reboot after `delay_s`, with `message` on terminals.
+    /// Reboots after `delay_s`, showing `message` on terminals.
     async fn reboot(&self, delay_s: u64, message: &str) -> anyhow::Result<()>;
-    /// Whether `/boot` is a filesystem of its own, which a snapshot of `/`
-    /// does not cover.
+    /// Whether `/boot` is a separate filesystem, which a snapshot of `/`
+    /// would not cover.
     async fn boot_is_separate(&self) -> bool;
 }
 
-/// The real one: `shutdown -r`.
+/// Reboots with `shutdown -r`.
 #[derive(Debug, Default)]
 pub struct SystemRebooter;
 
@@ -114,8 +109,8 @@ impl Rebooter for SystemRebooter {
     }
 
     async fn reboot(&self, delay_s: u64, message: &str) -> anyhow::Result<()> {
-        // `shutdown` counts in minutes. Round up: a delay is a promise to the
-        // people logged in, and it must not arrive early.
+        // shutdown takes minutes; round up so logged-in users never get less
+        // warning than promised
         let when = match delay_s.div_ceil(60) {
             0 => "now".to_owned(),
             minutes => format!("+{minutes}"),
@@ -133,8 +128,7 @@ impl Rebooter for SystemRebooter {
     }
 
     async fn boot_is_separate(&self) -> bool {
-        // `findmnt /boot` answers only for a mount point; a /boot that is a
-        // directory on / answers nothing and exits 1.
+        // findmnt prints nothing and exits 1 unless /boot is a mount point
         tokio::process::Command::new("findmnt")
             .args(["-n", "-o", "SOURCE", "/boot"])
             .output()
@@ -143,13 +137,13 @@ impl Rebooter for SystemRebooter {
     }
 }
 
-/// Where answers about jobs go. The gateway, in production.
+/// Where job acks, results and logs are sent. The gateway, in production.
 #[async_trait]
 pub trait Reporter: Send + Sync {
     async fn ack(&self, job: &Job, ack: &JobAck) -> anyhow::Result<()>;
     async fn complete(&self, job: &Job, done: &JobComplete) -> anyhow::Result<()>;
-    /// A batch of the job's log, as NDJSON (DAWG-101). `Ok(false)` when it
-    /// will never be taken, so the caller drops it rather than retrying.
+    /// Sends a batch of the job's log as NDJSON. `Ok(false)` means it was
+    /// rejected for good and should be dropped, not retried.
     async fn logs(&self, job: &Job, ndjson: String) -> anyhow::Result<bool>;
 }
 
@@ -176,11 +170,11 @@ fn log_answer(job: &Job, what: &str, answer: JobAnswer) {
     }
 }
 
-/// Whether a delivered job is one this host should run, before asking what
-/// the host allows. Pure, so every refusal is tested without a gateway.
+/// Checks that a delivered job is addressed to this host, verifies, and is
+/// within its time window. Local policy is checked separately.
 ///
 /// # Errors
-/// Why not, in words that go into the refusal.
+/// The reason for refusal, as it should appear in the report.
 pub fn check_job(
     job: &Job,
     host_id: &str,
@@ -214,7 +208,7 @@ pub struct Executor {
     inventory: Option<Arc<dyn Inventory>>,
     rebooter: Arc<dyn Rebooter>,
     snapshots: Snapshots,
-    /// One mutating job at a time (DAWG-106).
+    /// Serialises mutating jobs.
     running: Arc<Mutex<()>>,
 }
 
@@ -248,31 +242,30 @@ impl Executor {
         }
     }
 
-    /// The snapshot provider `updawg_snapshots::detect` found, or why none.
+    /// Sets the result of `updawg_snapshots::detect`.
     #[must_use]
     pub fn with_snapshots(mut self, snapshots: Snapshots) -> Self {
         self.snapshots = snapshots;
         self
     }
 
-    /// Replace how this executor reboots. Tests, and nothing else.
+    /// Replaces the rebooter. For tests.
     #[must_use]
     pub fn with_rebooter(mut self, rebooter: Arc<dyn Rebooter>) -> Self {
         self.rebooter = rebooter;
         self
     }
 
-    /// Finish a self-update (DAWG-46). Call once at startup, as
-    /// [`Self::resume_after_reboot`] is.
+    /// Finishes a self-update. Call once at startup, like
+    /// [`Self::resume_after_reboot`].
     ///
-    /// - **The new version** waits for its own first successful check-in —
-    ///   the same evidence the helper waits for — and reports success. If it
-    ///   never comes, it reports nothing: the helper puts the old version
-    ///   back, and that one reports.
-    /// - **The old version**, put back, reports the helper's reason.
-    /// - **The old version with no reason written** leaves the job alone
-    ///   while the helper is still running (it will restart this agent), and
-    ///   otherwise reports that the update stopped part-way.
+    /// - The new version waits for its first successful check-in (what the
+    ///   helper also waits for) and reports success. If that never happens it
+    ///   reports nothing; the helper restores the old version, which reports.
+    /// - A restored old version reports the helper's reason.
+    /// - An old version with no recorded reason does nothing while the helper
+    ///   is still running (it will restart the agent), and otherwise reports
+    ///   that the update stopped part-way.
     pub async fn resume_after_self_update(&self) {
         let pending = match self.state.self_update() {
             Ok(Some(pending)) => pending,
@@ -312,8 +305,7 @@ impl Executor {
             }];
         } else {
             let outcome = self.state.self_update_outcome();
-            // Asked before the match rather than in a guard: the helper may
-            // be part-way and about to restart this agent.
+            // checked up front rather than in a match guard because it's async
             let helper_running =
                 matches!(outcome, Ok(None)) && crate::self_update::helper_running().await;
             match outcome {
@@ -341,12 +333,10 @@ impl Executor {
         log.finish().await;
         done.finished_at = Utc::now();
         note_done(&self.state, &job, &done);
-        // Reported before the record is cleared, and retried until it is
-        // delivered or the job has expired. On the first real hosts a failed
-        // update's report went out while the host could not reach the
-        // gateway, the record was already gone, and the job read as running
-        // on the server until it expired. A restart in between retries too:
-        // the record is still there.
+        // Report before clearing the record, retrying until delivered or the
+        // job expires. If the gateway is unreachable and the record is already
+        // gone, the server would show the job as running until it expired.
+        // Keeping the record also means a restart retries the report.
         let mut wait = std::time::Duration::from_secs(15);
         loop {
             match self.reporter.complete(&job, &done).await {
@@ -372,13 +362,11 @@ impl Executor {
         }
     }
 
-    /// Finish a job that rebooted the host (DAWG-103). Call once at startup.
+    /// Finishes a job that rebooted the host. Call once at startup.
     ///
-    /// The boot id is the evidence: a different one means the host really
-    /// did restart, and the health checks run again — those are the ones that
-    /// matter — before the job is reported. The same one means the agent
-    /// restarted and the host did not, which is reported as a failure rather
-    /// than left hanging for ever.
+    /// A changed boot id means the host did reboot; health checks run again
+    /// before the job is reported. An unchanged id means only the agent
+    /// restarted, which is reported as a failure.
     pub async fn resume_after_reboot(&self) {
         let pending = match self.state.take_pending_reboot() {
             Ok(Some(pending)) => pending,
@@ -401,8 +389,8 @@ impl Executor {
             log.agent("rebooted; running the health checks again");
             done.health_checks = checks_reported(&job, &self.checks(), &log).await;
         }
-        // A release upgrade the reboot carried out (DAWG-152): only now is
-        // there an outcome to report.
+        // a release upgrade that finishes during the reboot (leapp) only has
+        // an outcome now
         match self.state.take_release_check() {
             Ok(Some(check)) if check.job == job.id && done.status == JobStatus::Succeeded => {
                 self.finish_release(&check, &mut done, &log).await;
@@ -430,9 +418,8 @@ impl Executor {
         }
     }
 
-    /// Whether the reboot carried the release upgrade out: the host says it
-    /// is on the target, and what changed is what the package manager says
-    /// now against what it said before.
+    /// Checks that the host came back on the target release, and fills in
+    /// the package changes by diffing against the pre-upgrade list.
     async fn finish_release(
         &self,
         check: &crate::state::ReleaseCheck,
@@ -496,12 +483,10 @@ impl Executor {
         }
     }
 
-    /// Why local configuration will not run this job, if it will not.
+    /// Why local configuration refuses this job, if it does.
     ///
-    /// Local configuration always wins (DAWG-38), rebooting included
-    /// (DAWG-103): a job that may reboot is refused whole on a host that does
-    /// not permit reboots — explicitly, before anything changes, rather than
-    /// installing and then quietly skipping the part it was approved for.
+    /// A job that may reboot is refused outright on a host that doesn't permit
+    /// reboots, rather than installing and silently skipping the reboot.
     fn not_permitted(&self, job: &Job) -> Option<String> {
         if !self.config.admits(job.kind(), None) {
             return Some(if self.config.mode == crate::config::Mode::Observe {
@@ -523,8 +508,7 @@ impl Executor {
                     .to_owned(),
             );
         }
-        // The same for a snapshot the job cannot do without: refused whole,
-        // before anything changes (DAWG-119).
+        // same for a required snapshot
         if let Some((_, snapshot)) = changes_packages(&job.spec)
             && snapshot == SnapshotPolicy::Required
         {
@@ -543,7 +527,6 @@ impl Executor {
         None
     }
 
-    /// The provider, for a job that cannot run without one, or why not.
     fn provider_for(&self, job: &Job) -> std::result::Result<Arc<dyn SnapshotProvider>, String> {
         self.snapshots.clone().map_err(|why| {
             format!(
@@ -553,11 +536,11 @@ impl Executor {
         })
     }
 
-    /// The snapshot a change takes first under `policy`, if any.
+    /// The snapshot to take before a change under `policy`, if any.
     ///
-    /// `if_available` on a host that does not permit snapshots goes without,
-    /// like one with no provider: it is the host's call (DAWG-38). `required`
-    /// was refused already, in [`Self::not_permitted`].
+    /// `if_available` on a host that doesn't permit snapshots goes without,
+    /// same as with no provider. `required` was already refused in
+    /// [`Self::not_permitted`].
     fn snapshot_first(&self, policy: SnapshotPolicy) -> Option<SnapshotFirst> {
         match (policy, &self.snapshots) {
             (SnapshotPolicy::Never, _) | (_, Err(_)) => None,
@@ -569,7 +552,6 @@ impl Executor {
         }
     }
 
-    /// What a verified, permitted job is to do, or why this host cannot.
     fn work_for(&self, job: &Job) -> std::result::Result<Work, String> {
         Ok(match &job.spec {
             JobSpec::ApplyUpdates(apply) => {
@@ -595,8 +577,7 @@ impl Executor {
                     self.snapshot_first(apply.snapshot),
                 )
             }
-            // DAWG-151: the backend knows its distribution's way, and refuses
-            // one it does not.
+            // the backend refuses upgrade paths it doesn't support
             JobSpec::DistUpgrade(upgrade) => {
                 let Some(backend) = self.backend.clone() else {
                     return Err("this host has no package manager the agent can drive".into());
@@ -608,10 +589,8 @@ impl Executor {
                     self.snapshot_first(upgrade.snapshot),
                 )
             }
-            // Permission was checked already: `reboot` is its own kind, and
-            // agent.toml must allow it.
             JobSpec::Reboot(reboot) => Work::Reboot(reboot.policy),
-            // Changes nothing, so observe mode runs it too (DAWG-147).
+            // read-only, so observe mode allows it
             JobSpec::RunPreflight(preflight) => Work::Preflight(
                 preflight.clone(),
                 self.backend.clone(),
@@ -648,8 +627,8 @@ impl Executor {
         })
     }
 
-    /// Everything up to and including the acknowledgement. Returns what to
-    /// run, or `None` when the job was ignored or refused.
+    /// Everything up to and including the ack. `None` if the job was ignored
+    /// or refused.
     async fn admit(&self, job: &Job) -> Option<Work> {
         match self.state.has_seen_job(&job.id) {
             Ok(true) => {
@@ -658,7 +637,7 @@ impl Executor {
             }
             Ok(false) => {}
             Err(error) => {
-                // Cannot tell whether this ran before, so it must not run now.
+                // can't tell whether it already ran, so don't
                 self.refuse(
                     job,
                     format!("this host cannot read its record of jobs it has run: {error}"),
@@ -667,9 +646,8 @@ impl Executor {
                 return None;
             }
         }
-        // ⚠️ Recorded before anything else, refusals included: a job this host
-        // has answered is answered, and a crash from here on must not bring
-        // it back on restart.
+        // Record it before anything else, refusals included, so a crash
+        // from here on can't bring it back on restart.
         if let Err(error) = self.state.record_job(&job.id) {
             tracing::error!(job = %job.id, %error, "cannot record the job; not running it");
             return None;
@@ -717,59 +695,53 @@ impl Executor {
             at: Utc::now(),
         };
         if let Err(error) = self.reporter.ack(job, &ack).await {
-            // Run anyway: the job verified and is permitted, and `complete`
-            // is accepted from `delivered` precisely so a lost ack does not
-            // strand it.
+            // run anyway; the gateway accepts `complete` for a job still in
+            // `delivered`, so a lost ack doesn't strand it
             tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not acknowledge; running anyway");
         }
         Some(work)
     }
 }
 
-/// What an admitted job is to do.
 enum Work {
-    /// Install exactly these, then reboot as the policy says, after a
-    /// snapshot if one is to be taken.
     Apply(
         ApplyPlan,
         Arc<dyn PackageBackend>,
         RebootPolicy,
         Option<SnapshotFirst>,
     ),
-    /// Move to this release (DAWG-151), then reboot as the policy says, after
-    /// a snapshot if one is to be taken.
+    /// Target release.
     DistUpgrade(
         String,
         Arc<dyn PackageBackend>,
         RebootPolicy,
         Option<SnapshotFirst>,
     ),
-    /// Reboot and nothing else — the one a rule wanted in its window, after
-    /// an install that ran outside it (DAWG-103).
+    /// Reboot only, for a maintenance-window reboot after an install that
+    /// ran outside the window.
     Reboot(RebootPolicy),
-    /// Take one, with this description (DAWG-119).
+    /// Snapshot with this description.
     Snapshot(Arc<dyn SnapshotProvider>, String),
-    /// Put the host back as this snapshot has it. The backend, when there is
-    /// one, says which packages that moved.
+    /// Roll back to a snapshot id. The backend, if any, is used to list the
+    /// packages that changed.
     Rollback(
         Arc<dyn SnapshotProvider>,
         String,
         Option<Arc<dyn PackageBackend>>,
     ),
-    /// Look, and change nothing (DAWG-147): the checks in `crate::preflight`,
-    /// with the snapshot provider or why there is none.
+    /// Read-only checks from `crate::preflight`, with the snapshot provider
+    /// name or why there is none.
     Preflight(
         updawg_protocol::job::Preflight,
         Option<Arc<dyn PackageBackend>>,
         std::result::Result<String, String>,
     ),
-    /// Become this version (DAWG-46): prepared here, carried out by the
-    /// helper in its own unit (`crate::self_update`).
+    /// Prepared here, carried out by the helper in its own unit (see
+    /// `crate::self_update`).
     SelfUpdate(updawg_protocol::SelfUpdate),
 }
 
-/// A job that changes packages: its reboot and snapshot policies. The same
-/// local refusals apply to both (DAWG-103, DAWG-119).
+/// Reboot and snapshot policies for jobs that change packages.
 fn changes_packages(spec: &JobSpec) -> Option<(RebootPolicy, SnapshotPolicy)> {
     match spec {
         JobSpec::ApplyUpdates(apply) => Some((apply.reboot, apply.snapshot)),
@@ -778,10 +750,9 @@ fn changes_packages(spec: &JobSpec) -> Option<(RebootPolicy, SnapshotPolicy)> {
     }
 }
 
-/// A snapshot to take before an install.
 struct SnapshotFirst {
     provider: Arc<dyn SnapshotProvider>,
-    /// `required`: no snapshot, no install.
+    /// If set, no snapshot means no install.
     required: bool,
 }
 
@@ -799,10 +770,8 @@ impl crate::checkin::JobSink for Executor {
         let checks = self.checks();
         let (state, rebooter) = (self.state.clone(), Arc::clone(&self.rebooter));
         let room = Room::from(&self.config.snapshots);
-        // The warning is the host's to set, in agent.toml's `[reboot]`.
         let warning = self.config.reboot.clone();
-        // In the background: an install can take minutes, and the check-in
-        // that delivered it must not wait for it.
+        // installs can take minutes; don't block the check-in
         tokio::spawn(async move {
             let _one_at_a_time = running.lock().await;
             let log = JobLog::start(Arc::clone(&reporter), job.clone(), 0);
@@ -817,11 +786,10 @@ impl crate::checkin::JobSink for Executor {
                     "rebooting in {} s to finish the job",
                     warning.delay_s()
                 ));
-                // Before the reboot: it may be the last chance to send them.
+                // flush now, this may be the last chance
                 log.finish().await;
                 match reboot(&job, &done, &state, rebooter.as_ref(), &warning).await {
-                    // The report is finished by `resume_after_reboot` on the
-                    // other side, with the checks run again.
+                    // resume_after_reboot reports after the reboot
                     Ok(()) => {
                         note(&state, &job, "rebooting", None);
                         return;
@@ -859,14 +827,13 @@ impl crate::checkin::JobSink for Executor {
             {
                 tracing::warn!(job = %job.id, error = format!("{error:#}"), "could not upload the inventory after the job");
             }
-            // Reported first, then restarted: an install that included the
-            // agent itself left the old binary running (see `crate::restart`).
+            // if the install upgraded the agent itself, restart now that the
+            // job is reported (see `crate::restart`)
             crate::restart::restart_if_replaced();
         });
     }
 }
 
-/// What `perform` answers for work that belongs elsewhere.
 fn misrouted() -> (JobComplete, RebootPolicy) {
     let now = Utc::now();
     let why = "a self-update reached the wrong path in the agent".to_owned();
@@ -876,11 +843,10 @@ fn misrouted() -> (JobComplete, RebootPolicy) {
     )
 }
 
-/// A `self_update` job (DAWG-46): prepared and handed to the helper, which
-/// is the last this agent does for it — the report comes from
-/// [`Executor::resume_after_self_update`], by the new agent once it has
-/// checked in, or by this one put back. Reported here only when there was
-/// nothing to do, or it was refused before anything changed.
+/// Prepares a `self_update` and hands it to the helper. The report normally
+/// comes from [`Executor::resume_after_self_update`], in the new agent or the
+/// restored old one. It's reported here only if there was nothing to do or it
+/// was refused before anything changed.
 async fn self_update(
     job: &Job,
     spec: &updawg_protocol::SelfUpdate,
@@ -911,17 +877,14 @@ async fn self_update(
     }
 }
 
-/// Run the plan, then the host's health checks, and say how it went.
+/// Applies the plan, then runs the health checks.
 ///
-/// ⚠️ **A failed health check does not change the job's status** (DAWG-104).
-/// "The packages installed and nginx is down" and "the packages did not
-/// install" are different facts, and the report keeps them apart: the status
-/// is the job's, the checks are the host's. The server halts the rollout on
-/// either.
+/// A failed health check doesn't change the job's status; the report keeps
+/// install failures and health failures separate, and the server halts the
+/// rollout on either.
 ///
-/// Checks run after a success and after a failure — a failed install can
-/// leave half the packages changed — but not after a refusal, which changed
-/// nothing.
+/// Checks also run after a failed install, which can leave some packages
+/// changed, but not after a refusal.
 async fn run(
     job: &Job,
     plan: &ApplyPlan,
@@ -939,13 +902,9 @@ async fn run(
     done
 }
 
-/// A `reboot` job's report before any reboot: nothing installed, and whether
-/// the host still needs one — which, with `if_required`, decides whether it
-/// happens at all. A host rebooted by other means since its install reports
-/// success and stays up.
-///
-/// With `always` — a reboot somebody asked for (DAWG-78) — whether the host
-/// needs one does not decide anything, and the log does not say it does.
+/// Pre-reboot report for a `reboot` job. With `if_required`, a host that was
+/// already rebooted some other way reports success and stays up. With
+/// `always` the reboot happens regardless.
 async fn reboot_only(rebooter: &dyn Rebooter, policy: RebootPolicy, log: &JobLog) -> JobComplete {
     let now = Utc::now();
     let reboot_required = rebooter.reboot_required().await;
@@ -968,12 +927,11 @@ async fn reboot_only(rebooter: &dyn Rebooter, policy: RebootPolicy, log: &JobLog
     }
 }
 
-/// Record where `job` has got to, for `updawgctl jobs` (DAWG-37). Local
-/// only; a write that fails costs the job nothing.
+/// Records job progress locally for `updawgctl jobs`. Failures are ignored.
 fn note(state: &LocalState, job: &Job, status: &str, detail: Option<&str>) {
     let record = crate::state::JobRecord {
         id: job.id.as_str().to_owned(),
-        // The wire's name, `apply_updates`, as the portal and logs spell it.
+        // wire name (`apply_updates`)
         kind: serde_json::to_value(job.kind())
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
@@ -987,7 +945,6 @@ fn note(state: &LocalState, job: &Job, status: &str, detail: Option<&str>) {
     }
 }
 
-/// [`note`] for a report: its status, and the error or what it changed.
 fn note_done(state: &LocalState, job: &Job, done: &JobComplete) {
     let status = match done.status {
         JobStatus::Succeeded => "succeeded",
@@ -1000,7 +957,7 @@ fn note_done(state: &LocalState, job: &Job, done: &JobComplete) {
     note(state, job, status, detail.as_deref());
 }
 
-/// Run what was admitted: how it went, and the reboot policy to apply now.
+/// Runs an admitted job. Returns the report and the reboot policy to apply.
 async fn perform(
     job: &Job,
     work: &Work,
@@ -1014,7 +971,7 @@ async fn perform(
         Work::Apply(plan, backend, policy, snapshot) => {
             let started_at = Utc::now();
             match snapshot_first(job, snapshot.as_ref(), room, log).await {
-                // `required`, and none: nothing was changed.
+                // required snapshot failed; nothing changed
                 Err(why) => (
                     failed(JobStatus::RejectedByHost, started_at, Utc::now(), why),
                     RebootPolicy::Never,
@@ -1026,8 +983,7 @@ async fn perform(
                         if plan.packages.len() == 1 { "" } else { "s" }
                     ));
                     let mut done = run(job, plan, backend.as_ref(), checks, log).await;
-                    // Whatever happened: a failed install is the one somebody
-                    // wants to roll back.
+                    // even on failure, which is when a rollback is most likely
                     done.snapshot_id = taken;
                     done.started_at = started_at;
                     (done, *policy)
@@ -1051,7 +1007,7 @@ async fn perform(
             .await
         }
         Work::Reboot(policy) => (reboot_only(rebooter, *policy, log).await, *policy),
-        // Handed to `crate::self_update` in `deliver`, never run here.
+        // handled in `deliver`
         Work::SelfUpdate(_) => misrouted(),
         Work::Snapshot(provider, description) => {
             let started_at = Utc::now();
@@ -1085,8 +1041,7 @@ async fn perform(
                     c.name, c.status, c.summary
                 ));
             }
-            // The job ran; what it found is the checks, and a failing check
-            // is an answer, not a failed job.
+            // a failing check is a result, not a failed job
             (
                 JobComplete {
                     preflight: checks,
@@ -1106,11 +1061,10 @@ async fn perform(
             )
             .await;
             if done.status == JobStatus::Succeeded {
-                // A rollback that happens at the next boot has said so.
                 done.reboot_required = done.reboot_required || rebooter.reboot_required().await;
             }
-            // After a failure too: a rollback that stopped halfway is a host
-            // in a state nobody chose.
+            // also after a failure, since a partial rollback can leave the
+            // host in any state
             done.health_checks = checks_reported(job, checks, log).await;
             done.finished_at = Utc::now();
             (done, RebootPolicy::Never)
@@ -1118,7 +1072,6 @@ async fn perform(
     }
 }
 
-/// A release upgrade, as its job describes it.
 struct Upgrade<'a> {
     target: &'a str,
     backend: &'a dyn PackageBackend,
@@ -1126,14 +1079,12 @@ struct Upgrade<'a> {
     snapshot: Option<&'a SnapshotFirst>,
 }
 
-/// A release upgrade (DAWG-151): snapshot first where asked, the backend's
-/// upgrade, then the host's checks — as an install, with a release for a
-/// package list.
+/// Release upgrade: optional snapshot, the backend's upgrade, then health
+/// checks.
 ///
-/// One the reboot carries out (leapp, DAWG-152) is refused whole when the job
-/// may not reboot, and its checks and its release wait for the host to come
-/// back: [`Executor::resume_after_reboot`] reads the [`ReleaseCheck`] left
-/// here.
+/// An upgrade that happens during the reboot (leapp) is refused if the job
+/// may not reboot. Otherwise its checks wait until the host is back up:
+/// [`Executor::resume_after_reboot`] reads the [`ReleaseCheck`] saved here.
 ///
 /// [`ReleaseCheck`]: crate::state::ReleaseCheck
 async fn upgrade_release(
@@ -1179,7 +1130,7 @@ async fn upgrade_release(
     let mut done = report(job, started_at, outcome);
     done.snapshot_id = taken;
     if let Some(after) = after {
-        // Nothing has changed yet: the checks and the release are for after.
+        // nothing has changed yet; check after the reboot
         let check = crate::state::ReleaseCheck {
             job: job.id.clone(),
             release: after.release,
@@ -1203,11 +1154,11 @@ async fn upgrade_release(
     (done, policy)
 }
 
-/// The snapshot an install takes first, if it takes one.
+/// Takes the pre-install snapshot, if any.
 ///
-/// `Ok(None)` when none was asked for, or `if_available` could not have one
-/// and the install goes ahead; `Err` only when one was required and could not
-/// be taken, and then nothing is installed.
+/// `Ok(None)` when none was requested, or `if_available` couldn't get one.
+/// `Err` only when a required snapshot failed, in which case nothing is
+/// installed.
 async fn snapshot_first(
     job: &Job,
     first: Option<&SnapshotFirst>,
@@ -1234,11 +1185,10 @@ async fn snapshot_first(
     }
 }
 
-/// How many of its own snapshots the agent keeps, and how much room one needs
-/// (`[snapshots]` in agent.toml).
+/// `[snapshots]` retention and free-space settings from agent.toml.
 #[derive(Debug, Clone, Copy)]
 struct Room {
-    /// At least one: the snapshot just taken is the one a rollout needs.
+    /// At least 1, so the snapshot just taken is never pruned.
     keep: usize,
     min_free_bytes: u64,
 }
@@ -1252,15 +1202,10 @@ impl From<&crate::config::Snapshots> for Room {
     }
 }
 
-/// Take a snapshot for `job`, then prune the agent's own down to `keep`.
+/// Takes a snapshot for `job`, then prunes the agent's snapshots to `keep`.
 ///
-/// Not with less than `min_free_mb` free (DAWG-121). Space that cannot be
-/// measured does not stop it: the check is a guard against a known-full
-/// disk, not a condition for patching.
-///
-/// A failed prune is logged and does not fail the job: the snapshot it was
-/// for exists, and a disk filling slowly is for a person to see, not a
-/// reason to leave a host unpatched.
+/// Refuses with less than `min_free_mb` free. If free space can't be measured
+/// it goes ahead anyway. A failed prune is logged but doesn't fail the job.
 async fn take(
     job: &Job,
     provider: &dyn SnapshotProvider,
@@ -1304,12 +1249,10 @@ async fn take(
     Ok(snapshot.id)
 }
 
-/// Put the host back as snapshot `id` has it, and say what that moved.
+/// Rolls back to snapshot `id` and reports the package changes.
 ///
-/// The agent's own state is carried across (see [`LocalState::carry`]).
-/// Which packages moved is the package manager's answer before and after,
-/// not the snapshot's: that is what the server and the person reading the
-/// report think in.
+/// The agent's own state is preserved (see [`LocalState::carry`]). Changes
+/// come from diffing the package manager's list before and after.
 async fn roll_back(
     state: &LocalState,
     provider: &dyn SnapshotProvider,
@@ -1327,9 +1270,9 @@ async fn roll_back(
         log.agent(&why);
         failed(JobStatus::Failed, started_at, Utc::now(), why)
     };
-    // A rollback at the next boot turns this directory into the snapshot's
-    // then, long after this job has ended: its current state goes into the
-    // snapshot now, or the rollback does not happen.
+    // A rollback applied at next boot replaces this directory with the
+    // snapshot's copy after the job has ended, so write the current state
+    // into the snapshot now or don't roll back.
     if provider.restores_at_next_boot()
         && let Err(error) = provider.carry_into(id, state.root()).await
     {
@@ -1342,8 +1285,7 @@ async fn roll_back(
     let carried = match state.carry() {
         Ok(carried) => carried,
         Err(error) => {
-            // Refused rather than risked: without it the agent would forget
-            // the jobs it has run.
+            // without it the agent would forget which jobs it has run
             return failed(
                 JobStatus::RejectedByHost,
                 started_at,
@@ -1360,7 +1302,7 @@ async fn roll_back(
     };
     log.agent(format!("rolling back to snapshot {id}"));
     let restored = provider.rollback(id).await;
-    // Put back whether or not the rollback finished: it may have got partway.
+    // restore even on failure; the rollback may have got partway
     if let Err(error) = state.put_back(&carried) {
         tracing::error!(%error, "could not put the agent's state back after a rollback");
         return fail(format!(
@@ -1373,8 +1315,7 @@ async fn roll_back(
     };
     log.agent(format!("rolled back: {restored}"));
     if restored.at_next_boot {
-        // Nothing has moved yet, so there is nothing to list: the inventory
-        // after the reboot says what did.
+        // nothing has changed yet; the post-reboot inventory will show it
         return JobComplete {
             reboot_required: true,
             ..ended(JobStatus::Succeeded, started_at, Utc::now(), None)
@@ -1402,10 +1343,9 @@ async fn roll_back(
     }
 }
 
-/// Why this rollback must not run, if it would take away a kernel `/boot`
-/// still holds (see `updawg_snapshots`): the host could boot it with its
-/// modules gone. Refused whole, before anything changes. Not being able to
-/// tell is refused too, on the same host, for the same reason.
+/// Refuses a rollback that would remove a kernel still present on a separate
+/// `/boot`, since the host could then boot a kernel with no modules. Also
+/// refuses if that can't be determined.
 async fn takes_a_kernel_from_boot(
     provider: &dyn SnapshotProvider,
     id: &str,
@@ -1436,8 +1376,8 @@ fn or_none(version: &str) -> &str {
     }
 }
 
-/// What moved between two package lists, by name and architecture. A
-/// package on one side only has an empty version on the other.
+/// Diffs two package lists by name and architecture. A package missing on
+/// one side gets an empty version there.
 fn package_changes(before: &[InstalledPackage], after: &[InstalledPackage]) -> Vec<PackageChange> {
     use std::collections::BTreeMap;
     let index = |list: &[InstalledPackage]| -> BTreeMap<(String, String), String> {
@@ -1463,11 +1403,8 @@ fn package_changes(before: &[InstalledPackage], after: &[InstalledPackage]) -> V
         .collect()
 }
 
-/// Whether this job's policy says to reboot now.
-///
-/// Only after a success: a failed install is a host in an unknown state, and
-/// rebooting it is the one move that could turn a broken service into a
-/// broken host. A person decides that.
+/// Whether to reboot now. Never after a failure: rebooting a host in an
+/// unknown state could leave it unbootable, so that's left to a person.
 fn wants_reboot(policy: RebootPolicy, done: &JobComplete) -> bool {
     done.status == JobStatus::Succeeded
         && match policy {
@@ -1477,8 +1414,8 @@ fn wants_reboot(policy: RebootPolicy, done: &JobComplete) -> bool {
         }
 }
 
-/// Persist the report, then ask for the reboot. `Err` with why when the
-/// reboot could not be asked for, in which case nothing is left pending.
+/// Saves the report, then requests the reboot. On `Err` nothing is left
+/// pending.
 async fn reboot(
     job: &Job,
     done: &JobComplete,
@@ -1489,7 +1426,7 @@ async fn reboot(
     let Some(boot_id) = rebooter.boot_id() else {
         return Err("this host has no boot id to tell a reboot by, so it did not reboot".into());
     };
-    // Written first: the reboot may come before this function returns.
+    // write first; the reboot may happen before this function returns
     state
         .set_pending_reboot(&crate::state::PendingReboot {
             job: job.clone(),
@@ -1505,7 +1442,6 @@ async fn reboot(
     Ok(())
 }
 
-/// Run the checks and shape them for the report.
 async fn checks_reported(job: &Job, checks: &[Check], log: &JobLog) -> Vec<HealthCheckReport> {
     health::run_all(checks)
         .await
@@ -1531,7 +1467,6 @@ async fn checks_reported(job: &Job, checks: &[Check], log: &JobLog) -> Vec<Healt
         .collect()
 }
 
-/// What the backend's answer means for the report.
 fn report(
     job: &Job,
     started_at: DateTime<Utc>,
@@ -1563,8 +1498,7 @@ fn report(
                 preflight: vec![],
             }
         }
-        // ⚠️ Nothing changed: the plan could not be carried out as approved.
-        // Reported as the host refusing, which is what it is.
+        // nothing changed: the plan couldn't be applied as approved
         Err(BackendError::Refused(why)) => {
             failed(JobStatus::RejectedByHost, started_at, finished_at, why)
         }
@@ -1586,7 +1520,6 @@ fn failed(
     ended(status, started_at, finished_at, Some(error))
 }
 
-/// A report with nothing in it but how it ended.
 fn ended(
     status: JobStatus,
     started_at: DateTime<Utc>,
@@ -1630,8 +1563,6 @@ mod tests {
     struct Gateway {
         acks: std::sync::Mutex<Vec<JobAck>>,
         completes: std::sync::Mutex<Vec<JobComplete>>,
-        /// Every log line sent, in the order the batches arrived, and whether
-        /// any batch reached the gateway after the report did.
         logged: std::sync::Mutex<Vec<updawg_protocol::LogLine>>,
         logged_after_complete: std::sync::atomic::AtomicBool,
     }
@@ -1658,14 +1589,12 @@ mod tests {
         }
     }
 
-    /// A package manager that answers `apply` with `outcome`, and counts.
+    /// Fake package manager; `apply` returns `outcome`.
     struct Backend {
         outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
         applied: AtomicUsize,
-        /// What `installed` answers.
         packages: std::sync::Mutex<Vec<InstalledPackage>>,
-        /// A release upgrade the reboot carries out, like leapp's, to this
-        /// release; `None` for one this backend does not do.
+        /// Target of a leapp-style upgrade that completes at reboot.
         upgrades_at_reboot: std::sync::Mutex<Option<String>>,
     }
 
@@ -1701,7 +1630,6 @@ mod tests {
             log: &dyn LogSink,
         ) -> updawg_backends::Result<ApplyOutcome> {
             self.applied.fetch_add(1, Ordering::SeqCst);
-            // What apt would print, so a test can see it arrive.
             log.line("Unpacking openssl (3.5.1-2) over (3.5.1-1) ...");
             log.line("Setting up openssl (3.5.1-2) ...");
             (self.outcome)(plan)
@@ -1729,7 +1657,7 @@ mod tests {
         }
     }
 
-    // Must match `Backend::outcome`'s signature, which the refusing case needs.
+    // signature has to match `Backend::outcome`
     #[allow(clippy::unnecessary_wraps)]
     fn succeeds(plan: &ApplyPlan) -> updawg_backends::Result<ApplyOutcome> {
         Ok(ApplyOutcome {
@@ -1768,7 +1696,7 @@ mod tests {
         world_with(mode, outcome, "")
     }
 
-    /// As [`world`], with more `agent.toml` appended — health checks, say.
+    /// Like [`world`], with extra `agent.toml` appended.
     fn world_with(
         mode: &str,
         outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
@@ -1777,7 +1705,7 @@ mod tests {
         world_allowing(mode, outcome, extra_toml, "\"apply_patch\"")
     }
 
-    /// As [`world_with`], with the `[permissions] allow` list given.
+    /// Like [`world_with`], with a `[permissions] allow` list.
     fn world_allowing(
         mode: &str,
         outcome: fn(&ApplyPlan) -> updawg_backends::Result<ApplyOutcome>,
@@ -1895,15 +1823,13 @@ mod tests {
         assert_eq!(done.changes[0].to, "3.5.1-2");
         assert!(w.gateway.acks.lock().unwrap()[0].accepted);
 
-        // ⚠️ Delivered again — a replay, or a check-in that raced — and nothing
-        // happens: not a second ack, not a second install.
+        // redelivered (replay, or a racing check-in)
         w.executor.deliver(job).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(w.gateway.acks.lock().unwrap().len(), 1);
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 1);
     }
 
-    /// Local configuration always wins (DAWG-38).
     #[tokio::test]
     async fn observe_mode_refuses_and_touches_nothing() {
         let w = world("observe", succeeds);
@@ -1914,7 +1840,6 @@ mod tests {
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
     }
 
-    /// Each of these is a job this host must not run, and it says why.
     #[tokio::test]
     async fn a_job_that_is_not_genuinely_this_hosts_is_refused() {
         let w = world("managed", succeeds);
@@ -1951,8 +1876,7 @@ mod tests {
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
     }
 
-    /// The installed version moved since the approval: nothing changes, and it
-    /// is reported as the host refusing, with the reason.
+    /// The installed version changed after approval.
     #[tokio::test]
     async fn a_plan_that_cannot_be_carried_out_as_approved_is_reported_as_refused() {
         let w = world("managed", refuses);
@@ -1975,9 +1899,8 @@ type = "command"
 argv = ["sh", "-c", "echo app is down >&2; exit 1"]
 "#;
 
-    /// DAWG-104: the checks the host's own config names run after the job,
-    /// in order, and a failing one is reported without changing the job's
-    /// status — the packages did install.
+    /// A failing check doesn't change the job status; the packages did
+    /// install.
     #[tokio::test]
     async fn health_checks_run_after_a_job_and_a_failure_is_reported_beside_it() {
         let w = world_with("managed", succeeds, CHECKS);
@@ -1996,7 +1919,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         );
     }
 
-    /// A refusal changed nothing, so there is nothing to check.
     #[tokio::test]
     async fn a_refused_job_runs_no_health_checks() {
         let w = world_with("managed", refuses, CHECKS);
@@ -2006,10 +1928,10 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert!(done.health_checks.is_empty());
     }
 
-    /* ------------------------------------------------- rebooting (DAWG-103) */
+    /* ------------------------------------------------------------ rebooting */
 
-    /// A host that never really reboots: it counts the requests, and a test
-    /// "reboots" it by changing the boot id.
+    /// Counts reboot requests. Tests simulate a reboot by changing the boot
+    /// id.
     struct FakeRebooter {
         boot_id: std::sync::Mutex<String>,
         requested: AtomicUsize,
@@ -2092,12 +2014,11 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             .await;
         settled(&w, &rebooter).await;
 
-        // Asked to reboot, and nothing reported yet: the report is waiting
-        // for the host to come back.
+        // nothing reported until the host comes back
         assert_eq!(rebooter.requested.load(Ordering::SeqCst), 1);
         assert!(w.gateway.completes.lock().unwrap().is_empty());
 
-        // The host reboots; the agent starts again.
+        // reboot, agent restarts
         *rebooter.boot_id.lock().unwrap() = "boot-2".into();
         w.executor.resume_after_reboot().await;
         let done = completed(&w).await;
@@ -2110,13 +2031,11 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             "the checks ran again after the reboot"
         );
 
-        // And only once.
         w.executor.resume_after_reboot().await;
         assert_eq!(w.gateway.completes.lock().unwrap().len(), 1);
     }
 
-    /// A release upgrade the reboot carries out (leapp, DAWG-152), as a
-    /// signed job to `release`.
+    /// A signed leapp-style upgrade job to `release`.
     fn upgrading_at_reboot(w: &World, release: &str, policy: RebootPolicy) -> Job {
         *w.backend.upgrades_at_reboot.lock().unwrap() = Some(release.to_owned());
         job(w, |j| {
@@ -2149,7 +2068,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
 
     #[tokio::test]
     async fn a_release_upgrade_the_reboot_carries_out_is_judged_once_the_host_is_back() {
-        // Back on the old release: the upgrade did not happen.
+        // came back on the old release
         let rebooter = FakeRebooter::new();
         let mut w = world_allowing("managed", succeeds, CHECKS, ALLOW_UPGRADE);
         w.executor = w
@@ -2171,9 +2090,8 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert!(done.error.unwrap().contains("not 99"));
         assert_eq!(done.health_checks.len(), 2, "checked after the reboot");
 
-        // On the target: succeeded, and what changed is what moved. The
-        // target is this machine's own release, which is the one thing a test
-        // can be sure a host "came back on".
+        // Use this machine's own release as the target, since that's what
+        // the host will appear to have come back on.
         let Ok(here) = updawg_backends::release::this_host() else {
             return;
         };
@@ -2220,7 +2138,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             .await;
         settled(&w, &rebooter).await;
 
-        // Same boot id: the agent restarted, the host did not.
+        // same boot id: only the agent restarted
         w.executor.resume_after_reboot().await;
         let done = completed(&w).await;
         assert_eq!(done.status, JobStatus::Failed);
@@ -2242,8 +2160,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
     }
 
-    /// Local configuration wins: a job that may reboot is refused whole on a
-    /// host that does not permit reboots, and nothing is installed.
     #[tokio::test]
     async fn a_host_that_does_not_permit_reboots_refuses_a_job_that_might() {
         let rebooter = FakeRebooter::new();
@@ -2302,7 +2218,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert!(w.executor.state.take_pending_reboot().unwrap().is_none());
     }
 
-    /* ----------------------------------- a reboot job of its own (DAWG-103) */
+    /* ---------------------------------------------- a reboot job of its own */
 
     fn reboot_job(w: &World) -> Job {
         job(w, |j| {
@@ -2344,8 +2260,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(done.health_checks.len(), 2, "the checks ran after it");
     }
 
-    /// `if_required`: a host rebooted by other means since its install has
-    /// nothing to do, and says so.
+    /// `if_required` on a host that was already rebooted some other way.
     #[tokio::test]
     async fn a_reboot_job_leaves_a_host_that_no_longer_needs_one_alone() {
         let rebooter = FakeRebooter::new();
@@ -2374,11 +2289,10 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(rebooter.requested.load(Ordering::SeqCst), 0);
     }
 
-    /* ------------------------------------------- the job's log (DAWG-101) */
+    /* ------------------------------------------------------ the job's log */
 
-    /// What the package manager printed reaches the gateway, numbered in
-    /// order, among the agent's own lines — and all of it before the report,
-    /// so a portal that sees the job finished sees its whole log.
+    /// Package manager output is sent in sequence, interleaved with the
+    /// agent's lines, and all of it before the report.
     #[tokio::test]
     async fn a_jobs_output_is_streamed_before_its_report() {
         let w = world_with("managed", succeeds, CHECKS);
@@ -2416,7 +2330,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         );
     }
 
-    /// After a reboot the log carries on, numbered clear of the first half.
     #[tokio::test]
     async fn the_log_carries_on_after_a_reboot() {
         let rebooter = FakeRebooter::new();
@@ -2428,7 +2341,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             .deliver(rebooting(&w, RebootPolicy::IfRequired))
             .await;
         settled(&w, &rebooter).await;
-        // Sent before rebooting, which may be the last chance.
+        // flushed before the reboot
         assert!(
             w.gateway
                 .logged
@@ -2449,19 +2362,18 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert!(resumed.seq >= crate::joblog::AFTER_REBOOT, "{resumed:?}");
     }
 
-    /* ------------------------------------------------ snapshots (DAWG-119) */
+    /* ----------------------------------------------------------- snapshots */
 
     const ALLOW_SNAPSHOT: &str = "\"apply_patch\", \"snapshot\"";
 
-    /// A snapshot provider that, like a real one, puts back the files it
-    /// covers — here the agent's record of jobs, and the package list.
+    /// Restores the files it covers on rollback: the agent's job records and
+    /// the package list.
     struct FakeSnapshots {
         state_dir: std::path::PathBuf,
         backend: Arc<Backend>,
         fail_create: bool,
-        /// What `kernels_rolled_away` answers.
         kernels: std::sync::Mutex<Vec<String>>,
-        /// Rolls back at the next boot, as LVM does.
+        /// Like LVM.
         at_next_boot: std::sync::atomic::AtomicBool,
         carried_into: std::sync::Mutex<Vec<std::path::PathBuf>>,
         free: AtomicU64,
@@ -2470,7 +2382,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         rolled_back: AtomicUsize,
     }
 
-    /// One the fake took: its id, and what it will put back.
     struct Taken {
         id: String,
         seen_jobs: Option<Vec<u8>>,
@@ -2517,7 +2428,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         }
         async fn rollback(&self, id: &str) -> updawg_snapshots::Result<updawg_snapshots::Restored> {
             if self.at_next_boot.load(Ordering::SeqCst) {
-                // LVM's: merged at the next boot, nothing changed now.
+                // LVM merges at next boot; nothing changes now
                 self.rolled_back.fetch_add(1, Ordering::SeqCst);
                 return Ok(updawg_snapshots::Restored {
                     at_next_boot: true,
@@ -2565,7 +2476,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         }
     }
 
-    /// `w`, with a fake snapshot provider.
     fn with_snapshots(w: World, fail_create: bool) -> (World, Arc<FakeSnapshots>) {
         let fake = Arc::new(FakeSnapshots {
             state_dir: w.executor.state.root().to_path_buf(),
@@ -2605,7 +2515,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         })
     }
 
-    /// The `n`th report, waiting for it.
+    /// Waits for the `n`th report.
     async fn report_number(w: &World, n: usize) -> JobComplete {
         for _ in 0..200 {
             if let Some(done) = w.gateway.completes.lock().unwrap().get(n).cloned() {
@@ -2645,7 +2555,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(*snapshots.kept.lock().unwrap(), [5]);
     }
 
-    /// `required` on a host that cannot: refused whole, before anything.
     #[tokio::test]
     async fn a_required_snapshot_the_host_cannot_take_is_refused_before_anything_changes() {
         // No provider.
@@ -2690,7 +2599,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
     }
 
-    /// A snapshot pins what the install replaces: not on a full disk.
     #[tokio::test]
     async fn no_snapshot_is_taken_with_less_room_than_agent_toml_asks_for() {
         let (w, snapshots) = with_snapshots(
@@ -2737,7 +2645,6 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         }
     }
 
-    /// A failed install is exactly the one somebody wants to roll back.
     #[tokio::test]
     async fn a_failed_install_still_reports_its_snapshot() {
         fn breaks(_plan: &ApplyPlan) -> updawg_backends::Result<ApplyOutcome> {
@@ -2775,9 +2682,8 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(done.error, None);
     }
 
-    /// The whole round: install after a snapshot, roll back, and the report
-    /// says which packages moved — while the agent still remembers every job
-    /// it ran, although the rollback put its state directory back too.
+    /// Install with a snapshot, then roll back. The rollback also restores
+    /// the state directory, so the agent must carry its job records across.
     #[tokio::test]
     async fn a_rollback_restores_the_packages_and_the_agent_remembers_its_jobs() {
         let (w, snapshots) = with_snapshots(
@@ -2805,9 +2711,8 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             (done.changes[0].from.as_str(), done.changes[0].to.as_str()),
             ("3.5.1-2", "3.5.1-1")
         );
-        // The snapshot was taken after the install job was recorded and
-        // before the rollback job was: without carrying the state across,
-        // the rollback job would be forgotten and could run again.
+        // The snapshot predates the rollback job's record. Without carrying
+        // state across, that job would be forgotten and could run again.
         assert!(w.executor.state.has_seen_job(&rollback.id).unwrap());
         assert!(w.executor.state.has_seen_job(&install.id).unwrap());
         w.executor.deliver(rollback).await;
@@ -2833,9 +2738,8 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 0);
     }
 
-    /// A rollback that would take away a kernel `/boot` still holds is
-    /// refused before anything changes; with `/boot` on `/`, the kernel goes
-    /// with everything else and it runs.
+    /// With `/boot` on `/` the kernel is rolled back with everything else,
+    /// so the rollback runs.
     #[tokio::test]
     async fn a_rollback_that_would_leave_boot_holding_a_kernel_without_modules_is_refused() {
         for separate in [true, false] {
@@ -2874,9 +2778,8 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         }
     }
 
-    /// LVM's rollback happens at the next boot: the agent's state goes into
-    /// the snapshot first, and the report says a reboot is needed and claims
-    /// no package moved yet.
+    /// LVM rolls back at next boot: state is written into the snapshot
+    /// first, and the report lists no changes yet.
     #[tokio::test]
     async fn a_rollback_at_the_next_boot_carries_the_agents_state_and_asks_for_a_reboot() {
         let (w, snapshots) = with_snapshots(
@@ -2905,9 +2808,8 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         );
     }
 
-    /// DAWG-147's bar: preflight changes nothing. Run in observe mode, which
-    /// refuses anything that would, against fakes that count every mutating
-    /// call, and the state directory holds nothing new but the job's records.
+    /// The fakes count every mutating call, and the state directory should
+    /// gain nothing but the job's own records.
     #[tokio::test]
     async fn preflight_runs_in_observe_mode_and_changes_nothing() {
         let (mut w, snapshots) = with_snapshots(
@@ -2948,7 +2850,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
                 "dkms_modules",
                 "snapshot",
                 "reboot",
-                // Simulated, never installed: `applied` stays at 0 below.
+                // simulated only; `applied` stays at 0 below
                 "approved_only"
             ]
         );
@@ -2961,8 +2863,7 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
-        // The job's own records: that it was seen, and its line in
-        // `updawgctl jobs` (DAWG-37). Nothing else.
+        // seen-jobs and the `updawgctl jobs` history, nothing else
         let own = |f: &std::ffi::OsString| f != "seen-jobs.json" && f != "job-history.json";
         after.retain(own);
         let mut before = before;

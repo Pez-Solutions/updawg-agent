@@ -1,27 +1,23 @@
-//! A stand-in for the Updawg gateway, for the distro matrix (DAWG-40):
-//! enough of it that a real `updawgctl` enrolls against it and a real
-//! `updawgd` checks in and uploads an inventory, and a record of what each
-//! host did.
+//! A minimal fake gateway for the distro test matrix. A real `updawgctl`
+//! can enroll against it and a real `updawgd` can check in and upload an
+//! inventory; it records what each host did.
 //!
 //! ```text
 //! cargo run -p updawg-agent-core --example fake_gateway -- <dir>
 //! ```
 //!
-//! Writes `<dir>/ca.pem` at start — what the agent is given with
-//! `--insecure-extra-root`, so it is only ever used with a build that has the
-//! flag — and rewrites `<dir>/results.json` after every request: one entry
-//! per host, keyed by the enrollment token it used, saying what it enrolled
-//! as, how many times it checked in with its certificate, and what its first
-//! inventory held.
+//! On start it writes `<dir>/ca.pem`, which the agent needs via
+//! `--insecure-extra-root` (so only builds with that flag work). After every
+//! request it rewrites `<dir>/results.json`: one entry per host, keyed by
+//! enrollment token, with the host id, check-in count and a summary of the
+//! first inventory.
 //!
-//! Listens on `0.0.0.0:8443` as `gateway.test`. A container reaches it with
+//! Listens on `0.0.0.0:8443` as `gateway.test`. Containers reach it with
 //! `--add-host gateway.test:host-gateway`.
 //!
-//! Real TLS, and the real rules where they matter: enrollment needs no
-//! client certificate, everything after it does, and must present the one
-//! issued to that host. What it does not do is anything the server decides —
-//! it accepts any token, stores nothing, and sends no jobs — because what is
-//! under test is the agent on each distribution, not the server.
+//! TLS is real: enrollment works without a client certificate, everything
+//! else requires the one issued to that host. Any token is accepted, nothing
+//! is persisted and no jobs are sent.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -50,7 +46,7 @@ use updawg_protocol::{
 const NAME: &str = "gateway.test";
 const LISTEN: &str = "0.0.0.0:8443";
 
-/// What one host did, keyed by its token.
+/// Per-host records, keyed by enrollment token.
 type Results = Arc<Mutex<BTreeMap<String, serde_json::Value>>>;
 
 #[tokio::main]
@@ -121,10 +117,9 @@ async fn main() {
                 )
                 .await;
             let _ = stream.shutdown().await;
-            // Under the lock, write and rename both: with several hosts at
-            // once, two tasks sharing the temporary file had one rename it
-            // away from the other, whose rename then panicked — and with
-            // panic = "abort" that took the whole gateway down.
+            // hold the lock across write and rename; concurrent tasks sharing
+            // the tmp file used to race, and with panic = "abort" the losing
+            // rename killed the gateway
             let results = results.lock().unwrap();
             let tmp = dir.join("results.json.tmp");
             std::fs::write(&tmp, serde_json::to_vec_pretty(&*results).unwrap()).unwrap();
@@ -133,7 +128,6 @@ async fn main() {
     }
 }
 
-/// The CA: signs the gateway's certificate and every host's.
 fn ca() -> (Issuer<'static, KeyPair>, String) {
     let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -150,12 +144,10 @@ fn ca() -> (Issuer<'static, KeyPair>, String) {
     (Issuer::new(ca_params, ca_key), ca_pem)
 }
 
-/// The listener's TLS: the gateway's own certificate, and client
-/// certificates from the CA — optional at the handshake, because enrollment
-/// has none yet; required per request in [`answer`] for everything else.
+/// Client certificates are optional at the handshake because enrollment has
+/// none yet; [`answer`] requires one for every other request.
 fn tls(issuer: &Issuer<'static, KeyPair>, ca_pem: &str) -> TlsConfig {
-    // An end entity, never the CA itself: rustls refuses a CA certificate
-    // presented as a server's.
+    // rustls rejects a CA certificate used as a server certificate
     let server_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let mut server_params = CertificateParams::new(vec![NAME.to_owned()]).unwrap();
     server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
@@ -185,8 +177,7 @@ fn tls(issuer: &Issuer<'static, KeyPair>, ca_pem: &str) -> TlsConfig {
     tls
 }
 
-/// The organization's signing key the hosts pin. Nothing is ever signed with
-/// it: no jobs are sent.
+/// Org signing key for hosts to pin. Unused, since no jobs are sent.
 fn org_signing_key() -> OrgSigningKey {
     use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
     let rng = aws_lc_rs::rand::SystemRandom::new();
@@ -202,7 +193,6 @@ fn org_signing_key() -> OrgSigningKey {
     }
 }
 
-/// One request's answer, and what it adds to the record.
 #[allow(clippy::too_many_arguments)]
 fn answer(
     method: &str,
@@ -259,7 +249,6 @@ fn answer(
         return (200, serde_json::to_value(response).unwrap());
     }
 
-    // Everything else: only with the certificate issued at enrollment.
     let Some(cn) = client_cn else {
         return refuse(401, "no client certificate");
     };
@@ -315,7 +304,6 @@ fn answer(
     }
 }
 
-/// A token as the tail of a host id: letters and digits only.
 fn sanitize(token: &str) -> String {
     token
         .chars()
@@ -329,7 +317,6 @@ fn base64_encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// Method, path and body of one HTTP/1.1 request.
 async fn read_request<S: tokio::io::AsyncRead + Unpin>(
     stream: &mut S,
 ) -> Option<(String, String, Vec<u8>)> {

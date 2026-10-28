@@ -1,26 +1,16 @@
 //! `/etc/updawg/agent.toml`.
 //!
-//! The rule this module exists to enforce: **local configuration always wins**.
-//! The server may narrow what the agent will do and must never be able to widen
-//! it. That is a load-bearing security property, not a preference, which is why
-//! [`Permissions::intersect`] is an intersection and there is deliberately no
-//! union anywhere in this file.
-//!
-//! Scope note: DAWG-19 defines and tests the config model. DAWG-38 wires it
-//! into job admission end to end.
+//! Local configuration always wins. The server can narrow what the agent will
+//! do but never widen it, which is why [`Permissions::intersect`] only ever
+//! shrinks the allow list.
 
 use crate::duration::HumanDuration;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::Duration};
 use updawg_protocol::JobKind;
 
-/// How much the agent is allowed to do.
-///
-/// The protocol's own type rather than a second one that happens to agree: the
-/// mode is reported to the server on every check-in (DAWG-223), and a file, a
-/// wire format and a database column that each spell it their own way is three
-/// chances for one of them to be wrong. `observe` and `managed` are what
-/// `/etc/updawg/agent.toml` has always said, so nothing on disk changes.
+/// How much the agent is allowed to do. Reuses the protocol type since the
+/// mode is reported on every check-in.
 pub use updawg_protocol::AgentMode as Mode;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -32,20 +22,16 @@ pub struct Permissions {
 }
 
 impl Permissions {
-    /// Whether a job kind is permitted.
-    ///
-    /// Deny beats allow. An empty allow list permits nothing, so a malformed or
-    /// truncated config fails closed rather than open.
+    /// Deny beats allow. An empty allow list permits nothing, so a truncated
+    /// config fails closed.
     #[must_use]
     pub fn permits(&self, kind: JobKind) -> bool {
         let p = kind.permission();
         !self.deny.contains(p) && self.allow.contains(p)
     }
 
-    /// Narrow these permissions by what the server offers.
-    ///
-    /// The result can only ever be smaller than `self`. There is no code path
-    /// that makes it larger, and the tests below assert that.
+    /// Narrows these permissions by what the server offers. The result is
+    /// never larger than `self`.
     #[must_use]
     pub fn intersect(&self, server: &Self) -> Self {
         Self {
@@ -98,14 +84,12 @@ pub enum SnapshotProvider {
 pub struct Snapshots {
     #[serde(default)]
     pub provider: SnapshotProvider,
-    /// How many snapshots to retain. Unbounded snapshots fill disks, which is
-    /// its own outage.
+    /// How many snapshots to retain.
     #[serde(default = "default_keep")]
     pub keep: u32,
-    /// No snapshot with less than this free where it would live, in MiB
-    /// (DAWG-121). A snapshot pins the files an install replaces, so the
-    /// install needs room for the old and the new: running out halfway
-    /// through is worse than not starting.
+    /// Skip the snapshot if less than this many MiB are free where it would
+    /// live. A snapshot pins the files an install replaces, so the install
+    /// needs room for both old and new.
     #[serde(default = "default_min_free_mb")]
     pub min_free_mb: u64,
 }
@@ -142,19 +126,15 @@ impl Default for Snapshots {
     }
 }
 
-/// `[reboot]`: how this host warns people before a job reboots it (DAWG-103).
-///
-/// The host's, not the server's: whoever runs it knows who is logged in and
-/// how long they need. Whether a reboot may happen at all is
-/// `[permissions]`'s `reboot`.
+/// `[reboot]`: how this host warns users before a job reboots it. Set
+/// locally since the host's operator knows who is logged in. Whether a reboot
+/// is allowed at all is the `reboot` permission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RebootSettings {
-    /// How long between the warning and the reboot. Rounded **up** to whole
-    /// minutes, because that is what `shutdown` counts in, and a warning must
-    /// not arrive late. At least a minute.
+    /// Time between the warning and the reboot. Rounded up to whole minutes
+    /// for `shutdown`, minimum one minute.
     #[serde(default = "default_reboot_delay")]
     pub delay: HumanDuration,
-    /// What logged-in users see.
     #[serde(default = "default_reboot_message")]
     pub message: String,
 }
@@ -176,19 +156,15 @@ impl Default for RebootSettings {
 }
 
 impl RebootSettings {
-    /// The delay in seconds, never under a minute: a reboot without warning
-    /// anybody is not something configuration can ask for by accident.
+    /// The delay in seconds, never under a minute.
     #[must_use]
     pub fn delay_s(&self) -> u64 {
         self.delay.0.as_secs().max(60)
     }
 }
 
-/// One `[[health_check]]` entry.
-///
-/// Checks run after every mutating job, and a failure is what halts a rollout.
-/// A check that cannot run reports a failure rather than quietly passing —
-/// "I could not tell" and "it is fine" are very different answers.
+/// One `[[health_check]]` entry. Checks run after every mutating job and a
+/// failure halts the rollout. A check that can't run counts as failed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HealthCheck {
@@ -208,9 +184,8 @@ pub enum HealthCheck {
     },
     Command {
         name: String,
-        /// Argument vector, never a shell string. There is no shell here on
-        /// purpose: a health check is the operator's own configuration, but it
-        /// still should not grow a quoting-and-injection surface.
+        /// Argument vector, run without a shell to avoid quoting and
+        /// injection problems.
         argv: Vec<String>,
         #[serde(default = "default_check_timeout")]
         timeout: HumanDuration,
@@ -225,7 +200,7 @@ const fn default_expect_status() -> u16 {
 }
 
 impl HealthCheck {
-    /// What the executor runs for this entry (DAWG-104).
+    /// The executor's check for this entry.
     #[must_use]
     pub fn to_check(&self) -> updawg_executor::health::Check {
         use updawg_executor::health::{Check, CheckKind};
@@ -266,9 +241,8 @@ impl HealthCheck {
     }
 }
 
-/// See [`AgentConfig::mode`]. Not the protocol's `AgentMode::default()`,
-/// which stays `observe`: that one is what a report that omits the mode means,
-/// and nothing may be read as more permissive than it said.
+/// See [`AgentConfig::mode`]. Differs from `AgentMode::default()`, which is
+/// `observe` because that's how a report without a mode must be read.
 const fn default_mode() -> Mode {
     Mode::Managed
 }
@@ -276,10 +250,8 @@ const fn default_mode() -> Mode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub server: String,
-    /// `managed` when the file does not say: an agent is installed to act on
-    /// what its organization approves. What it may do is still only what
-    /// `[permissions]` allows, and an empty allow list permits nothing — so a
-    /// truncated file still fails closed.
+    /// Defaults to `managed`. This is safe because `[permissions]` defaults
+    /// to an empty allow list, which permits nothing.
     #[serde(default = "default_mode")]
     pub mode: Mode,
     #[serde(default)]
@@ -290,39 +262,35 @@ pub struct AgentConfig {
     pub snapshots: Snapshots,
     #[serde(default)]
     pub reboot: RebootSettings,
-    /// `[[health_check]]` entries, in the order they were written.
+    /// `[[health_check]]` entries, in file order.
     #[serde(default, rename = "health_check")]
     pub health_checks: Vec<HealthCheck>,
-    /// The organization signing key this host trusts, when the organization
-    /// holds its own (DAWG-157, ADR 0006): the base64 SPKI `updawgctl keygen`
-    /// prints, with or without its `ed25519:` prefix.
+    /// The organization signing key this host trusts, for organizations that
+    /// hold their own key: the base64 SPKI printed by `updawgctl keygen`, with
+    /// or without the `ed25519:` prefix.
     ///
-    /// Set, it is what enrollment pins: the server must offer this key, and
-    /// any other key it offers must be endorsed by a chain from it. That is
-    /// what makes "Updawg cannot create a job this host will run" hold for a
-    /// host enrolled *after* a server compromise, and it lives here because
-    /// this file is the customer's and the server cannot change it.
+    /// If set, enrollment pins it. The server must offer this key and any
+    /// other key must be endorsed by a chain from it, so a compromised server
+    /// still can't create jobs for hosts enrolled afterwards. It lives here
+    /// because the server can't change this file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_org_key: Option<String>,
 }
 
 impl AgentConfig {
-    /// Parse the on-disk configuration.
+    /// Parses the configuration.
     ///
     /// # Errors
-    /// Returns the TOML error if the file is not valid configuration. The agent
-    /// refuses to start on a malformed config rather than falling back to a
-    /// default that might be more permissive than intended.
+    /// Returns the TOML error if the file is not valid configuration.
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(s)
     }
 
-    /// Read and parse the on-disk configuration.
+    /// Reads and parses the configuration.
     ///
     /// # Errors
-    /// Fails if the file cannot be read or is not valid configuration. The
-    /// agent refuses to start on a malformed config rather than falling back to
-    /// a default that might permit more than the operator intended.
+    /// Fails if the file cannot be read or is not valid configuration. There
+    /// is no fallback to defaults, which might permit more than intended.
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let raw = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
@@ -333,8 +301,7 @@ impl AgentConfig {
             path: path.display().to_string(),
             source,
         })?;
-        // Checked here, so a mistyped key stops the agent at start-up rather
-        // than at the enrollment it was written for.
+        // fail at startup rather than at enrollment
         config.trusted_org_key()?;
         Ok(config)
     }
@@ -353,20 +320,12 @@ impl AgentConfig {
             .transpose()
     }
 
-    /// What this file permits, in the shape the server is told about it
-    /// (DAWG-223).
+    /// What this file permits, as reported to the server.
     ///
-    /// Derived from `[permissions]` rather than sent as the allow and deny
-    /// lists themselves. The server has no business knowing that `snapshot`
-    /// covers two job kinds or that deny beats allow — those are the agent's
-    /// rules, they are enforced here, and shipping them would invite a second
-    /// implementation of them somewhere that cannot be audited. What travels is
-    /// the answer: the kinds this host would accept.
-    ///
-    /// The mode travels **separately** and is not folded in, so a host in
-    /// observe mode with `apply_patch` written down reads as exactly that. An
-    /// operator who has switched the mode off has not deleted the permission,
-    /// and the two facts are worth telling apart on a dashboard.
+    /// Sends the resulting job kinds rather than the raw allow and deny lists,
+    /// so the permission rules only exist in the agent. The mode is reported
+    /// separately and not folded in, so observe mode doesn't hide which
+    /// permissions are configured.
     #[must_use]
     pub fn local_policy(&self) -> updawg_protocol::LocalPolicy {
         updawg_protocol::LocalPolicy {
@@ -378,7 +337,7 @@ impl AgentConfig {
         }
     }
 
-    /// Final answer on whether a job may run on this host.
+    /// Whether a job may run on this host.
     #[must_use]
     pub fn admits(&self, kind: JobKind, server: Option<&Permissions>) -> bool {
         if self.mode == Mode::Observe && kind.is_mutating() {
@@ -442,14 +401,11 @@ mod tests {
         assert!(!cfg.admits(JobKind::ApplyUpdates, None));
         assert!(!cfg.admits(JobKind::Reboot, None));
         assert!(!cfg.admits(JobKind::DistUpgrade, None));
-        // Read-only work still happens; that is the point of observe mode.
+        // read-only jobs still run
         assert!(cfg.admits(JobKind::RefreshInventory, None));
     }
 
-    /// Fail-closed applies to read-only jobs too: a `refresh_inventory` job is
-    /// still a job, and the allow list still gates it. That is why the example
-    /// configuration in the design document lists `refresh` explicitly. The
-    /// agent's own scheduled inventory runs are not jobs and are unaffected.
+    /// Scheduled inventory runs are not jobs and aren't affected by this.
     #[test]
     fn a_refresh_job_is_gated_by_the_allow_list_like_any_other() {
         let cfg = AgentConfig {
@@ -493,17 +449,13 @@ mod tests {
         assert!(!cfg.admits(JobKind::ApplyUpdates, None));
     }
 
-    /// The property the whole security model rests on: the server can take
-    /// permissions away and can never hand them out.
     #[test]
     fn the_server_cannot_widen_local_permissions() {
         let local = managed(&["apply_patch"], &["dist_upgrade"]);
         let server = perms(&["apply_patch", "dist_upgrade", "reboot"], &[]);
 
-        // The server offers dist_upgrade and reboot. Local config says no.
         assert!(!local.admits(JobKind::DistUpgrade, Some(&server)));
         assert!(!local.admits(JobKind::Reboot, Some(&server)));
-        // What both agree on still works.
         assert!(local.admits(JobKind::ApplyUpdates, Some(&server)));
     }
 
@@ -524,8 +476,7 @@ mod tests {
         assert!(!merged.allow.contains("c"));
     }
 
-    /// The complete example from section 3.6 of the design document, verbatim.
-    /// If this stops parsing, either the document or the code has drifted.
+    /// The full documented example config.
     #[test]
     fn the_documented_example_config_parses_in_full() {
         let cfg = AgentConfig::from_toml(
@@ -559,7 +510,7 @@ expect_status = 200
 timeout = "5s"
 "#,
         )
-        .expect("example config from the design document should parse");
+        .expect("the example config should parse");
 
         assert_eq!(cfg.mode, Mode::Managed);
         assert!(cfg.permissions.deny.contains("dist_upgrade"));
@@ -632,8 +583,8 @@ inventory_interval = "6 hours"
 
     #[test]
     fn managed_by_default_still_permits_nothing_it_was_not_given() {
-        // The mode defaulting to managed is safe only because permissions do
-        // not default to anything: a file with neither permits no change.
+        // defaulting to managed is only safe because permissions default to
+        // nothing
         let cfg = AgentConfig::from_toml(r#"server = "https://agents.updawg.net""#)
             .expect("minimal config should parse");
         for kind in [JobKind::ApplyUpdates, JobKind::Reboot, JobKind::DistUpgrade] {
@@ -682,8 +633,7 @@ mod policy_tests {
 
     #[test]
     fn one_permission_covering_two_kinds_reports_both() {
-        // `snapshot` gates Snapshot and Rollback. The server is told about job
-        // kinds, not about the agent's permission names, so both appear.
+        // `snapshot` gates both Snapshot and Rollback
         let policy = config(Mode::Managed, &["snapshot"]).local_policy();
         assert_eq!(
             policy.permitted_job_kinds,
@@ -703,20 +653,15 @@ mod policy_tests {
 
     #[test]
     fn observe_mode_reports_the_mode_without_erasing_the_permissions() {
-        // The two facts stay apart: the operator wrote the permission down and
-        // switched the mode off, which is not the same as never writing it.
         let policy = config(Mode::Observe, &["apply_patch"]).local_policy();
         assert_eq!(policy.mode, Mode::Observe);
         assert_eq!(policy.permitted_job_kinds, vec![JobKind::ApplyUpdates]);
-        // And the server reading it back reaches the same answer the agent does.
         assert!(!policy.permits(JobKind::ApplyUpdates));
     }
 
     #[test]
     fn the_reported_policy_agrees_with_admits_for_every_kind() {
-        // The property that makes this worth sending at all: what the server is
-        // told and what the agent will actually do are the same answer. Anything
-        // else and the portal promises something the host refuses.
+        // what the server is told must match what the agent will actually do
         for allow in [
             vec![],
             vec!["refresh"],

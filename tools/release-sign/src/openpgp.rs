@@ -1,15 +1,14 @@
-//! Just enough OpenPGP (RFC 4880, v4) to publish a repository: an RSA public
-//! key with one user ID, detached signatures and cleartext signatures, all
-//! SHA-512.
+//! The subset of OpenPGP (RFC 4880, v4) needed to sign a package repository:
+//! an RSA public key with one user ID, plus detached and cleartext
+//! signatures, all SHA-512.
 //!
-//! Written here rather than taken from an OpenPGP library because the private
-//! key is not ours to hold: Cloud KMS signs, and what OpenPGP needs around
-//! that signature — the packet, its hashed subpackets, the trailer — is a few
-//! hundred lines. A library would want the key.
+//! OpenPGP libraries expect to hold the private key, and ours lives in Cloud
+//! KMS. Building the packets around a KMS signature is only a few hundred
+//! lines.
 //!
-//! RSA with PKCS#1 v1.5 because that is what KMS's `RSA_SIGN_PKCS1_4096_SHA512`
-//! produces and what OpenPGP's RSA signatures are: the same `DigestInfo`
-//! encoding, so KMS's signature is the OpenPGP signature's MPI as it is.
+//! KMS's `RSA_SIGN_PKCS1_4096_SHA512` uses the same PKCS#1 v1.5 `DigestInfo`
+//! encoding as OpenPGP RSA signatures, so its output goes into the signature
+//! MPI unchanged.
 
 use aws_lc_rs::digest;
 use base64::Engine as _;
@@ -23,8 +22,6 @@ const TAG_SIGNATURE: u8 = 2;
 const TAG_PUBLIC_KEY: u8 = 6;
 const TAG_USER_ID: u8 = 13;
 
-/// Signature type 0x00: a binary document. 0x01: canonical text. 0x13:
-/// positive certification of a user ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SigType {
     Binary = 0x00,
@@ -32,26 +29,21 @@ pub(crate) enum SigType {
     PositiveCertification = 0x13,
 }
 
-/// Whatever holds the private key: KMS in production, a local key in tests.
-///
-/// `sign` is given the bytes to hash and returns an `RSASSA-PKCS1-v1_5`
-/// signature over their SHA-512.
+/// KMS in production, a local key in tests. `sign` takes the bytes to hash
+/// and returns an `RSASSA-PKCS1-v1_5` signature over their SHA-512.
 pub(crate) trait Signer {
     fn sign(&self, to_hash: &[u8]) -> anyhow::Result<Vec<u8>>;
 }
 
-/// An RSA public key as OpenPGP carries it.
 #[derive(Debug, Clone)]
 pub(crate) struct PublicKey {
-    /// When the key was made. Part of the fingerprint, so it has to be the
-    /// same every time the key is exported.
+    /// Part of the fingerprint, so it must not change between exports.
     pub(crate) created: u32,
     pub(crate) n: Vec<u8>,
     pub(crate) e: Vec<u8>,
 }
 
 impl PublicKey {
-    /// The public-key packet's body.
     #[must_use]
     pub(crate) fn body(&self) -> Vec<u8> {
         let mut b = vec![4];
@@ -62,7 +54,6 @@ impl PublicKey {
         b
     }
 
-    /// The v4 fingerprint: SHA-1 over the key, which is what v4 defines it as.
     #[must_use]
     pub(crate) fn fingerprint(&self) -> [u8; 20] {
         let mut ctx = digest::Context::new(&digest::SHA1_FOR_LEGACY_USE_ONLY);
@@ -72,7 +63,6 @@ impl PublicKey {
         out
     }
 
-    /// The low 64 bits of the fingerprint.
     #[must_use]
     pub(crate) fn key_id(&self) -> [u8; 8] {
         let fpr = self.fingerprint();
@@ -81,12 +71,10 @@ impl PublicKey {
         id
     }
 
-    /// The transferable public key — the key, one user ID, and the key's own
-    /// certification of it — armored, which is what goes in a keyring file.
+    /// The armored transferable public key (key, user ID, self-certification).
     ///
-    /// Certified at `now`; give it the key's creation time and the export is
-    /// the same bytes every time, because PKCS#1 v1.5 signatures are
-    /// deterministic.
+    /// PKCS#1 v1.5 signatures are deterministic, so passing the key's creation
+    /// time as `now` makes the export byte-for-byte reproducible.
     pub(crate) fn export(
         &self,
         user_id: &str,
@@ -99,7 +87,7 @@ impl PublicKey {
         ))
     }
 
-    /// [`PublicKey::export`] as packets, unarmored: a keyring `gpgv` reads.
+    /// [`PublicKey::export`] without the armor, as a keyring for `gpgv`.
     pub(crate) fn certificate(
         &self,
         user_id: &str,
@@ -115,10 +103,9 @@ impl PublicKey {
         let hashed = [
             subpacket(2, &now.to_be_bytes()),
             subpacket(33, &[&[4][..], &self.fingerprint()].concat()),
-            // Certify and sign: it certifies its own user ID, and signs
-            // repositories.
+            // certify + sign
             subpacket(27, &[0x03]),
-            // SHA-512, then SHA-256. Only the first is used here.
+            // preferred hashes: SHA-512, SHA-256
             subpacket(21, &[SHA512, 8]),
             subpacket(25, &[1]),
         ]
@@ -137,8 +124,7 @@ impl PublicKey {
         Ok(packets)
     }
 
-    /// A detached signature over `data`, armored: `Release.gpg`,
-    /// `repomd.xml.asc`.
+    /// Armored detached signature, for `Release.gpg` and `repomd.xml.asc`.
     pub(crate) fn detach_sign(
         &self,
         data: &[u8],
@@ -149,7 +135,7 @@ impl PublicKey {
         Ok(armor("SIGNATURE", &sig))
     }
 
-    /// `text` as a cleartext-signed message: `InRelease`.
+    /// Cleartext-signed message, for `InRelease`.
     pub(crate) fn clear_sign(
         &self,
         text: &str,
@@ -184,7 +170,7 @@ impl PublicKey {
     }
 }
 
-/// A v4 signature packet over `data` (already prefixed, for a certification).
+/// For a certification, `data` must already carry the key and user ID prefix.
 fn signature(
     key: &PublicKey,
     kind: SigType,
@@ -213,9 +199,8 @@ fn signature(
     Ok(packet(TAG_SIGNATURE, &body))
 }
 
-/// What a text signature hashes: lines ending CRLF, trailing spaces and tabs
-/// removed, and no line ending after the last line — which in a cleartext
-/// message belongs to the armor that follows it.
+/// CRLF line endings, trailing whitespace stripped, and no newline after the
+/// last line (in a cleartext message that one belongs to the armor).
 #[must_use]
 pub(crate) fn canonical_text(text: &str) -> Vec<u8> {
     text.strip_suffix('\n')
@@ -238,8 +223,7 @@ fn len32(n: usize) -> [u8; 4] {
     u32::try_from(n).unwrap_or(u32::MAX).to_be_bytes()
 }
 
-/// A multiprecision integer: its length in bits, then the big-endian bytes
-/// with no leading zeros.
+/// Bit length, then the big-endian bytes without leading zeros.
 #[must_use]
 pub(crate) fn mpi(bytes: &[u8]) -> Vec<u8> {
     let first = bytes.iter().position(|b| *b != 0).unwrap_or(bytes.len());
@@ -256,14 +240,14 @@ pub(crate) fn mpi(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// One subpacket, which here are all short.
+/// Assumes a one-byte length; ours are all short.
 fn subpacket(kind: u8, data: &[u8]) -> Vec<u8> {
     let mut out = vec![u8::try_from(data.len() + 1).unwrap_or(u8::MAX), kind];
     out.extend_from_slice(data);
     out
 }
 
-/// A packet in the new format.
+/// New-format packet header plus body.
 #[must_use]
 pub(crate) fn packet(tag: u8, body: &[u8]) -> Vec<u8> {
     let mut out = vec![0xC0 | tag];
@@ -282,7 +266,6 @@ pub(crate) fn packet(tag: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// ASCII armor, with its CRC-24.
 #[must_use]
 pub(crate) fn armor(kind: &str, data: &[u8]) -> String {
     let b64 = base64::engine::general_purpose::STANDARD;
@@ -337,9 +320,8 @@ mod tests {
 
     #[test]
     fn the_crc_is_rfc_4880s() {
-        // The empty input is the initial value.
         assert_eq!(crc24(b""), 0x00B7_04CE);
-        // Computed independently from the RFC's reference algorithm.
+        // checked against the RFC reference implementation
         assert_eq!(crc24(b"hello"), 0x0047_F58A);
     }
 

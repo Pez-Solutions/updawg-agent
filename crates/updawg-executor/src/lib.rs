@@ -1,10 +1,8 @@
 //! Job executors and health checks.
 //!
-//! One mutating job runs at a time. Concurrency here means a corrupted package
-//! database, so the scheduler serialises them and the executor assumes it.
-//!
-//! Scope note: DAWG-19 defines the surface. DAWG-70 onwards implement the
-//! individual executors.
+//! Only one mutating job runs at a time, since concurrent package operations
+//! can corrupt the package database. The scheduler enforces this and
+//! executors rely on it.
 
 pub mod health;
 

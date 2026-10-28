@@ -1,6 +1,6 @@
 [package]
 name = "updawg-release-sign"
-description = "OpenPGP signatures for pkg.updawg.net, made by a Cloud KMS key that never leaves KMS (DAWG-45)."
+description = "OpenPGP signatures for pkg.updawg.net, made by a Cloud KMS key that never leaves KMS."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

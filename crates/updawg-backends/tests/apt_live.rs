@@ -1,24 +1,20 @@
-//! The apt parsers against live containers, not checked-in fixtures (DAWG-34).
+//! The apt parsers against live containers.
 //!
-//! `tests/apt.rs` runs against captured output and is fast, hermetic and always
-//! green. That is exactly its weakness: it proves the parsers still handle what
-//! apt printed on the day the fixtures were taken, and says nothing about what
-//! apt prints today. This file is the canary for that drift.
+//! `tests/apt.rs` uses captured fixtures, which only show what apt printed when
+//! they were taken. This catches apt's output changing since then.
 //!
-//! Ignored by default because it needs Docker and pulls five images. Run it when
-//! touching a parser, when a new distribution is added, or when apt has moved:
+//! Ignored by default because it needs Docker and pulls five images. Run it
+//! after touching a parser, adding a distribution, or an apt release:
 //!
 //! ```text
 //! cargo test -p updawg-backends --test apt_live -- --ignored --nocapture
 //! ```
 //!
-//! Set `UPDAWG_REQUIRE_DOCKER=1` to turn "no Docker, so this quietly did nothing"
-//! into a failure — the same guard the server uses for its database tests, and
-//! for the same reason: a test suite that silently shrinks stays green.
+//! With `UPDAWG_REQUIRE_DOCKER=1` set, a missing Docker fails the test instead
+//! of skipping it.
 
-// clippy.toml allows unwrap and expect in `#[cfg(test)]` modules, but that does
-// not reach an integration test in `tests/` — the whole file is the test. In here
-// a panic *is* the assertion.
+// clippy.toml's test allowances only cover `#[cfg(test)]` modules, not
+// integration tests.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -38,8 +34,8 @@ const IMAGES: &[(&str, &str)] = &[
     ("debian:12", "Debian"),
 ];
 
-/// Exactly what `tests/fixtures/apt/*.txt` was captured with. Kept here so the
-/// fixtures can be regenerated from the one source of truth.
+/// The script `tests/fixtures/apt/*.txt` were captured with, kept so they can
+/// be regenerated.
 const CAPTURE: &str = r#"
 set -uo pipefail
 apt-get update -qq >/dev/null 2>&1
@@ -59,12 +55,11 @@ apt-get -s install --no-install-recommends curl 2>&1
 "#;
 
 /// Builds the state `tests/fixtures/apt/debian12-removals.txt` was captured
-/// from, because no official image has an upgrade that removes something.
+/// from, since no official image has an upgrade that removes something.
 ///
-/// Three packages built with `dpkg-deb`, one of which `Replaces` and
-/// `Conflicts` the other two and is then offered as an upgrade. The packages
-/// are made up; what `apt` prints about them is not, and what it prints is a
-/// `Remv` line that does not name the package that caused it.
+/// Three local packages, one of which `Replaces` and `Conflicts` the other two
+/// in its upgrade. apt reports the removals as `Remv` lines that don't name
+/// the package responsible.
 const REMOVALS_CAPTURE: &str = r#"
 set -u
 export DEBIAN_FRONTEND=noninteractive
@@ -161,13 +156,13 @@ fn the_parsers_still_understand_what_apt_prints_today() {
         let out = capture(image);
         assert!(
             out.contains("===DPKG_QUERY==="),
-            "{image}: captured nothing — is the image pullable?"
+            "{image}: captured nothing; is the image pullable?"
         );
 
         let installed = parse_installed(&section(&out, "DPKG_QUERY"));
         assert!(
             installed.len() > 50,
-            "{image}: only {} packages — dpkg-query's format has moved",
+            "{image}: only {} packages; dpkg-query's format has moved",
             installed.len()
         );
         assert!(
@@ -180,7 +175,7 @@ fn the_parsers_still_understand_what_apt_prints_today() {
         let repos = parse_repositories(&section(&out, "POLICY"), Some(origin));
         assert!(
             !repos.is_empty(),
-            "{image}: no repositories — apt-cache policy's format has moved"
+            "{image}: no repositories; apt-cache policy's format has moved"
         );
         assert!(
             repos.iter().all(|r| !r.third_party),
@@ -193,9 +188,9 @@ fn the_parsers_still_understand_what_apt_prints_today() {
             "{image}: apt-mark showhold's output has moved, got {holds:?}"
         );
 
-        // A newly-installed dependency must never read as an available update.
-        // This is the assertion most likely to catch a real regression, because
-        // it depends on apt's exact bracket placement.
+        // Newly installed dependencies must not be parsed as updates. This
+        // depends on apt's exact bracket placement, so it's the likeliest to
+        // break.
         let sim = section(&out, "INSTALL_SIM");
         assert!(
             sim.contains("Inst "),
@@ -256,7 +251,7 @@ fn an_upgrade_that_removes_a_package_still_says_so_the_same_way() {
     let out = capture_with("debian:12", REMOVALS_CAPTURE);
     assert!(
         out.contains("===DPKG_QUERY==="),
-        "captured nothing — is dpkg-dev still installable?"
+        "captured nothing; is dpkg-dev still installable?"
     );
 
     let installed = parse_installed(&section(&out, "DPKG_QUERY"));
@@ -271,15 +266,13 @@ fn an_upgrade_that_removes_a_package_still_says_so_the_same_way() {
         "apt's Remv line has moved"
     );
 
-    // The fact the wire shape rests on: apt still names nothing that replaced
-    // them. If this ever fails, `PendingRemoval::replaced_by` can be filled in
-    // on this family too.
+    // apt doesn't say what replaced them. If that changes,
+    // `PendingRemoval::replaced_by` can be filled in for apt too.
     assert!(
         removals.iter().all(|r| r.replaced_by.is_none()),
         "apt now names the replacement; parse_removals can report it"
     );
 
-    // And a removal is never also reported as an update.
     let updates = parse_updates(&sim);
     assert!(updates.iter().any(|u| u.name == "foopkg"));
     assert!(!updates.iter().any(|u| u.name == "barpkg"));

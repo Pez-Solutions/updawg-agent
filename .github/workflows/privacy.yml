@@ -1,12 +1,10 @@
 name: Privacy review
 
-# What the agent sends about a host is a promise to customers
-# (docs.updawg.net/agent/collected-data, DAWG-171). A pull request that changes
-# what is collected — the field list the protocol tests generate, or a
-# collector — needs somebody to have read it against that promise, and says
-# so with the `privacy-reviewed` label. Until then this check fails.
+# A PR that changes what the agent collects (collected-fields.txt or a
+# collector) fails until it has the `privacy-reviewed` label. See
+# docs.updawg.net/agent/collected-data.
 #
-# Its own workflow because CI does not run again when a label is added.
+# Separate from CI because CI doesn't re-run when a label is added.
 
 on:
   pull_request:

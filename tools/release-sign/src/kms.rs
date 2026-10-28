@@ -1,9 +1,7 @@
-//! The signer that holds no key: Cloud KMS signs, and this sends it a digest.
+//! Signing through Cloud KMS: we send a digest, KMS returns the signature.
 //!
-//! Authenticated with an OAuth access token from the environment
-//! (`GOOGLE_OAUTH_ACCESS_TOKEN`), which in CI comes from Workload Identity
-//! Federation: an hour-long credential for one workflow, granted `useToSign`
-//! on this one key and nothing else.
+//! Auth is an OAuth access token in `GOOGLE_OAUTH_ACCESS_TOKEN`. In CI it comes
+//! from Workload Identity Federation and only has `useToSign` on this key.
 
 use crate::openpgp::{PublicKey, Signer};
 use anyhow::{Context as _, bail};
@@ -11,17 +9,17 @@ use aws_lc_rs::digest;
 use base64::Engine as _;
 
 const API: &str = "https://cloudkms.googleapis.com/v1";
-/// The only algorithm this signs with: see [`crate::openpgp`].
+/// See [`crate::openpgp`] for why only this one.
 const ALGORITHM: &str = "RSA_SIGN_PKCS1_4096_SHA512";
 
 pub(crate) struct Kms {
-    /// `projects/…/cryptoKeys/…/cryptoKeyVersions/N`.
+    /// `projects/.../cryptoKeys/.../cryptoKeyVersions/N`.
     version: String,
     token: String,
     http: reqwest::blocking::Client,
 }
 
-/// Without the token, which is a credential.
+/// Leaves out the token.
 impl std::fmt::Debug for Kms {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Kms")
@@ -51,8 +49,8 @@ impl Kms {
         Ok(body)
     }
 
-    /// The key's public half, with the key version's creation time as the
-    /// OpenPGP key's, so every export has the same fingerprint.
+    /// Uses the key version's creation time as the OpenPGP key's, so the
+    /// fingerprint is the same on every export.
     pub(crate) fn public_key(&self) -> anyhow::Result<PublicKey> {
         let version = self.get(&format!("{API}/{}", self.version))?;
         let created = version["createTime"]

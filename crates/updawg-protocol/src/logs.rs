@@ -1,9 +1,8 @@
 //! Job logs: `POST /agent/v1/jobs/{job_id}/logs`.
 //!
-//! Sent as batched NDJSON — one [`LogLine`] per line — so a long apply streams
-//! rather than arriving all at once when it finishes. Logs go to object storage
-//! rather than the database; at fleet scale they are the largest thing the
-//! system writes and the least useful to query relationally.
+//! Sent as batched NDJSON, one [`LogLine`] per line, so a long apply streams
+//! instead of arriving all at once at the end. The server keeps logs in object
+//! storage rather than the database.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -28,7 +27,6 @@ pub struct LogLine {
 }
 
 impl LogLine {
-    /// Render a batch as NDJSON.
     pub fn to_ndjson(lines: &[Self]) -> Result<String, serde_json::Error> {
         let mut out = String::new();
         for line in lines {

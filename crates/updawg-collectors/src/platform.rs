@@ -1,18 +1,8 @@
-//! Reading the handful of files that say what this machine is.
+//! Reads the files that say what this machine is.
 //!
-//! Everything here is a pure read of a well-known path under a root the tests
-//! can redirect, which is what lets the whole collector suite run on a laptop
-//! that is not the operating system it is collecting from.
-//!
-//! Two rules hold throughout:
-//!
-//! - **A missing source is a `None`, not an error.** A host with no
-//!   `systemd-detect-virt` is not a broken host, it is a host without systemd,
-//!   and refusing to report anything about it would be worse than reporting
-//!   most things.
-//! - **"I could not tell" is never rendered as a value.** Where the answer
-//!   matters — whether a reboot is pending, most of all — not knowing is its
-//!   own state and stays visible all the way up.
+//! Every read goes through a [`Root`] so tests can point it at a fixture
+//! directory. An optional source that is missing gives `None`; only the facts
+//! nothing works without return an error.
 
 use crate::{CollectorError, Result};
 use std::{
@@ -51,7 +41,7 @@ impl Root {
         self.join(rel).exists()
     }
 
-    /// Read a file, trimmed. `None` if it is absent or unreadable.
+    /// Reads a file, trimmed. `None` if it is absent, unreadable or empty.
     #[must_use]
     pub fn read(&self, rel: &str) -> Option<String> {
         std::fs::read_to_string(self.join(rel))
@@ -60,8 +50,7 @@ impl Root {
             .filter(|s| !s.is_empty())
     }
 
-    /// Read a file whose absence is an error, because nothing downstream works
-    /// without it.
+    /// Like [`Root::read`], but a missing file is an error.
     pub fn require(&self, rel: &str, name: &'static str) -> Result<String> {
         self.read(rel)
             .ok_or(CollectorError::SourceUnavailable { input: name })
@@ -69,9 +58,8 @@ impl Root {
 
     /// Whether this root is the real filesystem.
     ///
-    /// Subprocesses always run against the real machine, so a collector reading
-    /// a fixture must not shell out and report the developer's laptop as the
-    /// customer's host.
+    /// Subprocesses always see the real machine, so collectors only shell out
+    /// when this is true. Otherwise a test would report the machine it runs on.
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.path == Path::new("/")
@@ -86,15 +74,14 @@ pub struct OsRelease {
     pub id: String,
     pub version_id: String,
     pub codename: Option<String>,
-    /// `ID_LIKE`, split. `rhel fedora` on Rocky, `fedora` on Amazon Linux.
-    /// It is how a distro nobody has heard of still gets the right treatment.
+    /// `ID_LIKE`, split: `rhel fedora` on Rocky, `fedora` on Amazon Linux.
+    /// Lets unlisted derivatives be classified by family.
     pub like: Vec<String>,
 }
 
 impl OsRelease {
     /// # Errors
-    /// [`CollectorError::Unparseable`] if there is no `ID` field. Everything
-    /// else has a sensible absence; the distro's own name does not.
+    /// [`CollectorError::Unparseable`] if there is no `ID` field.
     pub fn parse(raw: &str) -> Result<Self> {
         let mut id = None;
         let mut version_id = None;
@@ -109,8 +96,7 @@ impl OsRelease {
             let Some((field, raw_value)) = line.split_once('=') else {
                 continue;
             };
-            // Values are shell-quoted: `VERSION_ID="24.04"` and `ID=debian` are
-            // both valid and both appear in the wild.
+            // values may or may not be quoted: VERSION_ID="24.04", ID=debian
             let value = raw_value.trim().trim_matches(['"', '\'']).to_string();
             match field.trim() {
                 "ID" => id = Some(value),
@@ -132,9 +118,8 @@ impl OsRelease {
 
         Ok(Self {
             id,
-            // Rolling releases genuinely have no VERSION_ID. Reporting "rolling"
-            // is more useful than refusing to collect from an Arch box, and the
-            // EOL logic can recognise it.
+            // Rolling releases (Arch) have no VERSION_ID. The EOL logic
+            // knows "rolling".
             version_id: version_id
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "rolling".into()),
@@ -143,18 +128,15 @@ impl OsRelease {
         })
     }
 
-    /// Whether this is a Red Hat-family distribution.
-    ///
-    /// Checked through `ID_LIKE` as well as `ID`, so Rocky, Alma, Amazon Linux
-    /// and the next rebuild nobody has announced yet all match without needing
-    /// to be listed.
+    /// Whether this is a Red Hat-family distribution. Checks `ID_LIKE` as well
+    /// as `ID`, so Rocky, Alma, Amazon Linux and future rebuilds match without
+    /// being listed.
     #[must_use]
     pub fn is_rhel_like(&self) -> bool {
         const FAMILY: [&str; 4] = ["rhel", "fedora", "centos", "amzn"];
         FAMILY.contains(&self.id.as_str()) || self.like.iter().any(|l| FAMILY.contains(&l.as_str()))
     }
 
-    /// Whether this is a Debian-family distribution.
     #[must_use]
     pub fn is_debian_like(&self) -> bool {
         const FAMILY: [&str; 2] = ["debian", "ubuntu"];
@@ -162,7 +144,7 @@ impl OsRelease {
     }
 }
 
-/// Read and parse `/etc/os-release`, falling back to the `/usr/lib` copy.
+/// Parses `/etc/os-release`, falling back to `/usr/lib/os-release`.
 pub fn os_release(root: &Root) -> Result<OsRelease> {
     let raw = root
         .read("etc/os-release")
@@ -178,9 +160,9 @@ pub fn os_release(root: &Root) -> Result<OsRelease> {
 /// `/etc/machine-id`, falling back to the D-Bus copy on older systems.
 ///
 /// # Errors
-/// Fails if it is missing or empty. Empty is a real and dangerous state:
-/// systemd leaves the file empty in images meant to be cloned, expecting first
-/// boot to fill it, and every clone would otherwise share an identity.
+/// Fails if it is missing or empty. Images meant for cloning ship an empty
+/// file for first boot to fill in, and using it would give every clone the
+/// same identity.
 pub fn machine_id(root: &Root) -> Result<String> {
     let id = root
         .read("etc/machine-id")
@@ -192,12 +174,11 @@ pub fn machine_id(root: &Root) -> Result<String> {
     if id.is_empty() {
         return Err(CollectorError::Unparseable {
             input: "/etc/machine-id",
-            detail: "empty — this host has not been assigned a machine id yet".into(),
+            detail: "empty; this host has not been assigned a machine id yet".into(),
         });
     }
-    // systemd specifies 32 lowercase hex characters, but refusing to collect
-    // from a host that has something else would be picking a fight with reality
-    // over a value we only ever compare for equality. Say so and carry on.
+    // systemd specifies 32 lowercase hex characters. We only ever compare it
+    // for equality, so warn about anything else and use it anyway.
     if id.len() != 32 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         tracing::warn!(
             machine_id_len = id.len(),
@@ -207,12 +188,11 @@ pub fn machine_id(root: &Root) -> Result<String> {
     Ok(id)
 }
 
-/// The kernel release string, as `uname -r` would give it.
+/// The kernel release, as `uname -r` prints it.
 pub fn kernel(root: &Root) -> Result<String> {
     root.require("proc/sys/kernel/osrelease", "/proc/sys/kernel/osrelease")
 }
 
-/// This host's short name.
 pub fn hostname(root: &Root) -> Result<String> {
     if let Some(name) = root.read("proc/sys/kernel/hostname") {
         return Ok(name);
@@ -222,18 +202,14 @@ pub fn hostname(root: &Root) -> Result<String> {
             input: "/proc/sys/kernel/hostname",
         });
     }
-    // Not Linux, or a container without /proc mounted the usual way.
+    // not Linux, or a container without the usual /proc
     run("hostname", &[]).ok_or(CollectorError::SourceUnavailable {
         input: "/proc/sys/kernel/hostname",
     })
 }
 
-/// The fully-qualified name, if this host has one.
-///
-/// Plenty of perfectly healthy hosts do not, so absence is not a failure. It
-/// also depends on resolver configuration, which means it can hang; that is why
-/// it is read through a command with the rest of the optional facts rather than
-/// being required.
+/// The fully-qualified name, if this host has one. Many hosts don't. It goes
+/// through the resolver and can hang, so it is optional.
 #[must_use]
 pub fn fqdn(root: &Root) -> Option<String> {
     if !root.is_live() {
@@ -243,8 +219,7 @@ pub fn fqdn(root: &Root) -> Option<String> {
 }
 
 /// The architecture this binary was built for, which is the one it runs on.
-///
-/// More reliable than parsing `uname -m`, and it needs no subprocess.
+/// Avoids parsing `uname -m`.
 #[must_use]
 pub fn arch() -> String {
     std::env::consts::ARCH.to_string()
@@ -252,10 +227,8 @@ pub fn arch() -> String {
 
 /// What this host is virtualized by, if anything.
 ///
-/// `systemd-detect-virt` knows the most, so it is asked first. The `/sys`
-/// fallbacks cover hosts without systemd. `None` means "could not tell", which
-/// is not the same as bare metal — and is why this is an `Option` rather than a
-/// string that says "none".
+/// Asks `systemd-detect-virt` first, then falls back to `/sys` for hosts
+/// without systemd. `None` covers both bare metal and "could not tell".
 #[must_use]
 pub fn virtualization(root: &Root) -> Option<String> {
     if root.is_live()
@@ -264,16 +237,14 @@ pub fn virtualization(root: &Root) -> Option<String> {
     {
         return Some(v);
     }
-    // Xen and friends advertise themselves here.
+    // Xen
     if let Some(t) = root.read("sys/hypervisor/type") {
         return Some(t);
     }
-    // Most hypervisors put a recognisable name in the DMI product name.
     let product = root.read("sys/class/dmi/id/product_name")?;
     known_hypervisor(&product).map(ToString::to_string)
 }
 
-/// Map a DMI product name onto a hypervisor, when it is one we recognise.
 fn known_hypervisor(product: &str) -> Option<&'static str> {
     let p = product.to_ascii_lowercase();
     if p.contains("kvm") {
@@ -291,7 +262,6 @@ fn known_hypervisor(product: &str) -> Option<&'static str> {
     }
 }
 
-/// Which package manager this host uses.
 pub fn ecosystem(root: &Root) -> Result<Ecosystem> {
     if root.exists("usr/bin/dpkg") {
         Ok(Ecosystem::Deb)
@@ -304,8 +274,8 @@ pub fn ecosystem(root: &Root) -> Result<Ecosystem> {
     }
 }
 
-/// The current boot's identifier. Changes on reboot, which is how the server
-/// detects one it did not ask for.
+/// The current boot's identifier. The server uses a change in it to detect
+/// reboots it didn't ask for.
 pub fn boot_id(root: &Root) -> Result<String> {
     root.require(
         "proc/sys/kernel/random/boot_id",
@@ -315,11 +285,8 @@ pub fn boot_id(root: &Root) -> Result<String> {
 
 /* ------------------------------------------------------------ subprocess */
 
-/// Run a command and return its trimmed stdout, or `None` if anything at all
-/// goes wrong.
-///
-/// Deliberately incurious about *why* it failed. Every caller of this treats a
-/// missing tool and a tool that errored the same way: the fact is unavailable.
+/// Runs a command and returns its trimmed stdout, or `None` on any failure.
+/// Callers treat a missing tool and a failing one the same way.
 #[must_use]
 pub fn run(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program).args(args).output().ok()?;
@@ -330,7 +297,7 @@ pub fn run(program: &str, args: &[&str]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Run a command and return its exit status, for tools that answer in codes.
+/// Runs a command and returns its exit status.
 #[must_use]
 pub fn run_status(program: &str, args: &[&str]) -> Option<i32> {
     Command::new(program)
@@ -357,9 +324,8 @@ mod tests {
         assert_eq!(parsed.like, vec!["debian"]);
     }
 
-    /// The four families the ticket names, from their real `/etc/os-release`.
-    /// Family detection is what picks the reboot-required strategy, so getting
-    /// it wrong is not cosmetic.
+    // Real os-release contents. Family detection picks the reboot-required
+    // check, so this matters.
     #[test]
     fn every_supported_family_is_recognised() {
         let cases = [
@@ -394,7 +360,6 @@ mod tests {
         }
     }
 
-    /// A distro nobody listed still gets the right treatment through `ID_LIKE`.
     #[test]
     fn an_unknown_rebuild_is_placed_by_id_like() {
         let os = OsRelease::parse("ID=somethingnew\nID_LIKE=\"rhel\"\n").unwrap();
@@ -426,12 +391,9 @@ mod tests {
         assert_eq!(known_hypervisor("VirtualBox"), Some("oracle"));
         assert_eq!(known_hypervisor("HVM domU"), Some("xen"));
         assert_eq!(known_hypervisor("Virtual Machine"), Some("microsoft"));
-        // A real server is not a hypervisor, and must not be guessed into one.
         assert_eq!(known_hypervisor("PowerEdge R640"), None);
     }
 
-    /// Reading a fixture must never shell out. Otherwise a test on a laptop
-    /// reports the laptop, and passes while proving nothing.
     #[test]
     fn a_fixture_root_never_runs_a_subprocess() {
         let root = Root::new("/nonexistent-fixture");

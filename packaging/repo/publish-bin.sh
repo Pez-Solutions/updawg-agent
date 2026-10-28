@@ -1,6 +1,6 @@
 #!/bin/sh
-# Put one build's binaries on pkg.updawg.net and make it a channel's
-# self-update release (DAWG-46).
+# Upload a build's binaries to pkg.updawg.net and make it a channel's
+# self-update release.
 #
 #   publish-bin.sh beta|stable VERSION DIR
 #
@@ -11,8 +11,7 @@
 #   bin/<channel>.json                   the channel's manifest, signed by the
 #                                        release key; replaced on each run
 #
-# The pool first, then the manifest naming it: an agent never reads a
-# manifest that names a file not there yet.
+# Pool first, then the manifest, so the manifest never names a missing file.
 #
 # Needs: BUCKET, SIGN (updawg-release-sign), UPDAWG_RELEASE_KEY and
 # GOOGLE_OAUTH_ACCESS_TOKEN for it, gcloud.

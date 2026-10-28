@@ -1,55 +1,45 @@
-//! Health checks, run after every mutating job (DAWG-104).
+//! Health checks, run after every mutating job.
 //!
-//! These are what halt a rollout, so **a check that cannot run fails**: a
-//! missing `systemctl`, a refused connection, a command that is not there or
-//! that runs past its timeout. "I could not tell" and "it is fine" are very
-//! different answers, and only one of them lets the next host go ahead.
+//! A failed check halts a rollout, so a check that can't run counts as
+//! failed: missing `systemctl`, connection refused, command not found, or a
+//! timeout.
 //!
-//! Every check comes from the host's own `agent.toml`. Nothing the server
-//! sends can add one, which is what keeps `command` checks from being a way to
-//! run arbitrary code on a host: the server can make an agent run the checks
-//! its operator wrote, and nothing else.
+//! Checks are only read from the host's `agent.toml`; the server can't add
+//! any. Otherwise `command` checks would let the server run arbitrary code.
 
 use std::time::{Duration, Instant};
 
-/// One check, as `agent.toml` configured it.
+/// A check from `agent.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     pub name: String,
     pub kind: CheckKind,
-    /// Enforced here, not trusted to the thing being checked: a hung service
-    /// is exactly when a check would otherwise hang too.
+    /// Enforced by the agent, since a hung service tends to hang its check.
     pub timeout: Duration,
 }
 
-/// The three types `[[health_check]]` supports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckKind {
     /// `systemctl is-active` says `active`.
     Systemd { unit: String },
-    /// A GET answers with exactly `expect_status`. Redirects are not
-    /// followed and no proxy is used: a health check asks the service, not
-    /// whatever sits in front of it.
+    /// A GET returns exactly `expect_status`. Redirects aren't followed and
+    /// proxies aren't used, so the service itself is what gets checked.
     Http { url: String, expect_status: u16 },
-    /// The program exits 0. An argument vector, never a shell string.
+    /// The program exits 0. Run directly from argv, not through a shell.
     Command { argv: Vec<String> },
 }
 
-/// How one check went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckResult {
     pub name: String,
     pub passed: bool,
     pub duration: Duration,
-    /// Why it failed, or what it saw. Short: it is shown to a person.
+    /// Short, human-readable reason or note.
     pub detail: Option<String>,
 }
 
-/// Run every check, in the order configured, one at a time.
-///
-/// One at a time because a check can be the load that tips a struggling
-/// service over, and because the order an operator wrote is often the order
-/// that makes the failures readable: database, then the app that needs it.
+/// Runs the checks sequentially, in config order. Running them in parallel
+/// could add load to a service that is already struggling.
 pub async fn run_all(checks: &[Check]) -> Vec<CheckResult> {
     let mut results = Vec::with_capacity(checks.len());
     for check in checks {
@@ -58,7 +48,6 @@ pub async fn run_all(checks: &[Check]) -> Vec<CheckResult> {
     results
 }
 
-/// Run one check under its timeout.
 pub async fn run(check: &Check) -> CheckResult {
     let started = Instant::now();
     let outcome = tokio::time::timeout(check.timeout, attempt(&check.kind)).await;
@@ -78,11 +67,9 @@ pub async fn run(check: &Check) -> CheckResult {
     }
 }
 
-/// `Ok` with an optional note on success, `Err` with why on failure.
 async fn attempt(kind: &CheckKind) -> Result<Option<String>, String> {
     match kind {
         CheckKind::Systemd { unit } => {
-            // `is-active` prints the state and exits 0 only for `active`.
             let out = output("systemctl", &["is-active".to_owned(), unit.clone()]).await?;
             let state = String::from_utf8_lossy(&out.stdout).trim().to_owned();
             if out.status.success() {
@@ -104,8 +91,7 @@ async fn attempt(kind: &CheckKind) -> Result<Option<String>, String> {
                 .no_proxy()
                 .build()
                 .map_err(|e| format!("could not build an HTTP client: {e}"))?;
-            // The detail goes to the service, so it names the URL without
-            // anything secret in it (DAWG-171).
+            // the detail is sent to the server, so strip secrets from the URL
             let shown = shown_url(url);
             let response = client
                 .get(url)
@@ -141,8 +127,7 @@ async fn attempt(kind: &CheckKind) -> Result<Option<String>, String> {
     }
 }
 
-/// Run a program to completion. `kill_on_drop`, so the timeout around this
-/// actually stops it rather than leaving it running behind the agent.
+/// `kill_on_drop` so that hitting the timeout actually kills the process.
 async fn output(program: &str, args: &[String]) -> Result<std::process::Output, String> {
     tokio::process::Command::new(program)
         .args(args)
@@ -153,10 +138,9 @@ async fn output(program: &str, args: &[String]) -> Result<std::process::Output, 
         .map_err(|e| format!("could not run {program}: {e}"))
 }
 
-/// A check's URL as it may leave the host (DAWG-171): without `user:password@`,
-/// `?query` or `#fragment`, which is where a health endpoint's token goes. The
-/// operator wrote the URL into `agent.toml` and knows it; the service only
-/// needs to know which check failed.
+/// The URL with `user:password@`, `?query` and `#fragment` removed, since
+/// that is where health endpoint tokens usually go. Safe to send off the
+/// host.
 fn shown_url(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let rest = rest.split(['?', '#']).next().unwrap_or_default();
@@ -170,8 +154,8 @@ fn shown_url(url: &str) -> String {
     shown.trim_end_matches('/').to_owned()
 }
 
-/// reqwest's errors carry a chain; the innermost cause is the useful part
-/// ("Connection refused"), and the full chain is too long for a report.
+/// Innermost cause of a reqwest error (like "Connection refused"). The full
+/// chain is too long for a report.
 fn short(error: &reqwest::Error) -> String {
     let mut source: &dyn std::error::Error = error;
     while let Some(next) = source.source() {
@@ -186,8 +170,6 @@ mod tests {
 
     use super::*;
 
-    /// DAWG-171: a failed check's detail is sent to the service, and a health
-    /// URL is where people put tokens.
     #[test]
     fn a_failed_http_check_names_its_url_without_credentials() {
         assert_eq!(
@@ -282,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_connection_fails_with_the_reason() {
-        // Bind and drop, so the port is very probably closed.
+        // bind and drop, so the port is almost certainly closed
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()

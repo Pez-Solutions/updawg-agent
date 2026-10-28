@@ -5,16 +5,8 @@
 //! job is verified against that pinned key rather than against whatever the
 //! server currently claims.
 //!
-//! Key rotation works by the old key endorsing the new one, so an agent can
-//! follow a rotation without having to trust the server blindly. That is the
-//! whole reason rotation is not simply "the server says use this key now", and
-//! it is [`PinnedKeys::adopt`] that makes it so — until DAWG-99 the agent
-//! pinned whatever the server offered, and the sentence above was true of the
-//! design and of nothing in the code.
-//!
-//! Scope note: DAWG-19 defines the surface. DAWG-30 implements key generation,
-//! CSRs and pinning, DAWG-31 the certificate lifecycle, DAWG-99 rotation
-//! following.
+//! On rotation the old key endorses the new one, so the agent can follow a
+//! rotation without trusting the server. See [`PinnedKeys::adopt`].
 
 pub mod cert;
 pub mod key;
@@ -27,16 +19,12 @@ pub use cert::ClientCertificate;
 pub use key::AgentKey;
 pub use org_key::OrgKeyPair;
 
-/// DER header of an Ed25519 `SubjectPublicKeyInfo`, ahead of the 32 key bytes.
-///
-/// `SEQUENCE { SEQUENCE { OID 1.3.101.112 }, BIT STRING }`. Checking it is how
-/// a base64 blob that happens to decode to 44 bytes is told apart from an
-/// actual Ed25519 key.
+/// DER header of an Ed25519 `SubjectPublicKeyInfo`, ahead of the 32 key bytes:
+/// `SEQUENCE { SEQUENCE { OID 1.3.101.112 }, BIT STRING }`.
 pub const ED25519_SPKI_PREFIX: &[u8] = &[
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 
-/// Length of a raw Ed25519 public key.
 const ED25519_KEY_LEN: usize = 32;
 
 #[derive(Debug, thiserror::Error)]
@@ -116,11 +104,8 @@ pub fn fingerprint_bytes(bytes: &[u8]) -> String {
         .join(":")
 }
 
-/// An Ed25519 public key belonging to an organization.
-///
-/// Held as the raw 32 bytes. Parsing happens once, at the moment the key is
-/// pinned, so a malformed key is rejected before it reaches local state rather
-/// than every time a job arrives.
+/// An organization's Ed25519 public key, as the raw 32 bytes. It is parsed
+/// when pinned, so a malformed key never reaches local state.
 #[derive(Clone, PartialEq, Eq)]
 pub struct OrgPublicKey(Vec<u8>);
 
@@ -129,8 +114,7 @@ impl OrgPublicKey {
     ///
     /// # Errors
     /// [`CryptoError::MalformedOrgKey`] if the prefix, the base64 or the DER
-    /// structure is wrong. Being strict here is the point — this value decides
-    /// what the host will execute for the rest of its life.
+    /// structure is wrong.
     pub fn parse(key_id: &str, encoded: &str) -> Result<Self> {
         use base64::Engine as _;
 
@@ -161,12 +145,11 @@ impl OrgPublicKey {
         Ok(Self(der[ED25519_SPKI_PREFIX.len()..].to_vec()))
     }
 
-    /// Parse a key an operator wrote down: the wire form, or the base64 SPKI
-    /// without its `ed25519:` prefix, which is what `updawgctl keygen` prints
-    /// and what is easiest to paste.
+    /// Like [`OrgPublicKey::parse`], but also accepts the bare base64 SPKI
+    /// that `updawgctl keygen` prints.
     ///
     /// # Errors
-    /// [`CryptoError::MalformedOrgKey`], exactly as [`OrgPublicKey::parse`].
+    /// [`CryptoError::MalformedOrgKey`], as for [`OrgPublicKey::parse`].
     pub fn parse_configured(name: &str, encoded: &str) -> Result<Self> {
         let encoded = encoded.trim();
         if encoded.starts_with("ed25519:") {
@@ -176,7 +159,6 @@ impl OrgPublicKey {
         }
     }
 
-    /// Encode back to the wire form, so what was pinned can be shown.
     #[must_use]
     pub fn to_wire(&self) -> String {
         use base64::Engine as _;
@@ -198,14 +180,11 @@ impl OrgPublicKey {
         &self.0
     }
 
-    /// Short fingerprint for display and for logs.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         fingerprint_bytes(&self.0)
     }
 
-    /// Verify a detached signature over `message`.
-    ///
     /// # Errors
     /// [`CryptoError::BadSignature`] if it does not verify.
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<()> {
@@ -216,7 +195,7 @@ impl OrgPublicKey {
     }
 }
 
-// Never print key material, even by accident in a debug log line.
+// fingerprint only, so key material never ends up in a log
 impl fmt::Debug for OrgPublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("OrgPublicKey")
@@ -233,13 +212,11 @@ pub trait Verifier: Send + Sync + fmt::Debug {
     fn pinned_key(&self) -> Result<OrgPublicKey>;
 }
 
-/// The organization keys this host pinned, and what it will accept from them.
+/// The organization keys this host has pinned.
 ///
-/// `active` and `retiring` both verify: a rotation is not instantaneous, and a
-/// job signed moments before the cut-over must still be executable. `retired`
-/// is kept rather than dropped so that a job signed by a revoked key fails as
-/// *revoked* rather than as *unknown* — the two call for very different
-/// reactions from whoever reads the log line.
+/// `active` and `retiring` keys both verify, so jobs signed just before a
+/// cut-over still run. `retired` keys are kept so a job signed by one fails
+/// with [`CryptoError::KeyRetired`] instead of looking like an unknown key.
 #[derive(Debug, Clone)]
 pub struct PinnedKeys {
     keys: Vec<PinnedKey>,
@@ -253,12 +230,8 @@ struct PinnedKey {
 }
 
 impl PinnedKeys {
-    /// Parse and validate the set of keys the server offered.
-    ///
     /// # Errors
-    /// Fails if any key is malformed, or if none of them can sign anything.
-    /// A response that pins nothing usable is a response to reject, not to
-    /// store and discover at the first job.
+    /// Fails if any key is malformed, or if none of them is active.
     pub fn from_wire(offered: &[OrgSigningKey]) -> Result<Self> {
         let mut keys = Vec::with_capacity(offered.len());
         for k in offered {
@@ -291,7 +264,7 @@ impl PinnedKeys {
             .collect()
     }
 
-    /// Whether this set still contains the given key with the same bytes.
+    /// Same id and same bytes.
     #[must_use]
     pub fn contains(&self, key_id: &str, key: &OrgPublicKey) -> bool {
         self.keys
@@ -299,14 +272,13 @@ impl PinnedKeys {
             .any(|k| k.key_id == key_id && &k.key == key)
     }
 
-    /// Whether this set holds the given key material, under any id and in any
-    /// status.
+    /// Same bytes, under any id and in any status.
     #[must_use]
     pub fn contains_material(&self, key: &OrgPublicKey) -> bool {
         self.keys.iter().any(|k| &k.key == key)
     }
 
-    /// The keys that are still allowed to sign new work.
+    /// Active and retiring keys.
     #[must_use]
     pub fn usable(&self) -> Vec<(&str, &OrgPublicKey)> {
         self.keys
@@ -321,66 +293,41 @@ impl PinnedKeys {
             .collect()
     }
 
-    /// Follow a rotation: take the offered set, given what this host already
-    /// trusts.
+    /// Follows a rotation: returns the offered set if it is acceptable given
+    /// the keys this host already trusts.
     ///
-    /// This is the method that makes *"an agent never has to take the server's
-    /// word for a new key"* true rather than aspirational. Before DAWG-99 the
-    /// agent pinned whatever arrived, which is exactly the blind trust the
-    /// design says it does not require.
+    /// - A key already pinned with the same material is kept. Its status can
+    ///   move from `active` to `retiring` to `retired` without an endorsement,
+    ///   since each step narrows what the host accepts. It can't move back.
+    /// - A new key needs an endorsement that verifies under a key this host
+    ///   holds as `active` or `retiring`, and that names the new key by
+    ///   material as well as by id.
+    /// - A new key offered as `retired` needs no endorsement. It can't verify
+    ///   or endorse anything, and a host anchored on a customer's key would
+    ///   otherwise reject every renewal that still lists the Updawg key the
+    ///   customer replaced.
+    /// - If any offered key fails, the whole set is rejected and the caller
+    ///   keeps what it had, so a host never trusts half a rotation.
     ///
-    /// The rules are [ADR 0002] §3:
+    /// Chains of any length work as long as every link is offered.
     ///
-    /// - A key **already pinned, with the same material**, is kept. Its status
-    ///   may move `active` → `retiring` → `retired` without an endorsement,
-    ///   because every step in that direction *reduces* what this host will
-    ///   accept. It may never move back.
-    /// - A key **not already pinned** needs an endorsement that verifies under
-    ///   a key this host currently holds as `active` or `retiring`, and whose
-    ///   statement names this key by **material as well as by id**.
-    /// - …unless it is offered as `retired`. A retired key verifies nothing and
-    ///   endorses nothing, so pinning one can only make this host refuse more,
-    ///   and it is what lets a job signed by it fail as *revoked*. Without this
-    ///   a host anchored on a customer's key (DAWG-157) would refuse every
-    ///   renewal that lists the Updawg key the customer took over from, and
-    ///   stop following rotations for good.
-    /// - ⚠️ If any offered key fails, **the whole set is rejected** and the
-    ///   caller keeps what it had. Partially adopting a key set is how a host
-    ///   ends up trusting half of a rotation, and a renewal is not a moment an
-    ///   operator is watching.
-    ///
-    /// Chains of any length work, as long as every link is offered: a key
-    /// adopted in one pass can endorse another in the next.
-    ///
-    /// # ⚠️ Where the cross-tenant check actually happens
-    ///
-    /// The statement binds `org_id`, and this method never reads it — because
-    /// it does not have to and could not do better if it tried. An endorsement
-    /// produced in another organization is signed by **that** organization's
-    /// key, which this host does not hold, so it fails the chain check first.
-    /// `org_id` is what stops the signature being *reused* somewhere the chain
-    /// would otherwise line up; it is not a second check this host can make
-    /// against an org id it was never told.
+    /// The statement's `org_id` isn't checked here. An endorsement from
+    /// another organization is signed by a key this host doesn't hold, so it
+    /// already fails the chain check; `org_id` only stops a signature being
+    /// replayed where the chain would otherwise line up.
     ///
     /// # Errors
-    /// Every failure names the key, because the operator reading it has a fleet
-    /// that has just refused a key change and needs to know which one.
-    ///
-    /// [ADR 0002]: https://github.com/Pez-Solutions/updawg-docs/blob/main/decisions/0002-signing-key-rotation-endorsements.md
+    /// Every error names the offending key.
     pub fn adopt(&self, offered: &[OrgSigningKey]) -> Result<Self> {
         let parsed = Self::from_wire(offered)?;
 
-        // What the result will be.
         let mut trusted: Vec<PinnedKey> = Vec::with_capacity(parsed.keys.len());
         let mut pending: Vec<(&PinnedKey, &OrgSigningKey)> = Vec::new();
 
-        // ⚠️ Who may endorse, which is **not** the same list. A key already
-        // pinned counts at the status this host currently holds it at, not at
-        // the status the same message offers — otherwise a server could retire
-        // a key and use it to endorse its successor in one breath, and whether
-        // that worked would depend on the order the two were evaluated in.
-        // Keys adopted during this call join at their offered status, which is
-        // what makes a chain of any length work.
+        // Keys that may endorse. Already-pinned keys count at the status this
+        // host holds them at, not the status in this message; otherwise the
+        // result would depend on evaluation order. Keys adopted during this
+        // call join at their offered status so chains work.
         let mut authority: Vec<PinnedKey> = self.keys.clone();
 
         for (key, wire) in parsed.keys.iter().zip(offered) {
@@ -400,7 +347,7 @@ impl PinnedKeys {
                     }
                     trusted.push(key.clone());
                 }
-                // Never joins `authority`: a retired key endorses nothing.
+                // not added to `authority`: a retired key endorses nothing
                 None if matches!(key.status, SigningKeyStatus::Retired) => {
                     trusted.push(key.clone());
                 }
@@ -408,8 +355,8 @@ impl PinnedKeys {
             }
         }
 
-        // Fixed point rather than one pass: an endorsement may chain from a key
-        // that is itself new in this same set.
+        // Loop to a fixed point, since a key may be endorsed by another new
+        // key in the same set.
         while !pending.is_empty() {
             let before = pending.len();
             let mut still_pending = Vec::with_capacity(before);
@@ -423,8 +370,7 @@ impl PinnedKeys {
                 }
             }
             if still_pending.len() == before {
-                // Nothing moved, so nothing ever will. Report the first
-                // failure properly rather than "no progress".
+                // no progress; re-run the first one to surface its error
                 let (key, wire) = still_pending[0];
                 endorsed_by(&authority, key, wire)?;
                 unreachable!("endorsed_by returned Ok on a key that did not move");
@@ -435,24 +381,16 @@ impl PinnedKeys {
         Ok(Self { keys: trusted })
     }
 
-    /// Pin an enrollment's keys against a key the operator named in advance
-    /// (`trusted_org_key` in `agent.toml`, DAWG-157, ADR 0006).
+    /// Pins an enrollment's keys against a key the operator configured in
+    /// advance (`trusted_org_key` in `agent.toml`).
     ///
-    /// Enrollment otherwise trusts what the server offers on first use,
-    /// anchored only by the enrollment token. An organization that holds its
-    /// own key does not want even that: a compromised server could hand a new
-    /// host a key of its own choosing, and "Updawg cannot create a job your
-    /// hosts will run" would be true only of hosts that enrolled before the
-    /// compromise.
-    ///
-    /// So the anchor stands where an already-pinned key would at a renewal,
-    /// and [`PinnedKeys::adopt`] does the rest: the anchor must be offered
-    /// (under whatever id the server gave it), and every other key must be
-    /// endorsed by a chain from it — or be offered as retired, which can only
-    /// narrow what this host accepts. The anchor is treated as active for
-    /// endorsing whatever status it is offered at: the operator's word is what
-    /// makes it trusted, and a key the customer has since rotated away from
-    /// must still lead a newly provisioned host to its successor.
+    /// Without an anchor, enrollment trusts whatever the server offers on
+    /// first use, so a compromised server could give a new host a key of its
+    /// own. With one, the anchor must be among the offered keys (under any
+    /// id) and [`PinnedKeys::adopt`] requires every other key to chain from
+    /// it or be retired. The anchor counts as active for endorsing whatever
+    /// status it is offered at, so a host provisioned after the customer
+    /// rotated can still reach the successor.
     ///
     /// # Errors
     /// [`CryptoError::AnchorNotOffered`] if no offered key has the anchor's
@@ -476,10 +414,9 @@ impl PinnedKeys {
         base.adopt(offered)
     }
 
-    /// Verify a job: its signature, over [`updawg_protocol::Job::signing_bytes`],
-    /// under a pinned key that may still sign — **and** that key is the one the
-    /// job names. A job naming one key and verifying under another is a job
-    /// somebody has edited, and is refused as one.
+    /// Checks the signature over [`updawg_protocol::Job::signing_bytes`]
+    /// against a usable pinned key, and that the key is the one the job
+    /// names.
     ///
     /// # Errors
     /// [`CryptoError::BadSignature`] if nothing pinned verifies it (including a
@@ -502,7 +439,7 @@ impl PinnedKeys {
         Ok(())
     }
 
-    /// Verify a signature against the pinned set.
+    /// Returns the id of the key that verified the signature.
     ///
     /// # Errors
     /// [`CryptoError::KeyRetired`] if a retired key is what signed it, and
@@ -522,12 +459,8 @@ impl PinnedKeys {
     }
 }
 
-/// How much a status lets a key do. Lower is more.
-///
-/// The ordering is the whole rule: a status may only ever move *up* this scale.
-/// `active` → `retiring` → `retired` each narrows what the host will accept, so
-/// a server can do it unilaterally; going the other way widens it, which is a
-/// thing only an endorsement may do.
+/// Lower means more trusted. The server may move a key up this scale on its
+/// own; moving down would widen trust and is refused.
 const fn trust_rank(status: SigningKeyStatus) -> u8 {
     match status {
         SigningKeyStatus::Active => 0,
@@ -536,7 +469,6 @@ const fn trust_rank(status: SigningKeyStatus) -> u8 {
     }
 }
 
-/// Whether `key`'s endorsement chains back to something in `trusted`.
 fn endorsed_by(trusted: &[PinnedKey], key: &PinnedKey, wire: &OrgSigningKey) -> Result<()> {
     use base64::Engine as _;
 
@@ -556,9 +488,8 @@ fn endorsed_by(trusted: &[PinnedKey], key: &PinnedKey, wire: &OrgSigningKey) -> 
         .statement()
         .map_err(|e| broken(format!("its statement does not parse: {e}")))?;
 
-    // The endorsement must be about *this* key, by material as well as by id.
-    // An endorsement that named only an id would leave the server free to
-    // choose which bytes that id refers to.
+    // Match on material as well as id, or the server could pick which bytes
+    // an endorsed id refers to.
     if statement.new_key.key_id.as_str() != key.key_id {
         return Err(broken(format!(
             "it endorses {} rather than this key",
@@ -573,8 +504,6 @@ fn endorsed_by(trusted: &[PinnedKey], key: &PinnedKey, wire: &OrgSigningKey) -> 
         ));
     }
 
-    // And it must be made by a key this host holds and still accepts, matched
-    // by material and id together.
     let previous = trusted
         .iter()
         .find(|k| {
@@ -671,7 +600,6 @@ mod tests {
             .expect("verifies");
     }
 
-    /// ⚠️ The attack the signature exists for: one version edited in flight.
     #[test]
     fn an_edited_job_does_not_verify() {
         let key = TestOrgKey::new();
@@ -693,8 +621,7 @@ mod tests {
             ("sk_a", &a, SigningKeyStatus::Active),
             ("sk_b", &b, SigningKeyStatus::Retiring),
         ]);
-        // Signed with a's key, claiming b's id — with the id in the signed
-        // bytes, so this is only reachable by a signer that lied.
+        // key_id is in the signed bytes, so only a lying signer can get here
         let job = signed_job(&a, "sk_b");
         assert!(matches!(
             keys.verify_job(&job),
@@ -705,8 +632,7 @@ mod tests {
     #[test]
     fn a_job_signed_by_a_retired_key_or_an_unknown_one_is_refused() {
         let (a, b, stranger) = (TestOrgKey::new(), TestOrgKey::new(), TestOrgKey::new());
-        // A set of only retired keys is refused when pinned, so pin a live one
-        // beside it.
+        // a set with no active key can't be pinned
         let keys = pinned(&[
             ("sk_a", &a, SigningKeyStatus::Retired),
             ("sk_b", &b, SigningKeyStatus::Active),
@@ -728,8 +654,6 @@ mod tests {
         ));
     }
 
-    /// A throwaway organization key pair, so the tests sign with real Ed25519
-    /// rather than asserting against a fixture that could drift.
     struct TestOrgKey {
         pair: aws_lc_rs::signature::Ed25519KeyPair,
         wire: String,
@@ -757,7 +681,6 @@ mod tests {
             self.pair.sign(message).as_ref().to_vec()
         }
 
-        /// Endorse `new_key`, the way the signer will.
         fn endorse(
             &self,
             my_id: &str,
@@ -786,7 +709,6 @@ mod tests {
         }
     }
 
-    /// The set a host has already pinned.
     fn pinned(keys: &[(&str, &TestOrgKey, SigningKeyStatus)]) -> PinnedKeys {
         PinnedKeys::from_wire(
             &keys
@@ -806,11 +728,8 @@ mod tests {
         }
     }
 
-    // ---- Following a rotation (DAWG-99, ADR 0002 §3) ----
+    // ---- rotation ----
 
-    /// The happy path, and the sentence the design makes: a key this host has
-    /// never seen is adopted **because** the key it already trusts vouched for
-    /// it, not because the server sent it.
     #[test]
     fn an_endorsed_new_key_is_adopted() {
         let old = TestOrgKey::new();
@@ -831,8 +750,6 @@ mod tests {
         assert!(adopted.contains("sk_new", &OrgPublicKey::parse("sk_new", &new.wire).unwrap()));
     }
 
-    /// ⚠️ The behaviour this ticket exists to change. Before DAWG-99 the agent
-    /// pinned whatever arrived; an unendorsed new key is the whole attack.
     #[test]
     fn an_unendorsed_new_key_is_refused() {
         let old = TestOrgKey::new();
@@ -849,8 +766,7 @@ mod tests {
         assert!(matches!(err, CryptoError::UnendorsedKey { ref key_id } if key_id == "sk_new"));
     }
 
-    /// Attack (1): a compromised API mints a key and endorses it with a key of
-    /// its own. It verifies perfectly — under a key this host has never held.
+    /// A compromised server endorsing its own key with another key it made.
     #[test]
     fn an_endorsement_by_a_key_this_host_does_not_hold_is_refused() {
         let old = TestOrgKey::new();
@@ -871,11 +787,7 @@ mod tests {
         assert!(err.to_string().contains("sk_stranger"));
     }
 
-    /// Attack (2), the cross-tenant replay, from the agent's side: another
-    /// organization's endorsement of this very key is a real endorsement,
-    /// correctly signed, and fails because the key that made it is not one this
-    /// host holds. `org_id` is what stops it being reusable; the chain is what
-    /// this host checks.
+    /// Cross-tenant replay: a valid endorsement made by another org's key.
     #[test]
     fn an_endorsement_from_another_organization_does_not_transfer() {
         let ours = TestOrgKey::new();
@@ -895,10 +807,8 @@ mod tests {
         );
     }
 
-    /// Attack (4): the endorsement is genuine, made by a key this host trusts,
-    /// and names the right id — but the material offered under that id is
-    /// somebody else's. An endorsement that covered only the id would accept
-    /// this.
+    /// Genuine endorsement of the right id, but different material offered
+    /// under it.
     #[test]
     fn an_endorsement_of_a_different_key_than_the_one_offered_is_refused() {
         let old = TestOrgKey::new();
@@ -918,8 +828,6 @@ mod tests {
         assert!(err.to_string().contains("different key material"));
     }
 
-    /// Attack (3): an endorsement of a key since revoked must not re-verify for
-    /// ever. A retired key cannot endorse, which is what breaks the loop.
     #[test]
     fn a_retired_key_cannot_endorse() {
         let retired = TestOrgKey::new();
@@ -943,7 +851,6 @@ mod tests {
         assert!(err.to_string().contains("active or retiring"));
     }
 
-    /// Narrowing needs no endorsement, because it only ever removes trust.
     #[test]
     fn a_pinned_key_may_be_narrowed_without_an_endorsement() {
         let key = TestOrgKey::new();
@@ -970,9 +877,6 @@ mod tests {
         assert_eq!(adopted.usable().len(), 1);
     }
 
-    /// ⚠️ And widening does not. A server that could promote a retired key back
-    /// to active would have an undo button on a revocation, which is the one
-    /// thing revocation must not have.
     #[test]
     fn a_retired_key_cannot_be_promoted_back() {
         let key = TestOrgKey::new();
@@ -994,8 +898,6 @@ mod tests {
         ));
     }
 
-    /// Same id, different bytes. Not a rotation — a substitution, and it is
-    /// caught before anything looks for an endorsement.
     #[test]
     fn the_material_under_a_pinned_id_may_not_change() {
         let key = TestOrgKey::new();
@@ -1011,9 +913,8 @@ mod tests {
         ));
     }
 
-    /// A host that has been off for two rotations. Every link is offered, so
-    /// the chain is followable however long it is — and the links arrive in the
-    /// wrong order here on purpose, because a server has no reason to sort them.
+    /// A host that missed two rotations. The links are deliberately out of
+    /// order; nothing requires the server to sort them.
     #[test]
     fn a_chain_of_any_length_is_followed_whatever_order_it_arrives_in() {
         let a = TestOrgKey::new();
@@ -1036,19 +937,15 @@ mod tests {
         assert_eq!(adopted.usable().len(), 2);
     }
 
-    /// ⚠️ Found by the chain test above failing for the wrong reason. Who may
-    /// endorse is decided by the status this host **currently holds**, not by
-    /// the status the same message offers — so a key retired in this very
-    /// message can still be the root of the chain, and a key *promoted* in this
-    /// very message cannot. Reading the offered status instead would make the
-    /// answer depend on the order the keys were evaluated in.
+    /// Endorsement rights come from the status this host already holds, not
+    /// the one in the message. Using the offered status made the result
+    /// depend on evaluation order.
     #[test]
     fn a_key_endorses_at_the_status_this_host_holds_it_at() {
         let old = TestOrgKey::new();
         let new = TestOrgKey::new();
 
-        // Retired in the same message it endorses in: still allowed, because
-        // this host holds it as active until this set is applied.
+        // retired in the same message it endorses in: still active here
         let host = pinned(&[("sk_old", &old, SigningKeyStatus::Active)]);
         let mut new_wire = offered("sk_new", &new.wire, SigningKeyStatus::Active);
         new_wire.endorsement = Some(old.endorse("sk_old", "sk_new", &new));
@@ -1060,9 +957,7 @@ mod tests {
             .is_ok()
         );
 
-        // And the other direction, which is the one that matters: a key this
-        // host holds as retired does not become an endorser by being offered as
-        // active. It is refused as a promotion before it gets that far.
+        // held as retired, offered as active: rejected as a promotion
         let other = TestOrgKey::new();
         let host = pinned(&[
             ("sk_old", &old, SigningKeyStatus::Retired),
@@ -1080,14 +975,12 @@ mod tests {
         );
     }
 
-    // ---- Customer-held keys (DAWG-157, ADR 0006) ----
+    // ---- customer-held keys ----
 
     fn anchor(key: &TestOrgKey) -> OrgPublicKey {
         OrgPublicKey::parse("anchor", &key.wire).unwrap()
     }
 
-    /// A host told to trust the customer's key pins it, and the retired Updawg
-    /// key the customer took over from, and nothing else.
     #[test]
     fn an_anchored_enrollment_pins_the_customers_key() {
         let updawg = TestOrgKey::new();
@@ -1113,9 +1006,6 @@ mod tests {
         ));
     }
 
-    /// ⚠️ Property 2 of ADR 0006: a server that offers a key of its own
-    /// choosing to a host anchored on the customer's is refused, whether or
-    /// not it also offers the customer's.
     #[test]
     fn an_anchored_enrollment_refuses_a_key_the_customer_did_not_endorse() {
         let customer = TestOrgKey::new();
@@ -1128,7 +1018,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, CryptoError::AnchorNotOffered { .. }), "{err}");
 
-        // Offered beside the customer's key, as the active one.
+        // alongside the customer's key, as the active one
         let err = PinnedKeys::anchored(
             &anchor(&customer),
             &[
@@ -1139,7 +1029,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, CryptoError::UnendorsedKey { .. }), "{err}");
 
-        // Endorsed, but by itself rather than by the customer.
+        // self-endorsed
         let mut endorsed = offered("sk_server", &server.wire, SigningKeyStatus::Active);
         endorsed.endorsement = Some(server.endorse("sk_server", "sk_server", &server));
         assert!(
@@ -1154,8 +1044,7 @@ mod tests {
         );
     }
 
-    /// The customer rotated after this host's config was written: the anchor
-    /// is offered retired, and leads the host to its successor.
+    /// The customer rotated after this host's config was written.
     #[test]
     fn an_anchor_the_customer_rotated_away_from_still_leads_to_its_successor() {
         let first = TestOrgKey::new();
@@ -1179,8 +1068,6 @@ mod tests {
         ));
     }
 
-    /// A retired key verifies nothing, so it needs no endorsement to be
-    /// pinned — and it must not then be able to endorse anything itself.
     #[test]
     fn an_unknown_retired_key_is_pinned_as_revoked_and_endorses_nothing() {
         let current = TestOrgKey::new();
@@ -1223,8 +1110,6 @@ mod tests {
         assert!(OrgPublicKey::parse_configured("trusted_org_key", "bm90IGEga2V5").is_err());
     }
 
-    /// ⚠️ All or nothing. A host that adopted the keys that checked out and
-    /// dropped the one that did not would be trusting half a rotation, silently.
     #[test]
     fn one_bad_key_rejects_the_whole_set() {
         let old = TestOrgKey::new();
@@ -1246,9 +1131,6 @@ mod tests {
         );
     }
 
-    /// The signature has to be checked, not merely present and well-formed.
-    /// This endorsement names all the right keys and is signed over the wrong
-    /// bytes.
     #[test]
     fn an_endorsement_signed_over_something_else_is_refused() {
         use base64::Engine as _;
@@ -1272,10 +1154,8 @@ mod tests {
         assert!(err.to_string().contains("does not verify"));
     }
 
-    /// ⚠️ The label, from the agent's side. An endorsement whose signature was
-    /// made over the statement *without* the purpose prefix must not verify —
-    /// otherwise anything that gets the signer to sign attacker-chosen bytes
-    /// for some other purpose has produced an endorsement.
+    /// Without the domain-separation prefix, any signature the signer made
+    /// over attacker-chosen bytes could pass as an endorsement.
     #[test]
     fn an_endorsement_signed_without_the_purpose_label_is_refused() {
         use base64::Engine as _;
@@ -1299,8 +1179,6 @@ mod tests {
         );
     }
 
-    /// The error is read by somebody whose fleet has just stopped following a
-    /// rotation. It has to name the key.
     #[test]
     fn every_refusal_names_the_key_it_is_about() {
         let old = TestOrgKey::new();
@@ -1358,7 +1236,7 @@ mod tests {
             (body.to_string(), "missing algorithm prefix"),
             ("ed25519:not base64!!".to_string(), "not base64"),
             ("ed25519:AAAA".to_string(), "too short"),
-            // Right length, wrong DER header: an RSA-ish blob of the same size.
+            // right length, wrong algorithm OID
             (
                 {
                     use base64::Engine as _;
@@ -1418,8 +1296,6 @@ mod tests {
         assert_eq!(pinned.verify(b"job", &new.sign(b"job")).unwrap(), "sk_new");
     }
 
-    /// The distinction worth having: a job signed by a revoked key is a very
-    /// different event from a job signed by a key nobody has heard of.
     #[test]
     fn a_retired_key_fails_as_revoked_rather_than_as_unknown() {
         let retired = TestOrgKey::new();
@@ -1450,16 +1326,10 @@ mod tests {
     }
 }
 
-/// SHA-256 of `bytes`, rendered as `sha256:<hex>`.
+/// SHA-256 of `bytes` as `sha256:<hex>`. The prefix lets the algorithm change
+/// later without ambiguity.
 ///
-/// Through `aws-lc-rs`, which is already the agent's one crypto backend. Pulling
-/// in a `RustCrypto` `sha2` for this would put a second SHA-256 implementation in a
-/// binary whose whole argument is that there is one set of primitives to audit —
-/// and it would be there to hash a list of package names.
-///
-/// The prefix is part of the value, not decoration: it is what lets the algorithm
-/// change later without the server having to guess which one produced a given
-/// hash.
+/// Uses `aws-lc-rs` so the binary has a single crypto backend.
 #[must_use]
 pub fn content_hash(bytes: &[u8]) -> String {
     let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, bytes);
@@ -1467,7 +1337,6 @@ pub fn content_hash(bytes: &[u8]) -> String {
     out.push_str("sha256:");
     for b in digest.as_ref() {
         use std::fmt::Write as _;
-        // Infallible for a String.
         let _ = write!(out, "{b:02x}");
     }
     out
@@ -1479,8 +1348,6 @@ mod content_hash_tests {
 
     #[test]
     fn it_is_sha256_and_says_so() {
-        // The empty-input digest, which is the one SHA-256 value worth knowing by
-        // sight: if this changes, the algorithm changed underneath us.
         assert_eq!(
             content_hash(b""),
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

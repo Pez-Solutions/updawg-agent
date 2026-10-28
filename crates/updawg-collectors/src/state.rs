@@ -1,26 +1,20 @@
 //! Volatile host state: what is true right now.
 //!
-//! Small on purpose. This rides on every check-in, which at fleet scale is
-//! roughly nine hundred a second, so nothing goes in here that is not worth
-//! that.
+//! This is sent on every check-in, so keep it small and cheap to collect.
 //!
-//! # "I could not tell" is a third answer
+//! # Pending reboots
 //!
-//! Whether a reboot is pending is the most consequential thing in this module,
-//! and the mechanisms for answering it are uneven across distributions: Debian
-//! and Ubuntu drop a file, Red Hat wants a tool from `dnf-utils` that is often
-//! not installed. A host where the question cannot be answered is not a host
-//! where the answer is no, so [`RebootRequired`] has three variants and the
-//! unknown one survives all the way up rather than being flattened into
-//! `false` somewhere quiet.
+//! Detection differs by distribution: Debian and Ubuntu drop a flag file, Red
+//! Hat needs `needs-restarting` from `dnf-utils`, which is often not
+//! installed. When we can't tell, [`RebootRequired`] says `Unknown` instead of
+//! `No`.
 
 use crate::{Collector, Result, StateCollector as StateCollectorTrait, platform};
 use async_trait::async_trait;
 use platform::Root;
 use updawg_protocol::HostMetrics;
-/// Whether this host needs a reboot: the wire's own three values since
-/// protocol 0.4 (DAWG-210), so nothing between here and the database
-/// flattens `Unknown`.
+/// Whether this host needs a reboot. The protocol type is used directly so
+/// `Unknown` reaches the server intact.
 pub use updawg_protocol::RebootRequired;
 
 /// Cheap state, collected on every check-in.
@@ -40,8 +34,7 @@ impl Default for HostState {
             uptime_s: 0,
             reboot_required: RebootRequired::default(),
             services_needing_restart: Vec::new(),
-            // Written out rather than derived: `HostMetrics` comes from the
-            // published protocol crate and does not implement `Default`.
+            // HostMetrics doesn't implement Default
             metrics: HostMetrics {
                 load1: 0.0,
                 mem_used_pct: 0.0,
@@ -55,9 +48,7 @@ impl Default for HostState {
 #[derive(Debug, Clone, Default)]
 pub struct SystemState {
     root: Root,
-    /// Family, decided once. Choosing the reboot-required mechanism means
-    /// knowing the distribution, and re-reading `/etc/os-release` every
-    /// fifty-five seconds to learn something that cannot change is waste.
+    /// Read once at construction; it picks the reboot-required check.
     family: Family,
 }
 
@@ -81,15 +72,12 @@ impl SystemState {
         Ok(Self { root, family })
     }
 
-    /// Gather the current state.
-    ///
     /// # Errors
-    /// Fails only if the boot id cannot be read, which would mean `/proc` is
-    /// not mounted and nothing else here is trustworthy either.
+    /// Fails only if the boot id cannot be read, which means `/proc` is not
+    /// mounted.
     pub fn gather(&self) -> Result<HostState> {
-        // One `needrestart` run answers both questions, and it scans `/proc` —
-        // not free, and this runs on every check-in. Asking twice would be
-        // twice the cost for the same answer.
+        // needrestart scans /proc, so run it once and use it for both the
+        // reboot check and the service list.
         let report = self.needrestart();
 
         Ok(HostState {
@@ -101,7 +89,6 @@ impl SystemState {
         })
     }
 
-    /// Run `needrestart -b` once, if this is a host that has it.
     fn needrestart(&self) -> Option<NeedRestart> {
         if !self.root.is_live() {
             return None;
@@ -116,26 +103,18 @@ impl SystemState {
         }
     }
 
-    /// Whether a reboot is pending.
-    ///
-    /// Debian and Ubuntu are easy: the file either exists or it does not, and
-    /// that is a complete answer. Red Hat needs `needs-restarting`, which ships
-    /// in `dnf-utils` and is frequently absent — in which case the honest
-    /// answer is that we do not know.
     fn reboot_required(&self, report: Option<&NeedRestart>) -> RebootRequired {
-        // The file check is cheap, harmless, and right on any host that has it,
-        // so it is worth trying regardless of what family we think we are.
+        // cheap and reliable wherever it exists, so check it for every family
         if self.root.exists("run/reboot-required") || self.root.exists("var/run/reboot-required") {
             return RebootRequired::Yes;
         }
 
-        // `needrestart` computes the answer rather than trusting a flag file an
-        // apt hook was supposed to write, so where both exist it is the better
-        // signal — a kernel upgraded by something that skipped the hook still
-        // shows up here.
+        // needrestart compares the running kernel with the installed one, so
+        // it also catches upgrades that bypassed the apt hook that writes the
+        // flag file.
         if let Some(status) = report.and_then(|r| r.kernel_status) {
             return match status {
-                // 0 is "could not tell", which is not "no".
+                // 0: needrestart couldn't tell
                 0 => RebootRequired::Unknown,
                 1 => RebootRequired::No,
                 // 2 is an ABI-compatible kernel upgrade, 3 a version upgrade.
@@ -188,12 +167,8 @@ impl SystemState {
             .ok()
     }
 
-    /// Used memory as a percentage, from `MemAvailable` rather than `MemFree`.
-    ///
-    /// `MemFree` counts the page cache as used, which on a healthy server that
-    /// has been up for a month reads as 98% and means nothing. `MemAvailable`
-    /// is the kernel's own estimate of what a new allocation could actually
-    /// get, which is the number an operator wants.
+    /// Used memory as a percentage, based on `MemAvailable`. `MemFree` treats
+    /// the page cache as used, so long-running hosts would look nearly full.
     fn mem_used_pct(&self) -> Option<f32> {
         let raw = self.root.read("proc/meminfo")?;
         let total = meminfo_kb(&raw, "MemTotal")?;
@@ -205,12 +180,8 @@ impl SystemState {
         Some(((total.saturating_sub(available)) as f32 / total as f32) * 100.0)
     }
 
-    /// Free bytes on the root filesystem.
-    ///
-    /// Through `df` rather than `statvfs`: the workspace forbids `unsafe`, so
-    /// calling the syscall directly would mean taking on a dependency for one
-    /// number. `df -P` output is specified by POSIX, and this runs once per
-    /// check-in.
+    /// Free bytes on the root filesystem. Uses `df -P` because calling
+    /// `statvfs` needs `unsafe` (forbidden here) or another dependency.
     fn root_free_bytes(&self) -> Option<u64> {
         if !self.root.is_live() {
             return None;
@@ -219,13 +190,10 @@ impl SystemState {
     }
 }
 
-/// What `needrestart -b` had to say.
+/// Parsed `needrestart -b` (or `needs-restarting -s`) output.
 ///
-/// Services running against libraries that have been replaced on disk, plus its
-/// own verdict on the kernel. Both tools this module uses are optional, and an
-/// empty list from a host with neither is indistinguishable from an empty list
-/// from a host that is fine — a real weakness, but reimplementing a scan of
-/// `/proc/*/maps` here would duplicate what these tools exist to do, badly.
+/// Known gap: with neither tool installed the service list is empty, same as
+/// on a host where nothing needs restarting.
 #[derive(Debug, Clone, Default)]
 struct NeedRestart {
     /// `NEEDRESTART-KSTA`: 0 unknown, 1 current, 2 ABI upgrade pending,
@@ -234,7 +202,7 @@ struct NeedRestart {
     services: Vec<String>,
 }
 
-/// Parse the batch-mode output: `KEY: value` lines, most of which we ignore.
+/// Batch-mode output is `KEY: value` lines; we only want two keys.
 fn parse_needrestart(output: &str) -> NeedRestart {
     let mut services = Vec::new();
     let mut kernel_status = None;
@@ -272,18 +240,14 @@ fn parse_needs_restarting(output: &str) -> Vec<String> {
     services
 }
 
-/// Whether a unit needing a restart is reported (DAWG-171).
-///
-/// System services only. `user@1000.service` is somebody's session manager:
-/// it names a user who is logged in, which the agent promises never to send,
-/// and it is not Updawg's to restart either — it goes when they log out.
+/// System services only. `user@1000.service` identifies a logged-in user,
+/// which the agent doesn't report, and it goes away when they log out anyway.
 fn is_reportable_service(unit: &str) -> bool {
     unit.ends_with(".service")
         && !unit.starts_with("user@")
         && !unit.starts_with("user-runtime-dir@")
 }
 
-/// Pull a `MemTotal:  16316816 kB` value out of `/proc/meminfo`.
 fn meminfo_kb(raw: &str, key: &str) -> Option<u64> {
     raw.lines().find_map(|line| {
         let rest = line.strip_prefix(key)?.strip_prefix(':')?;
@@ -361,9 +325,6 @@ mod tests {
         assert_eq!(state.reboot_required, RebootRequired::Yes);
     }
 
-    /// The point of the tri-state. A Red Hat host without `needs-restarting`
-    /// cannot answer, and saying "no reboot needed" would be a lie that reads
-    /// exactly like good news.
     #[tokio::test]
     async fn a_rhel_host_that_cannot_answer_says_unknown_not_no() {
         let host = FakeHost::rocky();
@@ -377,8 +338,6 @@ mod tests {
         assert!(!state.reboot_required.is_yes());
     }
 
-    /// DAWG-171: a user's session manager names a logged-in user, and is
-    /// never reported, from either tool.
     #[test]
     fn a_users_session_manager_is_not_reported() {
         let report = parse_needrestart(
@@ -404,8 +363,7 @@ mod tests {
     #[tokio::test]
     async fn memory_is_measured_from_what_is_available_not_what_is_free() {
         let host = FakeHost::debian();
-        // 16 GB total, 12 GB available: 25% used. Measuring from MemFree
-        // (1 GB) would report 94% and panic somebody for no reason.
+        // 16 GB total, 12 GB available: 25% used (MemFree would give 94%)
         host.write(
             "proc/meminfo",
             "MemTotal:       16777216 kB\nMemFree:         1048576 kB\nMemAvailable:   12582912 kB\n",
@@ -436,7 +394,6 @@ mod tests {
             .unwrap();
         assert_eq!(state.uptime_s, 0);
         assert!(state.metrics.mem_used_pct.abs() < f32::EPSILON);
-        // The boot id is still there, so the check-in is still worth sending.
         assert!(!state.boot_id.is_empty());
     }
 
@@ -454,10 +411,7 @@ mod tests {
         assert!(!SystemState::new(host.root()).unwrap().is_available().await);
     }
 
-    /// Real `needrestart -b` output, captured from an Ubuntu 24.04 host —
-    /// including the microcode lines a hand-written fixture would have missed.
-    /// Nothing needed restarting there, which is the ordinary case and the one
-    /// most likely to be got wrong by a parser that only ever saw a failure.
+    // Captured from an Ubuntu 24.04 host, microcode lines included.
     #[test]
     fn real_needrestart_output_with_nothing_to_do_is_read_as_nothing_to_do() {
         let output = "NEEDRESTART-VER: 3.6\n\
@@ -483,9 +437,6 @@ mod tests {
         assert_eq!(report.services, vec!["nginx.service", "ssh.service"]);
     }
 
-    /// `needrestart` computes the kernel answer rather than trusting a flag
-    /// file an apt hook was supposed to write. A kernel upgraded by something
-    /// that skipped the hook is exactly the case the flag file misses.
     #[test]
     fn a_pending_kernel_upgrade_is_a_reboot_even_without_the_flag_file() {
         let host = FakeHost::ubuntu();
@@ -509,9 +460,6 @@ mod tests {
         }
     }
 
-    /// The flag file is a definite yes and is checked first, so a stale
-    /// `needrestart` verdict cannot talk us out of a reboot the system already
-    /// knows it wants.
     #[test]
     fn the_flag_file_wins_over_a_needrestart_all_clear() {
         let host = FakeHost::ubuntu();
@@ -539,9 +487,8 @@ mod tests {
         );
     }
 
-    /// Real output from two live hosts: an Ubuntu 24.04 server and a Debian 13
-    /// Raspberry Pi. Device names, block counts and column widths all differ,
-    /// which is the part a hand-written fixture quietly gets uniform.
+    // From an Ubuntu 24.04 server and a Debian 13 Raspberry Pi; note the
+    // differing column widths.
     #[test]
     fn real_df_and_meminfo_output_parses() {
         let ubuntu_df = "Filesystem     1024-blocks      Used Available Capacity Mounted on\n\
@@ -552,8 +499,7 @@ mod tests {
                      /dev/mmcblk0p2   122379116 6379760 110981144       6% /\n";
         assert_eq!(parse_df(pi_df), Some(110_981_144 * 1024));
 
-        // A 64 GB host, with the Buffers and Cached lines that follow in real
-        // /proc/meminfo and must not be mistaken for the fields we want.
+        // 64 GB host, with the Buffers/Cached lines that follow in the real file
         let meminfo = "MemTotal:       65785580 kB\n\
                        MemFree:         5810464 kB\n\
                        MemAvailable:   22695772 kB\n\

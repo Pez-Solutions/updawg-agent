@@ -1,11 +1,9 @@
-//! `updawgctl sign --policy FILE`: what unattended signing may sign
-//! (DAWG-293).
+//! `updawgctl sign --policy FILE`: what unattended signing may sign.
 //!
 //! `--yes` on a schedule signs every job waiting for the organization's key,
-//! which hands whoever can get a proposal approved a signature by the
-//! customer's own key. A policy file narrows that to what the organization
-//! decided in advance; a job outside it is left waiting for a person, and
-//! said so.
+//! so anyone who can get a proposal approved gets a signature. A policy file
+//! limits that to what the organization decided in advance; anything outside
+//! it is left for a person, with the reason.
 //!
 //! ```toml
 //! # Job kinds it may sign. Anything else waits.
@@ -20,8 +18,8 @@
 //! deny_packages = ["linux-image-*", "kernel*", "openssh-server"]
 //! ```
 //!
-//! Decided from the job's own document, the bytes about to be signed — never
-//! from what the server says about it.
+//! Decisions are based on the job document about to be signed, not on what
+//! the server says about it.
 
 use anyhow::{Context as _, Result};
 use std::path::Path;
@@ -33,8 +31,7 @@ use updawg_protocol::{
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SignPolicy {
-    /// Job kinds it may sign. Absent: none — a policy that forgot this line
-    /// signs nothing rather than everything.
+    /// Job kinds it may sign. If absent, nothing is signed.
     #[serde(default)]
     allow: Vec<JobKind>,
     #[serde(default)]
@@ -46,9 +43,8 @@ pub(crate) struct SignPolicy {
 }
 
 impl SignPolicy {
-    /// Read a policy file. Unknown keys are an error: a misspelt
-    /// `deny_package` that was quietly ignored would sign what it meant to
-    /// stop.
+    /// Unknown keys are an error, so a misspelt `deny_package` can't be
+    /// silently ignored.
     pub(crate) fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading the policy in {}", path.display()))?;
@@ -90,8 +86,8 @@ impl SignPolicy {
     }
 }
 
-/// `*` matches any run of characters, including none; everything else is
-/// itself.
+/// `*` matches any run of characters, including none; everything else
+/// matches literally.
 fn matches(pattern: &str, name: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();

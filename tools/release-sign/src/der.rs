@@ -1,18 +1,18 @@
-//! The two DER shapes an RSA public key comes in, read far enough to get its
-//! modulus and exponent: `SubjectPublicKeyInfo` (what KMS returns) and the
-//! PKCS#1 `RSAPublicKey` inside it.
+//! Just enough DER parsing to pull the modulus and exponent out of an RSA
+//! `SubjectPublicKeyInfo` (what KMS returns) and the PKCS#1 `RSAPublicKey`
+//! inside it.
 
 use anyhow::{bail, ensure};
 
 const SEQUENCE: u8 = 0x30;
 const INTEGER: u8 = 0x02;
 const BIT_STRING: u8 = 0x03;
-/// 1.2.840.113549.1.1.1, rsaEncryption, as its DER encodes it.
+/// OID 1.2.840.113549.1.1.1 (rsaEncryption), DER-encoded.
 const RSA_ENCRYPTION: &[u8] = &[
     0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01,
 ];
 
-/// `(tag, contents, rest)` of the element at the front of `der`.
+/// Returns `(tag, contents, rest)` for the first element in `der`.
 fn element(der: &[u8]) -> anyhow::Result<(u8, &[u8], &[u8])> {
     let (&tag, rest) = der
         .split_first()
@@ -37,7 +37,6 @@ fn element(der: &[u8]) -> anyhow::Result<(u8, &[u8], &[u8])> {
     Ok((tag, &rest[..len], &rest[len..]))
 }
 
-/// Modulus and exponent from a PKCS#1 `RSAPublicKey`.
 pub(crate) fn rsa_public_key(der: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     let (tag, seq, _) = element(der)?;
     ensure!(tag == SEQUENCE, "not an RSAPublicKey");
@@ -48,7 +47,6 @@ pub(crate) fn rsa_public_key(der: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     Ok((n.to_vec(), e.to_vec()))
 }
 
-/// Modulus and exponent from a `SubjectPublicKeyInfo` holding an RSA key.
 pub(crate) fn rsa_spki(der: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     let (tag, spki, _) = element(der)?;
     ensure!(tag == SEQUENCE, "not a SubjectPublicKeyInfo");

@@ -4,21 +4,17 @@
 //! `GET /agent/v1/config`. [`LocalPolicy`] is what `/etc/updawg/agent.toml`
 //! permits, which the agent reports on every check-in.
 //!
-//! They are two halves of one rule and they are deliberately in the same file:
-//! **the server narrows, the agent decides.** The intersection happens in the
-//! agent, against the local file, and there is no direction in which the server
-//! can widen it.
+//! The server can narrow what the local file allows but never widen it. The
+//! agent does the intersection.
 
 use crate::job::JobKind;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Intervals and feature flags the server would like the agent to use.
 ///
-/// **This narrows local configuration; it never widens it.** The agent
-/// intersects whatever arrives here with `/etc/updawg/agent.toml`, so a server
-/// that has been compromised cannot grant itself a permission the operator
-/// withheld. That intersection lives in the agent, not here, but it is the
-/// reason this type carries no permission-granting fields at all.
+/// The agent intersects this with `/etc/updawg/agent.toml`, so a compromised
+/// server can't grant itself a permission the operator withheld. That's also
+/// why there are no permission-granting fields here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// How long the gateway will hold a check-in open.
@@ -28,11 +24,11 @@ pub struct ServerConfig {
     /// How often to refresh package manager metadata.
     #[serde(default = "default_refresh_interval")]
     pub refresh_metadata_interval_s: u64,
-    /// Bumped whenever the server-side configuration changes, so a check-in can
-    /// tell the agent to re-read it without sending the whole thing every time.
+    /// Bumped when the server-side configuration changes, so a check-in can
+    /// tell the agent to re-fetch it.
     #[serde(default)]
     pub config_version: u64,
-    /// Job kinds the server is currently willing to issue. Advisory only — the
+    /// Job kinds the server is currently willing to issue. Advisory; the
     /// agent's local deny list still wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enabled_job_kinds: Vec<crate::job::JobKind>,
@@ -42,37 +38,29 @@ const fn default_refresh_interval() -> u64 {
     3600
 }
 
-/// How much the operator has allowed the agent to do (DAWG-223).
+/// What the operator has allowed the agent to do.
 ///
-/// This travels **agent to server**, on every check-in, and it is the ceiling:
-/// [`ServerConfig`] narrows it and nothing widens it. The server records it so
-/// the product can say a host will refuse `dist_upgrade` *before* somebody
-/// approves a proposal that targets it, rather than one refused job at a time.
+/// Sent from agent to server on every check-in. [`ServerConfig`] can narrow
+/// it, nothing widens it. The server records it so it can tell that a host
+/// will refuse, say, `dist_upgrade` before anyone approves a proposal for it.
 ///
-/// It rides on the check-in rather than on enrollment because the local file
-/// changes without one. Carrying it in both places would mean two sources for
-/// one fact and a window in which they disagree; the check-in is the one that
-/// can never go stale.
+/// It's on the check-in rather than enrollment because the local file can
+/// change at any time.
 ///
-/// Absent means *unknown*, not *nothing permitted*. An agent older than this
-/// field sends no policy at all, and a server that read that as `observe` with
-/// no permissions would be confidently wrong about every host in a fleet
-/// mid-upgrade — which is the same failure DAWG-223 was filed for.
+/// Absent means unknown. Agents older than this field send nothing, and
+/// reading that as `observe` with no permissions would be wrong for every
+/// host in a fleet that's mid-upgrade.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct LocalPolicy {
     pub mode: AgentMode,
     /// Job kinds `/etc/updawg/agent.toml` permits, sorted and deduplicated.
     ///
-    /// Bounded by the size of [`JobKind`], which is why this is a list rather
-    /// than a hash and a second round trip: eight short words on a request that
-    /// is already carrying a boot id and a content hash.
+    /// Bounded by the size of [`JobKind`], so it's sent in full rather than as
+    /// a hash.
     ///
-    /// In [`AgentMode::Observe`] this is what the file says, not what the mode
-    /// allows. The mode is the stronger statement and the server applies it; a
-    /// host reported as `observe` with `apply_patch` permitted is a host whose
-    /// operator has the permission written down and the mode switched off, and
-    /// flattening that at the agent would lose the difference between "not
-    /// configured" and "configured and disabled".
+    /// In [`AgentMode::Observe`] this is still what the file says; the server
+    /// applies the mode. Flattening it in the agent would lose the difference
+    /// between "not configured" and "configured but disabled".
     #[serde(
         default,
         deserialize_with = "known_job_kinds",
@@ -81,11 +69,8 @@ pub struct LocalPolicy {
     pub permitted_job_kinds: Vec<JobKind>,
 }
 
-/// Whether the agent will change anything at all.
-///
-/// The same two words `/etc/updawg/agent.toml` spells, so the file, the wire
-/// and the database all say `observe` and `managed` rather than three
-/// dialects of the same idea.
+/// Whether the agent will change anything at all. Spelled the same as in
+/// `/etc/updawg/agent.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
@@ -97,7 +82,6 @@ pub enum AgentMode {
 }
 
 impl AgentMode {
-    /// Whether this mode will execute a mutating job at all.
     #[must_use]
     pub const fn is_managed(self) -> bool {
         matches!(self, Self::Managed)
@@ -107,10 +91,9 @@ impl AgentMode {
 impl LocalPolicy {
     /// Whether this host would accept a job of this kind.
     ///
-    /// The server's answer to "is it worth proposing this here?", and only
-    /// that: the agent checks its own file again when the job arrives, because
-    /// the file may have changed and because a permission checked only by the
-    /// party asking is not a permission.
+    /// For the server deciding what to propose. The agent re-checks its own
+    /// file when a job arrives, since the file may have changed and the server
+    /// isn't trusted to enforce it.
     #[must_use]
     pub fn permits(&self, kind: JobKind) -> bool {
         if kind.is_mutating() && !self.mode.is_managed() {
@@ -120,13 +103,11 @@ impl LocalPolicy {
     }
 }
 
-/// Job kinds, with anything this build does not recognise dropped.
+/// Job kinds, dropping any this build doesn't recognise.
 ///
-/// A newer agent can permit a kind an older server has never heard of, and
-/// failing the whole request over one word is the worst answer available — the
-/// server would lose the check-in rather than one field of it. Dropping the
-/// unknown ones leaves the server's view of the host **narrower** than the
-/// truth, which is the only direction this crate is allowed to be wrong in.
+/// A newer agent can permit a kind an older server doesn't know. Failing the
+/// whole check-in over that would be worse, and dropping it only makes the
+/// server's view of the host narrower than reality, which is the safe side.
 fn known_job_kinds<'de, D>(d: D) -> Result<Vec<JobKind>, D::Error>
 where
     D: Deserializer<'de>,
@@ -165,9 +146,7 @@ mod tests {
 
     #[test]
     fn an_absent_policy_is_not_an_empty_one() {
-        // The distinction the server depends on: an agent too old to report a
-        // policy sends nothing, and nothing must not read as `observe` with no
-        // permissions.
+        // an agent too old to report a policy sends nothing
         let json = r#"{"boot_id":"b","uptime_s":1,"inventory_hash":"h",
             "state":{"reboot_required":false,"pending_updates":0,"security_updates":0},
             "metrics":{"load1":0.0,"mem_used_pct":0.0,"root_free_bytes":0}}"#;
@@ -193,8 +172,6 @@ mod tests {
             mode: AgentMode::Observe,
             permitted_job_kinds: vec![JobKind::ApplyUpdates, JobKind::RefreshInventory],
         };
-        // Written down in the file and switched off by the mode. Both facts
-        // survive the trip; the mode is the one that decides.
         assert!(!policy.permits(JobKind::ApplyUpdates));
         assert!(policy.permits(JobKind::RefreshInventory));
         assert!(!policy.permits(JobKind::Reboot));

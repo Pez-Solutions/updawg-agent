@@ -4,17 +4,13 @@
 //! adding a row to the integration test matrix. Nothing else in the agent
 //! should need to change.
 //!
-//! These backends shell out to the package managers in machine-readable modes
-//! rather than linking `libapt` or `libdnf`. That is a deliberate trade: it
-//! keeps the binary statically linked against musl, so one build per
-//! architecture runs on every supported distro.
+//! The backends shell out to the package managers in their machine-readable
+//! modes instead of linking `libapt` or `libdnf`. That keeps the binary
+//! statically linked against musl, so one build per architecture runs on every
+//! supported distro.
 //!
-//! Scope note: DAWG-19 defines the trait, DAWG-34 implements apt and DAWG-35
-//! implements dnf. Both report the whole of what they can see; neither can apply
-//! anything yet, because the mutating half belongs with job execution and its
-//! permission checks (DAWG-38), and both say so by name rather than by returning
-//! an empty result. "No packages" and "I cannot tell you" must never look the
-//! same to the server.
+//! An operation a backend doesn't support returns an error saying so, never an
+//! empty result, so the server can tell "nothing there" from "couldn't check".
 
 pub mod apt;
 pub mod debian_upgrade;
@@ -44,17 +40,15 @@ pub enum BackendError {
     /// forcing it, because forcing it corrupts the package database.
     #[error("package manager is locked by another process")]
     Locked,
-    /// The plan cannot be carried out **as approved**, so nothing was done:
-    /// the installed version moved, the approved one is no longer available,
-    /// or applying it would remove or add a package nobody reviewed. The
-    /// safety property of DAWG-102, and a refusal rather than a failure —
-    /// nothing on the host changed.
+    /// The plan can't be carried out as approved, so nothing was done: the
+    /// installed version moved, the approved one is no longer available, or
+    /// applying it would remove or add a package nobody reviewed. Nothing on
+    /// the host changed.
     #[error("{0}")]
     Refused(String),
-    /// The question cannot be answered without changing the host first — a
-    /// preflight asking leapp's opinion of a host leapp is not installed on
-    /// yet, where the upgrade itself would install it. A preflight says so
-    /// as a warning, never a pass.
+    /// The question can't be answered without changing the host first, such
+    /// as asking leapp about a host it isn't installed on yet (the upgrade
+    /// would install it). A preflight reports this as a warning, not a pass.
     #[error("{0}")]
     CannotTell(String),
     #[error(transparent)]
@@ -72,18 +66,14 @@ pub struct Pin {
     pub to: String,
 }
 
-/// An exact set of package versions to install.
-///
-/// Exact, not "latest": if the candidate has moved on since the change was
-/// approved, the executor refuses the job rather than installing something
-/// nobody reviewed.
+/// An exact set of package versions to install. If the candidate has moved
+/// on since the change was approved, the executor refuses the job.
 #[derive(Debug, Clone, Default)]
 pub struct ApplyPlan {
     pub packages: Vec<Pin>,
     pub allow_reboot: bool,
 }
 
-/// One package that changed: name, arch, from, to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     pub name: String,
@@ -97,24 +87,21 @@ pub struct Change {
 pub struct ApplyOutcome {
     pub changed: Vec<Change>,
     pub reboot_required: bool,
-    /// A release upgrade that happens during the reboot (leapp, DAWG-152):
-    /// what to check once the host is back. `None` for everything else,
-    /// whose outcome is known when it returns.
+    /// For a release upgrade that completes during the reboot (leapp): what
+    /// to check once the host is back.
     pub after_reboot: Option<leapp_upgrade::AfterReboot>,
 }
 
 /// What the package manager would do if asked to upgrade everything.
 ///
-/// Two lists rather than one, because an obsoletion is a removal and an install
-/// rather than a version moving, and [`AvailableUpdate`] has one name and two
-/// versions. Squeezing a replacement into that shape produces a row that reads
-/// like an upgrade, names the wrong package, and would be believed (DAWG-232).
+/// Removals are kept separate because an obsoletion is a removal plus an
+/// install, and [`AvailableUpdate`] (one name, two versions) can't represent
+/// that without showing it as an upgrade of the wrong package.
 #[derive(Debug, Clone, Default)]
 pub struct PendingChanges {
     pub updates: Vec<AvailableUpdate>,
-    /// Packages an upgrade would **remove**. Empty is the normal answer and the
-    /// interesting one is never empty: a host with an obsoleted package
-    /// installed is a host where applying updates takes something away.
+    /// Packages an upgrade would remove. Usually empty; non-empty when an
+    /// installed package is obsoleted.
     pub removals: Vec<PendingRemoval>,
 }
 
@@ -127,84 +114,55 @@ pub trait LogSink: Send + Sync {
 pub trait PackageBackend: Send + Sync {
     fn ecosystem(&self) -> Ecosystem;
     async fn installed(&self) -> Result<Vec<InstalledPackage>>;
-    /// Whether [`installed`](PackageBackend::installed) says every package's
-    /// module stream, so that `module: None` means "not modular" rather than
-    /// "not asked" (DAWG-236). False by default: apt has no modules.
+    /// Whether [`installed`](PackageBackend::installed) fills in module
+    /// streams, so `module: None` means "not modular" and not "not asked".
+    /// apt has no modules.
     fn reports_modules(&self) -> bool {
         false
     }
     /// `apt-get update` / `dnf makecache`.
     async fn refresh_metadata(&self) -> Result<()>;
-    /// Everything one look at the upgrade path found.
-    ///
-    /// Updates and removals together, in one call, because on apt they come out
-    /// of one command: `apt-get -s dist-upgrade` prints `Inst` and `Remv` lines
-    /// in the same simulation, and it is the expensive call in a collection
-    /// pass. Splitting the trait in two would double it for the shape of the
-    /// answer rather than for the answer. dnf needs two commands either way and
-    /// says so in its own implementation.
+    /// Updates and removals together. On apt both come from one
+    /// `apt-get -s dist-upgrade` run, which is the expensive part of a
+    /// collection pass, so splitting this would run it twice.
     async fn pending_changes(&self) -> Result<PendingChanges>;
     async fn repositories(&self) -> Result<Vec<Repository>>;
-    /// Packages pinned or held locally, which will not be upgraded whatever a
-    /// proposal says.
-    ///
-    /// A package question, and therefore the backend's: it is `apt-mark
-    /// showhold` on one family and `dnf versionlock list` on another. This is why
-    /// `held_packages` was removed from `HostState` rather than left permanently
-    /// empty — a collector could never answer it.
-    ///
-    /// It matters because a plan that ignores these is a plan that silently does
-    /// nothing: the job reports success, the version does not move, and the host
-    /// stays vulnerable while the dashboard says it was patched.
+    /// Packages held or version-locked locally (`apt-mark showhold`,
+    /// `dnf versionlock list`). These won't be upgraded, so a plan that
+    /// includes them would report success without changing anything.
     async fn held_packages(&self) -> Result<Vec<String>>;
 
-    /// What pins this host's package sources in time, if anything does
-    /// (DAWG-233): see [`updawg_protocol::Frozen`]. Read-only. `None` by
-    /// default, for a family that has not been taught to look.
+    /// What pins this host's package sources to a point in time, if anything.
+    /// See [`updawg_protocol::Frozen`].
     async fn frozen(&self) -> Result<Option<updawg_protocol::Frozen>> {
         Ok(None)
     }
 
-    /// Which of `updates` the package manager itself calls a security fix.
+    /// Which of `updates` the package manager itself marks as security fixes.
+    /// A local hint for the heartbeat; the server makes the real call from
+    /// advisory data.
     ///
-    /// A local hint for the heartbeat, not a classification — the authoritative
-    /// answer is the server's, against advisory data.
-    ///
-    /// It is the backend's question because **the two families keep the answer in
-    /// different places**. apt puts it on the update: the candidate comes from a
-    /// pocket whose archive ends in `-security`, which is already on
-    /// [`AvailableUpdate::repo`]. dnf has no security pocket at all — a fix and a
-    /// rebuild are published to the same `baseos` — and keeps it in a separate
-    /// `updateinfo` database that has to be asked. A caller filtering on the
-    /// pocket gets the right answer on Debian and **zero on every RHEL host in
-    /// the fleet**, which is the shape of wrongness this product exists to
-    /// prevent.
-    ///
-    /// Takes the updates rather than collecting them again, because on both
-    /// families the answer is already in them: apt puts the pocket on
-    /// [`AvailableUpdate::repo`] and dnf fills
-    /// [`AvailableUpdate::advisories`] from `updateinfo` during
-    /// [`PackageBackend::pending_changes`]. Collecting again would re-run
-    /// `apt-get -s dist-upgrade`, which is most of the cost of a pass.
+    /// apt marks it by pocket (an archive ending in `-security`, already in
+    /// [`AvailableUpdate::repo`]). dnf has no security pocket, so it relies on
+    /// [`AvailableUpdate::advisories`], filled from `updateinfo` during
+    /// [`PackageBackend::pending_changes`]. Filtering on the pocket alone would
+    /// find nothing on RHEL-family hosts.
     async fn security_updates(&self, updates: &[AvailableUpdate]) -> Result<BTreeSet<String>>;
 
-    /// Every repository with its location, and what is installed from each
-    /// (DAWG-149): what a release-upgrade preflight asks about. Read-only.
-    ///
-    /// Not answered by default: a family that cannot say must not be read as
-    /// one with no third-party repositories.
+    /// Every repository with its location and what is installed from it, for
+    /// the release-upgrade preflight. Errors by default so an unsupported
+    /// family isn't mistaken for one with no third-party repositories.
     async fn release_sources(&self) -> Result<Vec<RepoSource>> {
         Err(BackendError::Refused(
             "listing repository locations is not built for this package manager yet".into(),
         ))
     }
 
-    /// Whether installing exactly `pins` would change only what they name —
-    /// on apt, and packages not installed yet built from the same source
-    /// upload as one of them (a new kernel's ABI package). Read-only: the
-    /// simulation [`PackageBackend::apply`] runs before it touches anything,
-    /// asked ahead of time by a preflight. Ok carries what it would install
-    /// alongside, as `name version`.
+    /// Whether installing exactly `pins` would change only what they name
+    /// (on apt, plus new packages built from the same source as one of them,
+    /// such as a new kernel's ABI package). Runs the same simulation as
+    /// [`PackageBackend::apply`] without changing anything. Returns the
+    /// extra packages it would install, as `name version`.
     ///
     /// # Errors
     /// [`BackendError::Refused`] naming what the install would do that was
@@ -218,10 +176,8 @@ pub trait PackageBackend: Send + Sync {
 
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome>;
 
-    /// Why a `dist_upgrade` to `target` would be refused, found without
-    /// changing anything: what the upgrade checks before it begins, asked
-    /// ahead of time by a preflight, so what a preflight passes, the upgrade
-    /// does not refuse. Empty when nothing stands in the way.
+    /// Reasons a `dist_upgrade` to `target` would be refused, using the same
+    /// checks the upgrade runs before it starts. Empty when nothing blocks it.
     ///
     /// # Errors
     /// When the host could not be asked.
@@ -232,16 +188,14 @@ pub trait PackageBackend: Send + Sync {
         ])
     }
 
-    /// Whether this backend's release upgrade is finished by the reboot
-    /// that follows it (leapp), so a job that may not reboot must not start
-    /// one.
+    /// Whether the release upgrade completes during the following reboot
+    /// (leapp). A job that isn't allowed to reboot must not start one.
     fn upgrade_finishes_at_reboot(&self) -> bool {
         false
     }
 
-    /// Upgrade the host to release `target` (`13`, `24.04`): a `dist_upgrade`
-    /// job (DAWG-150, 151, 152). Debian's is [`debian_upgrade`], Ubuntu's
-    /// [`ubuntu_upgrade`], the RHEL family's [`leapp_upgrade`].
+    /// Upgrades the host to release `target` (`13`, `24.04`). See
+    /// [`debian_upgrade`], [`ubuntu_upgrade`] and [`leapp_upgrade`].
     ///
     /// # Errors
     /// [`BackendError::Refused`] when nothing was changed; anything else once
@@ -254,8 +208,8 @@ pub trait PackageBackend: Send + Sync {
     }
 }
 
-/// Where one repository is, for asking whether it publishes a release
-/// (DAWG-149), and which installed packages came from it.
+/// A repository's location, used to ask whether it publishes a release, and
+/// the installed packages that came from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoSource {
     /// The base URL apt fetches from: `https://packages.cloud.google.com/apt`.
@@ -267,7 +221,7 @@ pub struct RepoSource {
     pub packages: Vec<String>,
 }
 
-/// Pick the backend for the host we are running on.
+/// Picks the backend for this host.
 ///
 /// # Errors
 /// Returns [`BackendError::ToolMissing`] when neither family is detected.

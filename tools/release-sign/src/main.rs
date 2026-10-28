@@ -1,16 +1,16 @@
-//! `updawg-release-sign`: OpenPGP signatures for pkg.updawg.net's apt and dnf
-//! repositories, made by a Cloud KMS key (DAWG-45, decided 2026-09-30).
+//! `updawg-release-sign`: OpenPGP signatures for the apt and dnf repositories
+//! on pkg.updawg.net, made with a Cloud KMS key.
 //!
-//! The key never leaves KMS. Release CI holds an hour-long credential that
-//! may ask it for signatures, and nothing else: not the key, and not another
-//! key. See `openpgp` for why this is not an OpenPGP library.
+//! The private key stays in KMS. Release CI gets a short-lived credential that
+//! can request signatures from that one key and do nothing else. See `openpgp`
+//! for why this doesn't use an OpenPGP library.
 //!
 //! ```text
-//! updawg-release-sign --key <version> public-key --user-id "…" > updawg.asc
+//! updawg-release-sign --key <version> public-key --user-id "..." > updawg.asc
 //! updawg-release-sign --key <version> detach Release > Release.gpg
 //! updawg-release-sign --key <version> clear Release > InRelease
-//! updawg-release-sign --key <version> manifest --channel beta --version 0.1.0-… \
-//!     --dir bin/ --base-url https://pkg.updawg.net/bin/pool/0.1.0-… > beta.json
+//! updawg-release-sign --key <version> manifest --channel beta --version 0.1.0-... \
+//!     --dir bin/ --base-url https://pkg.updawg.net/bin/pool/0.1.0-... > beta.json
 //! ```
 
 mod der;
@@ -25,7 +25,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 struct Args {
     /// The Cloud KMS key version:
-    /// `projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N`.
+    /// `projects/.../locations/.../keyRings/.../cryptoKeys/.../cryptoKeyVersions/N`.
     #[arg(long, env = "UPDAWG_RELEASE_KEY")]
     key: String,
     #[command(subcommand)]
@@ -43,11 +43,11 @@ enum Command {
     Detach { file: PathBuf },
     /// FILE as a cleartext-signed message: InRelease.
     Clear { file: PathBuf },
-    /// A channel's signed release manifest (DAWG-46): the agent's binaries in
-    /// DIR, as `<target>/updawgd` and `<target>/updawgctl`, served from
-    /// `<base-url>/<target>/<name>`. Signed as raw `RSASSA-PKCS1-v1_5`
-    /// rather than OpenPGP: the agent verifies it with the key compiled into
-    /// it, and has no OpenPGP parser to want.
+    /// A channel's signed release manifest for the binaries in DIR
+    /// (`<target>/updawgd`, `<target>/updawgctl`), served from
+    /// `<base-url>/<target>/<name>`. The signature is plain
+    /// `RSASSA-PKCS1-v1_5`, since the agent checks it against a compiled-in
+    /// key and has no OpenPGP parser.
     Manifest {
         #[arg(long)]
         channel: String,

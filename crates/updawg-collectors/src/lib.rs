@@ -1,33 +1,29 @@
 //! System fact collectors.
 //!
-//! Everything here is read-only and cheap. The exhaustive list of what is
-//! collected lives in `updawg_protocol::inventory`; anything not represented
-//! there must not be gathered. No file contents, no environment variables, no
-//! process arguments, no user data, no credentials.
+//! Everything here is read-only and cheap. The full list of what is collected
+//! lives in `updawg_protocol::inventory`, and nothing outside it is gathered:
+//! no file contents, environment variables, process arguments, user data or
+//! credentials.
 //!
-//! # Where the line is
+//! # Scope
 //!
-//! This crate collects facts about the *machine*. Anything that is a question
-//! about the *package manager* — installed packages, available updates,
-//! configured repositories, held packages — belongs to `updawg-backends`,
-//! whose [`PackageBackend`] trait already declares it. Held packages in
-//! particular look like host state but are not: "held" means `apt-mark
-//! showhold` on one family and `dnf versionlock` on another, and splitting that
-//! knowledge across two crates would mean maintaining it twice.
+//! This crate collects facts about the machine. Questions for the package
+//! manager (installed packages, available updates, repositories, held
+//! packages) belong to `updawg-backends` and its [`PackageBackend`] trait.
+//! Held packages look like host state, but "held" means `apt-mark showhold`
+//! on one family and `dnf versionlock` on another, so that knowledge stays in
+//! one crate.
 //!
 //! [`PackageBackend`]: https://docs.rs/updawg-backends
 //!
-//! # Degrading
+//! # Missing sources
 //!
-//! A collector whose source is missing degrades rather than failing the whole
-//! run: a host without `systemd-detect-virt` is not a broken host. The
-//! exception is where not knowing is itself important — see
-//! [`state::RebootRequired`], which has an `Unknown` variant precisely so that
-//! "I could not tell" never gets flattened into "everything is fine".
-//!
-//! Scope note: DAWG-19 defines the surface, DAWG-33 implements the collectors.
-//! DAWG-30 added [`enrollment`], the smaller set of facts needed before the
-//! host has an identity at all.
+//! A collector whose source is missing degrades instead of failing the whole
+//! run; a host without `systemd-detect-virt` is not a broken host. Where not
+//! knowing matters, the type says so: [`state::RebootRequired`] has an
+//! `Unknown` variant so an unreadable answer is not reported as "no reboot
+//! needed". [`enrollment`] holds the smaller set of facts needed before the
+//! host has an identity.
 
 pub mod enrollment;
 pub mod facts;

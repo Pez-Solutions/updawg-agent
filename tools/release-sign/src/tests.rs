@@ -1,11 +1,9 @@
-//! What apt and dnf will make of these signatures, asked of the tools that
-//! verify them: `gpgv`, and Sequoia's `sqv` where it is installed (apt uses
-//! it from Debian 13). A local RSA key stands in for KMS: the packets around
-//! the signature are the part written here, and they are the same whoever
-//! signs.
+//! Checks the output with the real verifiers: `gpgv`, and Sequoia's `sqv`
+//! if installed (apt uses it from Debian 13 on). A local RSA key stands in
+//! for KMS, since the packet code doesn't care who signs.
 //!
-//! CI sets `UPDAWG_REQUIRE_GPGV`, so a runner without `gpgv` fails rather
-//! than passing having checked nothing.
+//! CI sets `UPDAWG_REQUIRE_GPGV` so a missing `gpgv` fails the run instead of
+//! silently skipping.
 
 use crate::der;
 use crate::openpgp::{PublicKey, Signer, canonical_text};
@@ -124,8 +122,7 @@ fn a_cleartext_signature_verifies_as_inrelease() {
     )
     .unwrap();
     let inrelease = dir.join("InRelease");
-    // With a line that needs dash-escaping, and trailing space, which a text
-    // signature ignores.
+    // needs dash-escaping; the trailing spaces aren't hashed
     let text = format!("{RELEASE}-dashed line  \n");
     let message = key.clear_sign(&text, &signer, 1_790_000_100).unwrap();
     assert!(message.contains("\n- -dashed line"), "{message}");
@@ -186,8 +183,6 @@ fn sequoia_accepts_the_key_and_the_signature() {
 
 #[test]
 fn the_export_is_the_same_bytes_every_time() {
-    // The fingerprint and the self-signature both depend only on the key and
-    // its creation time, so publishing the key twice cannot give two keys.
     let (signer, key) = local();
     let a = key
         .export("Test <t@example>", &signer, key.created)
@@ -205,7 +200,7 @@ fn a_manifest_verifies_with_the_public_key_as_the_agent_holds_it() {
     use aws_lc_rs::signature::{RSA_PKCS1_2048_8192_SHA512, UnparsedPublicKey};
     use base64::Engine as _;
     let pair = KeyPair::generate(KeySize::Rsa2048).unwrap();
-    // PKCS#1 DER, which is what the agent compiles in (self_update/release-key.der).
+    // PKCS#1 DER, same as the agent's compiled-in release-key.der
     let public = pair.public_key().as_ref().to_vec();
     let dir = scratch("manifest");
     for target in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {

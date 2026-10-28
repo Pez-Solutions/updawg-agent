@@ -1,15 +1,12 @@
-//! Everything the agent sends, field by field (DAWG-187).
+//! Everything the agent sends, field by field.
 //!
-//! docs.updawg.net/agent/collected-data/ promises the whole list of what an
-//! agent tells the service. This builds every message the agent sends with
-//! every field filled in, collects the JSON paths, and compares them with
-//! `collected-fields.txt`. The docs site vendors that file and fails its build
-//! when the page doesn't describe a field in it, so a field added here reaches
-//! the page or nothing ships.
+//! docs.updawg.net/agent/collected-data/ lists everything an agent sends. This
+//! builds every outgoing message with every field filled in, collects the JSON
+//! paths, and compares them with `collected-fields.txt`. The docs site vendors
+//! that file and fails its build if the page misses a field.
 //!
-//! Struct literals, never `..Default::default()`: a field added to a message
-//! doesn't compile here until somebody fills it in, and filled in it shows up
-//! in the list.
+//! Uses full struct literals rather than `..Default::default()` so that a new
+//! field won't compile here until it's filled in.
 //!
 //! After changing a message, regenerate the file and read its diff:
 //!

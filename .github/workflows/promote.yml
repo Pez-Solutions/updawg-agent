@@ -1,12 +1,9 @@
 name: Promote
 
-# The button (DAWG-46, decided 2026-09-30): put one build that is on beta onto
-# pkg.updawg.net's stable channel. Nothing is rebuilt — the same files, from
-# the pool, named by one more channel's indexes.
+# Promote a build from beta to the stable channel on pkg.updawg.net. Nothing
+# is rebuilt; stable's indexes start pointing at the same pool files.
 #
-# Run it from `main`: only `main` can become the identity that signs
-# (updawg-infra terraform/gcp/packages.tf), so from anywhere else it fails at
-# authentication.
+# Must run from `main`, the only ref allowed to use the signing identity.
 
 on:
   workflow_dispatch:
@@ -24,9 +21,8 @@ jobs:
   promote:
     name: promote ${{ inputs.release }} to stable
     if: github.ref == 'refs/heads/main'
-    # On the release runner group (DAWG-291): only this workflow on main may use
-    # it, so nothing a pull request runs can touch the machine that holds this
-    # job's credentials.
+    # The release runner group is limited to main, so PR jobs never run on
+    # the machine holding these credentials.
     runs-on: [self-hosted, release]
     timeout-minutes: 20
     permissions:
@@ -38,8 +34,7 @@ jobs:
       - id: tools
         uses: ./.github/actions/pkg-tools
 
-      # Through the environment, never spliced into the script: a workflow
-      # input is text somebody typed.
+      # Passed via env, not interpolated into the script.
       - name: that build's packages, from beta
         env:
           RELEASE: ${{ inputs.release }}
@@ -59,27 +54,24 @@ jobs:
           SIGN: ${{ steps.tools.outputs.sign }}
         run: sh packaging/repo/publish.sh stable promote/*
 
-      # Stable's self-update manifest (DAWG-46): the same binaries beta had,
-      # from the pool, signed again as stable's. A build from before the
-      # binaries were published has none to name; stable.json then stays as
-      # it was, and says so.
+      # Re-sign the build's binaries as stable's self-update manifest. Older
+      # builds have no binaries in the pool, so stable.json is left alone.
       - name: the stable self-update manifest
         env:
           SIGN: ${{ steps.tools.outputs.sign }}
           RELEASE: ${{ inputs.release }}
         run: |
           if ! gcloud storage ls "gs://$BUCKET/bin/pool/$RELEASE/" >/dev/null 2>&1; then
-            echo "::warning::$RELEASE has no binaries in bin/pool (built before DAWG-46); bin/stable.json is unchanged"
+            echo "::warning::$RELEASE has no binaries in bin/pool (built before self-update); bin/stable.json is unchanged"
             exit 0
           fi
-          # Not `bin/`: that is the binaries' source in this repository.
+          # Not bin/, which holds the crates.
           mkdir release-bin
           gcloud storage cp -r "gs://$BUCKET/bin/pool/$RELEASE/*" release-bin/
           sh packaging/repo/publish-bin.sh stable "$RELEASE" release-bin
 
-      # get.updawg.net follows stable (DAWG-44): the installer and the
-      # promoted build's binaries, for anybody installing by hand. Served by
-      # Caddy from this bucket's get/ (updawg-infra).
+      # get.updawg.net serves stable: the installer and the promoted
+      # binaries for manual installs.
       - name: get.updawg.net
         env:
           RELEASE: ${{ inputs.release }}

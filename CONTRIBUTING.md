@@ -1,34 +1,31 @@
 # Contributing
 
-The conventions for every Updawg repository — protected `main`, squash merges,
-how to title a pull request, Dependabot, CODEOWNERS — are written down once, in
-[updawg-infra/docs/repository-conventions.md](https://github.com/Pez-Solutions/updawg-infra/blob/main/docs/repository-conventions.md).
+Changes go through pull requests against `main`, which are squash-merged. CI
+(fmt, clippy, tests, cargo deny, and the distro and packaging tests) has to
+pass first. Keep PR titles short and descriptive, e.g. `Retry check-ins after
+a 503 with Retry-After`.
 
-In short: a pull request for every change, CI green before merging, and a title
-that says what changes in plain words with the Jira ticket in parentheses —
-`Serve the OpenAPI document at /openapi.json (DAWG-132)`.
+For anything security-sensitive, please email security@updawg.net instead of
+opening an issue.
 
 ## Changing what the agent collects
 
-What the agent sends about a host is a promise, written at
-[docs.updawg.net/agent/collected-data](https://docs.updawg.net/agent/collected-data/)
-and field by field at [/agent/fields](https://docs.updawg.net/agent/fields/)
-(DAWG-171). Three things hold it to the code:
+What the agent sends about a host is documented at
+[docs.updawg.net/agent/collected-data](https://docs.updawg.net/agent/collected-data/),
+with every field listed at [/agent/fields](https://docs.updawg.net/agent/fields/).
+A few things keep the code and the docs in sync:
 
 - `crates/updawg-protocol/tests/collected.rs` builds every message the agent
-  sends and compares its fields with `collected-fields.txt`. A new field fails
-  it until the file is regenerated, and the docs site does not build until the
-  page describes the field.
-- `updawgctl print-inventory --json` prints the bytes the upload sends, from
-  the same function (`transport::inventory_body`); a transport test holds the
-  wire to it.
-- A pull request that changes `collected-fields.txt` or anything in
-  `crates/updawg-collectors/` fails the **Privacy review** check until it is
-  labelled `privacy-reviewed`. Pez applies the label after reading the change
-  against the page: nothing from the "Never" list (file contents, environment,
+  sends and compares the fields with `collected-fields.txt`. Adding a field
+  fails this test until the file is regenerated.
+- `updawgctl print-inventory --json` prints the exact upload body, using the
+  same function as the upload (`transport::inventory_body`).
+- PRs that touch `collected-fields.txt` or `crates/updawg-collectors/` fail
+  the privacy review check until a maintainer adds the `privacy-reviewed`
+  label. The agent must never collect file contents, environment variables,
   process lists or command lines, users and logins, credentials, network
-  configuration, cloud metadata), and anything new described on the page.
+  configuration or cloud metadata.
 
-A change elsewhere that puts new content into an existing field — a log line,
-an error message, a health-check detail — needs the same reading, even though
-nothing forces it.
+The same applies to changes that put new content into an existing field
+(log lines, error messages, health check details), even though nothing
+checks for it automatically.

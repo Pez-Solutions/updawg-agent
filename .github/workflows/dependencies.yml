@@ -1,11 +1,7 @@
 name: Dependencies
 
-# DAWG-165: advisories, licences and sources, with cargo deny. Daily on main,
-# because an advisory published tomorrow is about code that is already
-# released — a check that only runs when somebody pushes would never see it.
-#
-# On every change it runs as part of CI (`cargo deny` from updawg-server's rust.yml, DAWG-300);
-# this is the daily run of the same job.
+# cargo deny (advisories, licences, sources). It also runs in CI on every
+# change; this daily run catches advisories published after a release.
 
 on:
   schedule:

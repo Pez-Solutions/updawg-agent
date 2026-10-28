@@ -1,33 +1,25 @@
-//! A Debian release upgrade (DAWG-151): the sources rewritten, then
-//! `apt full-upgrade`, as Debian's release notes lay it out.
+//! Debian release upgrade, following the steps in Debian's release notes.
 //!
-//! 1. **Refuse what the release notes say not to do** ([`blockers`], which
-//!    a preflight asks too). Debian only (Ubuntu has its own tool:
-//!    [`crate::ubuntu_upgrade`]); one release at a time, 12 to 13 and never
-//!    12 to 14; nothing held; nothing half-installed (`dpkg --audit`).
-//! 2. **Rewrite the sources.** Every suite that names this release —
-//!    `bookworm`, `bookworm-updates`, `bookworm-security`,
-//!    `cloud-sdk-bookworm` — is renamed to the target's, in
-//!    `/etc/apt/sources.list` and every `.list` and deb822 `.sources` file
-//!    under `sources.list.d`. Suites that name no release (`stable`) are left
-//!    as they are. The files are copied to `/var/backups` first. Moving to 12
-//!    or later, a Debian line with `non-free` gains `non-free-firmware`, where
-//!    the firmware went in 12.
-//! 3. **`apt-get update`.** If it fails — a repository with nothing for the
-//!    target, which the preflight's `third_party_repos` check is there to
-//!    catch first — the sources are put back and nothing else has changed:
-//!    refused, not failed.
-//! 4. **`upgrade --without-new-pkgs`, then `full-upgrade`**, non-interactive,
-//!    keeping every configuration file edited on the host (`--force-confold`,
-//!    `--force-confdef` for the ones nobody edited). The release notes' two
-//!    steps: the minimal upgrade first, so the full one has less to solve.
-//!    Output goes to the job's log line by line; it takes minutes.
-//! 5. **It says it is the target now**: `/etc/os-release` from the new
-//!    `base-files`. Otherwise the job failed, whatever apt said.
+//! 1. Check for blockers ([`blockers`], also used by the preflight): Debian
+//!    only (Ubuntu uses [`crate::ubuntu_upgrade`]), one release at a time,
+//!    no held packages, nothing half-installed (`dpkg --audit`).
+//! 2. Rewrite the sources. Every suite that names the current release
+//!    (`bookworm`, `bookworm-security`, `cloud-sdk-bookworm`, ...) is renamed
+//!    in `/etc/apt/sources.list` and every `.list` and deb822 `.sources` file
+//!    in `sources.list.d`. Suites like `stable` are left alone. Originals are
+//!    copied to `/var/backups` first. When moving to 12 or later, lines with
+//!    `non-free` also get `non-free-firmware`, since firmware moved there in
+//!    12.
+//! 3. `apt-get update`. If it fails (usually a repository with nothing for
+//!    the target), the sources are restored and the job is refused.
+//! 4. `upgrade --without-new-pkgs`, then `full-upgrade`, non-interactive,
+//!    keeping locally edited config files (`--force-confold`,
+//!    `--force-confdef`).
+//! 5. Check `/etc/os-release` reports the target. If not, the job failed
+//!    regardless of apt's exit status.
 //!
-//! From step 4 on there is no undoing it by putting files back: a failure
-//! there is a half-upgraded host, which is what the snapshot taken before the
-//! job is for (the executor's, as for an install).
+//! A failure from step 4 on can't be undone by restoring files; recovery
+//! relies on the snapshot the executor takes before the job.
 
 pub use crate::release::{Host, read_os_release};
 use crate::{BackendError, Change, LogSink, Result, release};
@@ -36,14 +28,12 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use updawg_protocol::InstalledPackage;
 
-/// Where the sources are kept before they are rewritten.
 const BACKUPS: &str = "/var/backups";
 
 /// The first release with a `non-free-firmware` component.
 const FIRMWARE_FROM: u32 = 12;
 
-/// Whether this host may be upgraded to `target`, and the target's
-/// codename.
+/// Returns the target's codename if this host can be upgraded to `target`.
 ///
 /// # Errors
 /// [`BackendError::Refused`] saying why not.
@@ -77,11 +67,11 @@ pub fn plan(host: &Host, target: &str) -> Result<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rewrite {
     pub text: String,
-    /// Each suite renamed, `old → new`, once each.
+    /// Each renamed suite, as `old -> new`.
     pub renamed: Vec<String>,
 }
 
-/// A one-line-style sources file (`sources.list`, `*.list`), rewritten.
+/// Rewrites a one-line-style sources file (`sources.list`, `*.list`).
 #[must_use]
 pub fn rewrite_list(text: &str, current: &str, target: &str, firmware: bool) -> Rewrite {
     let mut renamed = Vec::new();
@@ -101,7 +91,6 @@ pub fn rewrite_list(text: &str, current: &str, target: &str, firmware: bool) -> 
                 }
                 at += 1;
             }
-            // `at` is the URI; the suite follows it.
             let suite_at = at + 1;
             let Some(suite) = words.get(suite_at) else {
                 return line.to_owned();
@@ -127,7 +116,7 @@ pub fn rewrite_list(text: &str, current: &str, target: &str, firmware: bool) -> 
     }
 }
 
-/// A deb822 sources file (`*.sources`), rewritten stanza by stanza.
+/// Rewrites a deb822 sources file (`*.sources`).
 #[must_use]
 pub fn rewrite_sources(text: &str, current: &str, target: &str, firmware: bool) -> Rewrite {
     let mut renamed = Vec::new();
@@ -174,20 +163,19 @@ pub fn rewrite_sources(text: &str, current: &str, target: &str, firmware: bool) 
     }
 }
 
-/// A deb822 field's value, when `line` is that field.
 fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let (key, value) = line.split_once(':')?;
     key.trim().eq_ignore_ascii_case(name).then_some(value)
 }
 
 fn note(renamed: &mut Vec<String>, from: &str, to: &str) {
-    let entry = format!("{from} → {to}");
+    let entry = format!("{from} -> {to}");
     if !renamed.contains(&entry) {
         renamed.push(entry);
     }
 }
 
-/// `lines` joined as `original` was, trailing newline included.
+/// Keeps `original`'s trailing newline.
 fn rejoin(original: &str, lines: &[String]) -> String {
     let mut out = lines.join("\n");
     if original.ends_with('\n') {
@@ -196,7 +184,7 @@ fn rejoin(original: &str, lines: &[String]) -> String {
     out
 }
 
-/// Every package that moved, arrived or left between two inventories.
+/// Packages upgraded, installed or removed between two inventories.
 #[must_use]
 pub fn changes(before: &[InstalledPackage], after: &[InstalledPackage]) -> Vec<Change> {
     let index = |list: &[InstalledPackage]| -> BTreeMap<(String, String), String> {
@@ -233,9 +221,6 @@ pub fn changes(before: &[InstalledPackage], after: &[InstalledPackage]) -> Vec<C
     out
 }
 
-/* ------------------------------------------------------------ doing it */
-
-/// The sources files apt reads.
 fn source_files() -> Vec<PathBuf> {
     let mut files = vec![PathBuf::from("/etc/apt/sources.list")];
     if let Ok(dir) = std::fs::read_dir("/etc/apt/sources.list.d") {
@@ -249,16 +234,13 @@ fn source_files() -> Vec<PathBuf> {
     files.into_iter().filter(|p| p.is_file()).collect()
 }
 
-/// A file as it was before the rewrite, to put back.
 struct Kept {
     path: PathBuf,
     text: String,
 }
 
-/// Why this host would refuse to be upgraded to `target`, found without
-/// changing anything: [`plan`], held packages, `dpkg --audit`. What
-/// [`upgrade`] checks before it begins, and what a preflight asks ahead of
-/// time. Empty when nothing stands in the way.
+/// Reasons [`upgrade`] would refuse `target`: [`plan`], held packages and
+/// `dpkg --audit`. Changes nothing. Empty when nothing blocks the upgrade.
 ///
 /// # Errors
 /// When the package manager could not be asked.
@@ -276,7 +258,6 @@ pub async fn blockers(
     Ok(out)
 }
 
-/// Held packages, as a refusal.
 pub(crate) async fn held(backend: &dyn crate::PackageBackend) -> Result<Option<String>> {
     let held = backend.held_packages().await?;
     Ok((!held.is_empty()).then(|| {
@@ -287,7 +268,6 @@ pub(crate) async fn held(backend: &dyn crate::PackageBackend) -> Result<Option<S
     }))
 }
 
-/// Anything `dpkg --audit` reports, as a refusal.
 pub(crate) async fn half_installed() -> Result<Option<String>> {
     let audit = tokio::process::Command::new("dpkg")
         .arg("--audit")
@@ -303,8 +283,7 @@ pub(crate) async fn half_installed() -> Result<Option<String>> {
     }))
 }
 
-/// Rewrite every sources file, keeping copies in `/var/backups`. Returns the
-/// originals of the files it changed.
+/// Returns the original contents of the files it changed.
 fn rewrite_all(host: &Host, target: &str, codename: &str, log: &dyn LogSink) -> Result<Vec<Kept>> {
     let backup =
         Path::new(BACKUPS).join(format!("updawg-dist-upgrade-{}-to-{target}", host.version));
@@ -349,7 +328,6 @@ fn put_back(kept: &[Kept], log: &dyn LogSink) {
     }
 }
 
-/// `apt-get` with the options every step takes, streaming its output.
 pub(crate) async fn apt(args: &[&str], log: &dyn LogSink) -> Result<i32> {
     let mut all: Vec<&str> = vec![
         "-y",
@@ -365,11 +343,9 @@ pub(crate) async fn apt(args: &[&str], log: &dyn LogSink) -> Result<i32> {
     streamed("apt-get", &all, log).await
 }
 
-/// Run `tool`, sending each line it prints to `log` as it prints it.
-///
-/// The environment is every release upgrade's: nothing asks a question, and
-/// Ubuntu's upgrader neither buffers its output nor moves into `screen`,
-/// where the job could no longer hear it.
+/// Runs `tool` and streams its output to `log`. The environment suppresses
+/// prompts and keeps Ubuntu's upgrader from buffering output or moving into
+/// `screen`, where we'd lose it.
 pub(crate) async fn streamed(tool: &'static str, args: &[&str], log: &dyn LogSink) -> Result<i32> {
     log.line(&format!("$ {tool} {}", args.join(" ")));
     let mut child = tokio::process::Command::new(tool)
@@ -401,7 +377,6 @@ pub(crate) async fn streamed(tool: &'static str, args: &[&str], log: &dyn LogSin
     Ok(status.code().unwrap_or(-1))
 }
 
-/// Each line `r` gives, to `log`, as it comes.
 async fn pump<R: tokio::io::AsyncRead + Unpin>(r: R, log: &dyn LogSink) {
     let mut lines = BufReader::new(r).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -419,7 +394,7 @@ fn failed(step: &'static str, status: i32) -> BackendError {
     }
 }
 
-/// Upgrade this host to Debian `target`. See the module note.
+/// Upgrades this host to Debian `target`. See the module docs.
 ///
 /// # Errors
 /// [`BackendError::Refused`] when nothing was changed (not Debian, not one
@@ -523,7 +498,7 @@ mod tests {
             "deb [arch=amd64 signed-by=/usr/share/keyrings/x.gpg] https://example.test/apt bookworm-security main contrib non-free non-free-firmware"
         );
         assert_eq!(lines[2], "deb https://repo.example.test/ stable main");
-        assert_eq!(r.renamed, ["bullseye-security → bookworm-security"]);
+        assert_eq!(r.renamed, ["bullseye-security -> bookworm-security"]);
     }
 
     #[test]

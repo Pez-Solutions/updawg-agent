@@ -1,32 +1,29 @@
-//! LVM thin snapshots, for a root on a thin-provisioned logical volume
-//! (DAWG-118).
+//! LVM thin snapshots, for a root on a thin-provisioned logical volume.
 //!
 //! # Thin only
 //!
-//! A thin snapshot costs nothing until blocks change and needs no size up
-//! front. A classic ("thick") snapshot needs space reserved in the volume
-//! group, and fills up and becomes invalid when an install writes more than
-//! was reserved — a snapshot that silently stops being one. RHEL's default
-//! install is thick LVM, so most RHEL hosts get no snapshots from this; that
-//! was agreed (Pez, 2026-09-28) and the host says so.
+//! A thin snapshot needs no space reserved up front. A classic (thick)
+//! snapshot needs reserved space in the volume group and becomes invalid if an
+//! install writes more than that. RHEL installs default to thick LVM, so most
+//! RHEL hosts get no snapshots, and the host reports why.
 //!
-//! # Rolling back happens at the next boot
+//! # Rollback happens at the next boot
 //!
-//! `lvconvert --merge` on a root that is mounted cannot merge now: LVM defers
-//! it to the volume's next activation, which for `/` is the next boot. The
-//! rollback job reports that the host needs a reboot, and until then nothing
-//! has changed.
+//! `lvconvert --merge` can't merge into a mounted root; LVM defers it to the
+//! next activation, which for `/` is the next boot. The rollback job reports
+//! that a reboot is needed, and nothing changes until then.
 //!
-//! At that boot `/` becomes the snapshot, the agent's state directory
-//! included — so before merging, [`Lvm::carry_into`] writes the agent's
-//! current state into the snapshot. Seen on a real host: files written into a
-//! thin snapshot before a deferred merge are what the origin has after it.
+//! After that boot `/` is the snapshot, including the agent's state
+//! directory, so [`Lvm::carry_into`] first copies the current state into the
+//! snapshot. Files written into a thin snapshot before a deferred merge do end
+//! up on the origin after it (verified on a real host).
 //!
-//! # Marked as ours
+//! # Ownership
 //!
-//! Named `updawg_<job>` with the tags `updawg` and `updawg_job_<job>`; only
-//! those are listed, restored or pruned. LVM never reuses a name that exists,
-//! so `lvm:<vg>/updawg_<job>` names one snapshot.
+//! Snapshots are named `updawg_<job>` and tagged `updawg` and
+//! `updawg_job_<job>`. Only those are listed, restored or pruned. LVM names
+//! are unique within a volume group, so `lvm:<vg>/updawg_<job>` identifies
+//! one snapshot.
 
 use crate::{Provider, Restored, Result, Snapshot, SnapshotError, SnapshotProvider};
 use async_trait::async_trait;
@@ -34,18 +31,16 @@ use std::path::{Path, PathBuf};
 
 const MARK: &str = "updawg";
 
-/// Where a snapshot is mounted while the agent reads or writes it.
 const MOUNT_AT: &str = "/run/updawg-snapshot";
 
-/// LVM, snapshotting one thin volume.
+/// Snapshots one thin volume.
 #[derive(Debug, Clone)]
 pub struct Lvm {
     vg: String,
     lv: String,
-    /// Where the volume is mounted: `/` for a root.
     mountpoint: PathBuf,
-    /// Its filesystem. XFS refuses to mount two filesystems with one UUID,
-    /// and a snapshot has its origin's.
+    /// XFS won't mount two filesystems with the same UUID, and a snapshot
+    /// shares its origin's, so XFS needs `nouuid`.
     fstype: String,
 }
 
@@ -58,7 +53,7 @@ impl Lvm {
         Self::mounted_at(Path::new("/")).await
     }
 
-    /// The thin volume mounted at `mountpoint`. Tests use another.
+    /// The thin volume mounted at `mountpoint`.
     ///
     /// # Errors
     /// As [`Lvm::root`].
@@ -106,7 +101,7 @@ impl Lvm {
         format!("updawg_{job}")
     }
 
-    /// Our snapshot named by `id`, checked to be one of ours.
+    /// The snapshot name for `id`, if it is one of ours.
     async fn ours(&self, id: &str) -> Result<String> {
         let (vg, name) = parse_id(id)?;
         if vg != self.vg || !self.list().await?.iter().any(|s| s.id == id) {
@@ -115,8 +110,8 @@ impl Lvm {
         Ok(name.to_owned())
     }
 
-    /// Activate and mount a snapshot, run `f` against where it is mounted,
-    /// and unmount and deactivate it again whatever `f` did.
+    /// Activates and mounts a snapshot, runs `f` on the mount point, then
+    /// unmounts and deactivates it even if `f` failed.
     async fn with_mounted<T>(
         &self,
         name: &str,
@@ -125,7 +120,7 @@ impl Lvm {
     ) -> Result<T> {
         let lv = format!("{}/{name}", self.vg);
         let at = PathBuf::from(format!("{MOUNT_AT}-{name}"));
-        // Thin snapshots are made with "skip activation": `-K` overrides it.
+        // thin snapshots have the activation-skip flag; -K overrides it
         run(&["lvchange", "-ay", "-K", &lv]).await?;
         tokio::fs::create_dir_all(&at).await?;
         let mut options = vec![if writable { "rw" } else { "ro" }];
@@ -287,8 +282,8 @@ impl SnapshotProvider for Lvm {
         self.with_mounted(&name, true, async move |at| {
             let into = at.join(&relative);
             tokio::fs::create_dir_all(&into).await?;
-            // Exactly what is there now: a file the snapshot has and the live
-            // directory does not — a pending reboot long finished — goes.
+            // Mirror the live directory, so files that no longer exist (a
+            // finished pending reboot, say) are removed from the snapshot too.
             let mut stale = tokio::fs::read_dir(&into).await?;
             while let Some(entry) = stale.next_entry().await? {
                 if entry.file_type().await?.is_file() {
@@ -307,7 +302,6 @@ impl SnapshotProvider for Lvm {
     }
 }
 
-/// Kernels with a module directory under `root`.
 async fn kernels_in(root: &Path) -> Vec<String> {
     let mut kernels = Vec::new();
     for dir in ["usr/lib/modules", "lib/modules"] {
@@ -334,7 +328,7 @@ pub struct Volume {
     pub dm_path: String,
 }
 
-/// `lvm:<vg>/updawg_<job>`, as the volume group and the snapshot's name.
+/// Splits `lvm:<vg>/updawg_<job>` into volume group and snapshot name.
 ///
 /// # Errors
 /// [`SnapshotError::ForeignId`] for anything else.
@@ -348,10 +342,10 @@ pub fn parse_id(id: &str) -> Result<(&str, &str)> {
         })
 }
 
-/// `lvs --reportformat json -o vg_name,lv_name,segtype,pool_lv,lv_dm_path`.
+/// Parses `lvs --reportformat json -o vg_name,lv_name,segtype,pool_lv,lv_dm_path`.
 ///
 /// # Errors
-/// [`SnapshotError::Unparseable`] when it is not that shape.
+/// [`SnapshotError::Unparseable`] if the JSON has an unexpected shape.
 pub fn parse_volumes(out: &str) -> Result<Vec<Volume>> {
     report(out)?
         .iter()
@@ -372,11 +366,11 @@ pub fn parse_volumes(out: &str) -> Result<Vec<Volume>> {
         .collect()
 }
 
-/// `lvs … -o vg_name,lv_name,origin,lv_tags,lv_time -S lv_tags=updawg`: the
-/// agent's own snapshots of `origin`, oldest first.
+/// Parses `lvs -o vg_name,lv_name,origin,lv_tags,lv_time -S lv_tags=updawg`
+/// into the agent's snapshots of `origin`, oldest first.
 ///
 /// # Errors
-/// [`SnapshotError::Unparseable`] when it is not that shape.
+/// [`SnapshotError::Unparseable`] if the JSON has an unexpected shape.
 pub fn parse_ours(out: &str, origin: &str) -> Result<Vec<Snapshot>> {
     let mut ours: Vec<Snapshot> = report(out)?
         .iter()
@@ -393,8 +387,7 @@ pub fn parse_ours(out: &str, origin: &str) -> Result<Vec<Snapshot>> {
             if !tags.contains(&MARK) {
                 return None;
             }
-            // From the name, which the agent chose and cannot be missing;
-            // the tags only mark it as ours.
+            // the job comes from the name; tags only mark ownership
             let job = text("lv_name").strip_prefix("updawg_")?.to_owned();
             Some(Snapshot {
                 id: format!("lvm:{}/{}", text("vg_name"), text("lv_name")),
@@ -404,15 +397,15 @@ pub fn parse_ours(out: &str, origin: &str) -> Result<Vec<Snapshot>> {
             })
         })
         .collect();
-    // `lv_time` is `YYYY-MM-DD HH:MM:SS +ZZZZ`, which sorts as text.
+    // lv_time is `YYYY-MM-DD HH:MM:SS +ZZZZ`, which sorts as text
     ours.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
     Ok(ours)
 }
 
-/// The thin pool's free bytes: its size less the share of data used.
+/// The thin pool's free bytes: its size minus the used data percentage.
 ///
 /// # Errors
-/// [`SnapshotError::Unparseable`] when it is not that shape.
+/// [`SnapshotError::Unparseable`] if the JSON has an unexpected shape.
 pub fn parse_pool_free(out: &str) -> Result<u64> {
     let pool = report(out)?
         .into_iter()
@@ -433,8 +426,7 @@ pub fn parse_pool_free(out: &str) -> Result<u64> {
     Ok((size * (100.0 - used).clamp(0.0, 100.0) / 100.0) as u64)
 }
 
-/// Whether `lvconvert --merge` put the merge off to the volume's next
-/// activation, which for `/` is the next boot.
+/// Whether `lvconvert --merge` deferred the merge to the next activation.
 #[must_use]
 pub fn parse_deferred(out: &str) -> bool {
     out.contains("will occur on next activation")
@@ -459,13 +451,14 @@ fn unparseable(detail: &str) -> SnapshotError {
     }
 }
 
-/// Run an LVM tool (or `mount`), returning its stdout. LVM warns on stderr
-/// even when it succeeds, so stderr is never parsed as a report.
+/// Runs an LVM tool (or `mount`) and returns stdout. LVM writes warnings to
+/// stderr even on success, so stderr is not parsed.
 async fn run(args: &[&str]) -> Result<String> {
     Ok(run_both(args).await?.0)
 }
 
-/// As [`run`], with stderr too: `lvconvert` says a merge was deferred there.
+/// Like [`run`], but also returns stderr, where `lvconvert` reports a
+/// deferred merge.
 async fn run_both(args: &[&str]) -> Result<(String, String)> {
     let (tool, rest) = args
         .split_first()

@@ -1,34 +1,32 @@
-//! The agent updating itself: a `self_update` job (DAWG-46).
+//! The `self_update` job: the agent updating itself.
 //!
-//! # Two ways in, decided by Pez 2026-10-02
+//! There are two install methods, and each updates its own way:
 //!
-//! - **A package install** (the .deb or .rpm from pkg.updawg.net): apt or dnf
-//!   installs the version the job names, from the host's own configured
-//!   repository, whose signature they check against the same release key.
-//! - **install.sh's binaries** in `/usr/local/bin`: the agent fetches the
-//!   channel's manifest, checks its signature against the release key compiled
-//!   in here ([`RELEASE_KEY`]), and swaps the binaries for the ones it names,
-//!   by sha256.
+//! - A package install (the .deb or .rpm from pkg.updawg.net): apt or dnf
+//!   installs the requested version from the host's configured repository and
+//!   checks its signature against the release key.
+//! - install.sh's binaries in `/usr/local/bin`: the agent fetches the
+//!   channel's manifest, verifies it against the compiled-in [`RELEASE_KEY`],
+//!   and replaces the binaries with the ones it lists, checked by sha256.
 //!
-//! # Why a helper, in its own unit
+//! # The helper unit
 //!
-//! The agent cannot replace itself from inside itself. Anything it runs is in
-//! its own control group, so restarting `updawgd` kills it — the package
-//! manager mid-install, or the swap mid-rename. So the agent only *prepares*
-//! ([`start`]), writes down what it is doing ([`Pending`]), and hands the rest
-//! to `updawgctl self-update-run` in a transient systemd unit of its own
-//! ([`helper`]), which:
+//! The agent can't replace itself. Anything it spawns lives in its own
+//! cgroup, so restarting `updawgd` would kill the package manager or the
+//! binary swap halfway through. Instead the agent does the checks
+//! ([`start`]), records a [`Pending`] update, and starts
+//! `updawgctl self-update-run` in a transient systemd unit ([`helper`]),
+//! which:
 //!
-//! 1. installs (or swaps), and restarts `updawgd`;
-//! 2. waits for a successful check-in **by the new version**
-//!    (`last-checkin.json`, which the agent writes after every check-in);
-//! 3. and, if none comes in time, puts the previous version back, restarts,
-//!    and writes down why ([`Outcome`]).
+//! 1. installs or swaps, and restarts `updawgd`;
+//! 2. waits for the new version to check in successfully (it watches
+//!    `last-checkin.json`, which the agent writes after every check-in);
+//! 3. if that doesn't happen in time, restores the previous version,
+//!    restarts it, and records an [`Outcome`].
 //!
-//! The job is reported by whichever agent is running at the end
-//! ([`crate::jobs::Executor::resume_after_self_update`]): the new one once it
-//! has checked in, or the old one, put back, with the reason. The same shape
-//! as a job that reboots the host.
+//! Whichever agent is running at the end reports the job
+//! ([`crate::jobs::Executor::resume_after_self_update`]), the same way a job
+//! that reboots the host is reported.
 
 pub mod helper;
 
@@ -39,33 +37,30 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use updawg_protocol::{Job, JobComplete, ReleaseChannel, ReleaseManifest};
 
-/// The release key's public half (PKCS#1 `RSAPublicKey`, DER): the Cloud KMS
-/// key `release-signing/packages` version 1 in **`updawg-prod`**, which also
-/// signs pkg.updawg.net. SHA-256 of this file:
-/// `05ac56cc6b856b5df464feacc66dc239dfc598f942af5577702a729c0081028c`; its
-/// modulus begins `cd5007d5`, as `updawg.asc`'s does.
+/// Public half of the release signing key (PKCS#1 `RSAPublicKey`, DER), the
+/// same key that signs pkg.updawg.net. SHA-256 of the file:
+/// `05ac56cc6b856b5df464feacc66dc239dfc598f942af5577702a729c0081028c`; the
+/// modulus begins `cd5007d5`, matching `updawg.asc`.
 ///
-/// Production's key since 2026-10-07 (DAWG-184). Agents built before then
-/// trust `updawg-dev`'s key (modulus `8b4906e6`) and cannot follow on their
-/// own: they are reinstalled from get.updawg.net.
+/// Agents built before 2026-10-07 trust an older key (modulus `8b4906e6`)
+/// and have to be reinstalled from get.updawg.net.
 ///
-/// ⚠️ Compiled in, never configurable and never fetched: anything that could
-/// change it could ship an agent.
+/// Not configurable and never fetched: whoever could change it could ship an
+/// agent.
 pub const RELEASE_KEY: &[u8] = include_bytes!("release-key.der");
 
 /// Where the manifests are: `<base>/bin/<channel>.json`.
 pub const RELEASE_BASE: &str = "https://pkg.updawg.net";
 
-/// The transient unit the helper runs in. One name, so two updates cannot run
-/// at once: systemd refuses a second unit by the same name.
+/// The helper's transient unit. A fixed name means systemd refuses to start
+/// a second update while one is running.
 pub const UNIT: &str = "updawg-self-update";
 
-/// How long the helper waits for the new agent to check in before putting the
-/// old one back. The agent checks in as soon as it starts; this is for a slow
-/// gateway, not for a slow agent.
+/// How long the helper waits for the new agent to check in before rolling
+/// back. The agent checks in right after starting, so this mostly covers a
+/// slow gateway.
 pub const CONFIRM_WITHIN: Duration = Duration::from_secs(300);
 
-/// The package, in both families.
 pub const PACKAGE: &str = "updawg-agent";
 
 /// This build's target, as the manifest names binaries.
@@ -78,23 +73,23 @@ pub const fn target() -> &'static str {
     }
 }
 
-/// How this agent was installed, which decides how it updates.
+/// How this agent was installed, and so how it updates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Method {
-    /// The .deb, through apt.
     Apt,
-    /// The .rpm, through dnf.
     Dnf,
-    /// install.sh's binaries, in this directory.
-    Binary { dir: PathBuf },
+    /// install.sh's binaries, in `dir`.
+    Binary {
+        dir: PathBuf,
+    },
 }
 
-/// The method for an agent running from `exe`, given whether the package
-/// database owns that file and which family the host has.
+/// Picks the method for an agent running from `exe`, given whether the
+/// package database owns the file and whether the host uses dpkg.
 ///
 /// # Errors
-/// An agent installed some third way, which this does not touch.
+/// If the agent was installed some other way.
 pub fn method_for(exe: &Path, packaged: bool, dpkg: bool) -> Result<Method, String> {
     if packaged {
         return Ok(if dpkg { Method::Apt } else { Method::Dnf });
@@ -115,11 +110,9 @@ pub const APT_SOURCE: &str = "/etc/apt/sources.list.d/updawg.list";
 /// The dnf equivalent of [`APT_SOURCE`].
 pub const DNF_REPO: &str = "/etc/yum.repos.d/updawg.repo";
 
-/// How this agent was installed, for the check-in (protocol 0.9): the method
-/// and, for a package install, the channel its repository follows.
-///
-/// Run once at start, like snapshot detection. An agent installed some way it
-/// cannot update itself still checks in, as `other`.
+/// Install method and, for package installs, the repository's channel, as
+/// reported in the check-in. Called once at startup. An agent that can't
+/// update itself reports `other`.
 #[must_use]
 pub fn install() -> updawg_protocol::AgentInstall {
     use updawg_protocol::{AgentInstall, InstallMethod};
@@ -144,7 +137,7 @@ pub fn install() -> updawg_protocol::AgentInstall {
     }
 }
 
-/// The suite of the `…/apt` line in install.sh's source file:
+/// Suite of the `.../apt` line in install.sh's source file:
 /// `deb [signed-by=/etc/apt/keyrings/updawg.asc] https://pkg.updawg.net/apt stable main`.
 #[must_use]
 pub fn apt_channel(list: &str) -> Option<String> {
@@ -162,7 +155,7 @@ pub fn apt_channel(list: &str) -> Option<String> {
         })
 }
 
-/// The last path segment of the repository's `baseurl`:
+/// Last path segment of the repo's `baseurl`:
 /// `baseurl=https://pkg.updawg.net/rpm/stable`.
 #[must_use]
 pub fn dnf_channel(repo: &str) -> Option<String> {
@@ -178,8 +171,8 @@ pub fn dnf_channel(repo: &str) -> Option<String> {
         })
 }
 
-/// A channel name as a repository could spell one, or nothing: what goes on
-/// the wire is read from a file anyone with root can edit.
+// The value comes from a file root can edit and ends up on the wire, so only
+// accept something that looks like a channel name.
 fn channel_name(word: &str) -> Option<String> {
     (!word.is_empty()
         && word.len() <= 32
@@ -189,15 +182,15 @@ fn channel_name(word: &str) -> Option<String> {
     .then(|| word.to_owned())
 }
 
-/// Look at the running agent and decide.
+/// Detects the install method of the running agent.
 ///
 /// # Errors
 /// As [`method_for`], or when the executable cannot be found.
 pub fn detect() -> Result<Method, String> {
     let exe =
         std::env::current_exe().map_err(|e| format!("finding the agent's executable: {e}"))?;
-    // `/proc/self/exe` after an upgrade reads `… (deleted)`; the path is what
-    // matters here and it is still the path.
+    // after a package upgrade `/proc/self/exe` ends in ` (deleted)`; the
+    // path itself is still right.
     let exe = PathBuf::from(
         exe.to_string_lossy()
             .trim_end_matches(" (deleted)")
@@ -219,12 +212,12 @@ pub fn detect() -> Result<Method, String> {
     method_for(&exe, packaged, dpkg)
 }
 
-/// A self-update under way: written by the agent that starts it, read by the
-/// helper and by whichever agent runs afterwards.
+/// An in-progress self-update. Written by the agent that starts it, read by
+/// the helper and by whichever agent runs afterwards.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pending {
     pub job: Job,
-    /// Everything but the ending.
+    /// The job report, minus the final result.
     pub report: JobComplete,
     pub from: String,
     pub to: String,
@@ -232,28 +225,27 @@ pub struct Pending {
     pub started_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// What the helper found, when it was not a success: written only when the
-/// old agent is what runs afterwards.
+/// Written by the helper only when the update failed and the old agent is
+/// the one running afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
-    /// Whether the previous version is back.
     pub rolled_back: bool,
     pub detail: String,
 }
 
-/// What [`start`] did.
 #[derive(Debug)]
 pub enum Started {
-    /// Already on that version: nothing to do, and the job succeeded.
+    /// Already on the requested version; the job succeeded.
     AlreadyThere,
-    /// Handed to the helper. The job is reported after the restart.
+    /// The helper has it; the job is reported after the restart.
     Handed,
 }
 
-/// Check a manifest's signature with `key` and read it.
+/// Parses a manifest and verifies its signature against `key`.
 ///
 /// # Errors
-/// Anything short of a manifest the key signed, for the channel asked for.
+/// If it doesn't parse, the signature doesn't verify, or it is for a
+/// different channel.
 pub fn verify_manifest(
     body: &[u8],
     key: &[u8],
@@ -274,8 +266,7 @@ pub fn verify_manifest(
         .map_err(|_| {
             "the manifest's signature does not verify against the release key".to_owned()
         })?;
-    // Checked after the signature, and still checked: a genuine beta
-    // manifest served where stable was asked for is a downgrade of trust.
+    // a validly signed beta manifest served for stable is still wrong
     if manifest.channel != channel {
         return Err(format!(
             "asked for the {} manifest and got {}'s",
@@ -286,8 +277,8 @@ pub fn verify_manifest(
     Ok(manifest)
 }
 
-/// Whether `version` is safe to pass to apt, dnf and a URL: a package
-/// version's characters and nothing else.
+/// Whether `version` only has characters a package version can have, so it
+/// is safe to pass to apt, dnf, or put in a URL.
 #[must_use]
 pub fn plausible_version(version: &str) -> bool {
     !version.is_empty()
@@ -309,7 +300,7 @@ pub fn sha256(bytes: &[u8]) -> String {
     out
 }
 
-/// The versions of [`PACKAGE`] the host's repositories offer.
+/// Versions of [`PACKAGE`] available from the host's repositories.
 ///
 /// # Errors
 /// When the package manager cannot be asked.
@@ -331,8 +322,7 @@ pub async fn offered(method: &Method) -> Result<Vec<String>, String> {
     })
 }
 
-/// `apt-get update` / `dnf makecache`: the package lists as the
-/// repositories have them now.
+/// Runs `apt-get update` or `dnf makecache`.
 ///
 /// # Errors
 /// When the package manager cannot be run or says it failed.
@@ -358,7 +348,8 @@ pub async fn refresh(method: &Method) -> Result<(), String> {
     }
 }
 
-/// `apt-cache madison`: `updawg-agent | 0.1.0-… | https://… beta/main amd64 Packages`.
+/// Parses `apt-cache madison` output:
+/// `updawg-agent | 0.1.0-... | https://... beta/main amd64 Packages`.
 #[must_use]
 pub fn parse_madison(text: &str) -> Vec<String> {
     text.lines()
@@ -369,8 +360,8 @@ pub fn parse_madison(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `dnf list --showduplicates`: `updawg-agent.x86_64  0.1.0-…  updawg-beta`,
-/// under headings that are not packages.
+/// Parses `dnf list --showduplicates` output, skipping the headings:
+/// `updawg-agent.x86_64  0.1.0-...  updawg-beta`.
 #[must_use]
 pub fn parse_dnf_list(text: &str) -> Vec<String> {
     text.lines()
@@ -385,14 +376,14 @@ pub fn parse_dnf_list(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Prepare a self-update to `to` and hand it to the helper.
+/// Prepares a self-update and hands it to the helper.
 ///
-/// Everything that can refuse does so here, before anything changes: the
-/// version, the way the agent was installed, whether the version (and the one
-/// running, to come back to) can be had, and the binaries' signatures.
+/// All the checks that can fail happen here, before anything is changed: the
+/// version string, the install method, that both the target version and the
+/// running one (for rollback) are available, and the binaries' signatures.
 ///
 /// # Errors
-/// Why it will not, with nothing changed.
+/// If any check fails. Nothing has been changed at that point.
 pub async fn start(
     job: &Job,
     spec: &updawg_protocol::SelfUpdate,
@@ -420,13 +411,11 @@ pub async fn start(
         );
     }
     let method = detect()?;
-    log.agent(format!("updating {from} → {to} ({})", describe(&method)));
+    log.agent(format!("updating {from} -> {to} ({})", describe(&method)));
 
     match &method {
         Method::Apt | Method::Dnf => {
-            // The lists first: a build promoted an hour ago is not in lists
-            // read yesterday, and the update would be refused for no reason
-            // but the host's cache. Found on the first real hosts.
+            // stale package lists would miss a recently promoted build
             refresh(&method).await?;
             let offered = offered(&method).await?;
             if !offered.iter().any(|v| v == to) {
@@ -439,7 +428,7 @@ pub async fn start(
                     }
                 ));
             }
-            // The way back. Without it a failed update could not be undone.
+            // needed for rollback
             if !offered.iter().any(|v| v == from) {
                 return Err(format!(
                     "{from}, the version running, is no longer in this host's repository, so the update could not be undone if it failed"
@@ -487,7 +476,6 @@ pub async fn start(
     Ok(Started::Handed)
 }
 
-/// Whether the helper's unit is still running.
 pub async fn helper_running() -> bool {
     tokio::process::Command::new("systemctl")
         .args(["is-active", "--quiet", &format!("{UNIT}.service")])
@@ -504,21 +492,19 @@ fn describe(method: &Method) -> String {
     }
 }
 
-/// The staged binary for `name`, beside the one it replaces, so that putting
-/// it in place is a rename on one filesystem.
+/// Staging path for `name`. It sits next to the binary it replaces so the
+/// swap is a rename on the same filesystem.
 #[must_use]
 pub fn staged(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!(".{name}.new"))
 }
 
-/// The previous binary, kept for putting back.
+/// Where the previous binary is kept for rollback.
 #[must_use]
 pub fn previous(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!(".{name}.prev"))
 }
 
-/// Fetch and check the channel's manifest, then download, check and stage
-/// both binaries of `to` for this target.
 async fn stage(
     channel: ReleaseChannel,
     to: &str,
@@ -558,7 +544,7 @@ async fn stage(
         let path = staged(dir, name);
         write_executable(&path, &bytes).map_err(|e| format!("staging {}: {e}", path.display()))?;
     }
-    // It has to run here, and say it is what it is meant to be.
+    // make sure it runs on this host and reports the right version
     let ran = tokio::process::Command::new(staged(dir, "updawgctl"))
         .arg("--version")
         .output()

@@ -1,17 +1,12 @@
 //! The scheduler.
 //!
-//! Three things run concurrently on their own cadences: the check-in loop, the
-//! inventory collector and the package metadata refresh. Each is driven through
-//! a trait so the scheduler can be built and tested before the transport and
-//! collectors exist, and so it stays testable afterwards.
+//! Runs the check-in loop, inventory collection and package metadata refresh
+//! concurrently, each on its own cadence. They're behind traits so the
+//! scheduler can be tested on its own.
 //!
-//! Two behaviours here exist because of how this fails at scale:
-//!
-//! - **Startup jitter.** A fleet that loses power and comes back together would
-//!   otherwise check in simultaneously forever. Every periodic task waits a
-//!   random fraction of its interval before its first run.
-//! - **Backoff on failure.** A gateway having a bad day should not be hit
-//!   harder by every agent in the fleet retrying instantly.
+//! Every periodic task waits a random fraction of its interval before its
+//! first run, so a fleet that boots together doesn't stay in lockstep. Failed
+//! check-ins back off exponentially.
 
 use crate::config::AgentConfig;
 use async_trait::async_trait;
@@ -41,23 +36,16 @@ pub trait Inventory: Send + Sync {
     async fn refresh_metadata(&self) -> anyhow::Result<()>;
 }
 
-/// Ceiling on backoff, so a long outage does not leave agents checking in once
-/// an hour when the gateway comes back.
+/// Kept low so agents reconnect reasonably soon after a long outage.
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 const MIN_BACKOFF: Duration = Duration::from_secs(2);
 
-/// Window the first check-in of a process is spread across.
-///
-/// Short, because it delays nothing else and a host that has just booted has
-/// little to say. It exists for the case where ten thousand hosts boot at once.
+/// Window the first check-in of a process is spread across. Short, since it
+/// only matters when many hosts start at once.
 const STARTUP_SPREAD: Duration = Duration::from_secs(10);
 
-/// A cheap spread, seeded from the clock.
-///
-/// Not cryptographic and does not need to be: the job is to stop a fleet
-/// marching in lockstep, and any dispersion achieves that. Avoiding a random
-/// number generator dependency in something that runs as root is worth more
-/// than the uniformity.
+/// A value in [0, 1) seeded from the clock. Not random in any real sense, but
+/// enough to spread a fleet out without pulling in an RNG crate.
 fn jitter_fraction() -> f64 {
     let nanos: u32 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -69,14 +57,7 @@ fn jittered(interval: Duration) -> Duration {
     interval.mul_f64(jitter_fraction())
 }
 
-/// Somewhere in the upper half of `base`.
-///
-/// Full jitter — a uniform draw from zero — would keep the average retry delay
-/// half of what the backoff says, which quietly makes a long outage four times
-/// noisier than intended. Half to full keeps the backoff meaningful while still
-/// breaking up the herd.
-/// How long to wait after a failed check-in: the backoff, or longer when the
-/// gateway said how long (DAWG-131). Never shorter than it asked.
+/// The backoff, or the gateway's `Retry-After` if that is longer.
 fn wait_after(error: &anyhow::Error, backoff: Duration) -> Duration {
     error
         .chain()
@@ -85,6 +66,8 @@ fn wait_after(error: &anyhow::Error, backoff: Duration) -> Duration {
         .map_or(backoff, |asked| asked.max(backoff))
 }
 
+/// Somewhere in [base/2, base]. Full jitter from zero would halve the
+/// effective backoff.
 fn with_jitter(base: Duration) -> Duration {
     base.mul_f64(0.5 + jitter_fraction() / 2.0)
 }
@@ -93,7 +76,6 @@ pub struct Scheduler {
     config: AgentConfig,
     checkin: Arc<dyn CheckIn>,
     inventory: Arc<dyn Inventory>,
-    /// Window the first check-in is spread across. See [`STARTUP_SPREAD`].
     startup_spread: Duration,
 }
 
@@ -120,18 +102,13 @@ impl Scheduler {
         }
     }
 
-    /// Change how long the first check-in is delayed.
-    ///
-    /// Exists because the spread is measured in seconds and a test that has to
-    /// wait through it is a test nobody runs. An operator with a single host
-    /// has a fair use for it too: spreading a fleet of one achieves nothing.
+    /// Overrides [`STARTUP_SPREAD`]. Mostly for tests.
     #[must_use]
     pub fn with_startup_spread(mut self, spread: Duration) -> Self {
         self.startup_spread = spread;
         self
     }
 
-    /// Run until `shutdown` resolves.
     pub async fn run<S>(self, shutdown: S)
     where
         S: std::future::Future<Output = ()> + Send + 'static,
@@ -173,8 +150,7 @@ enum InventoryJob {
     Refresh,
 }
 
-/// Minimal cancellation token, so the crate does not take a dependency for one
-/// flag and a notify.
+/// Minimal cancellation token, to avoid a dependency for a flag and a notify.
 #[derive(Debug, Clone)]
 pub struct Cancel {
     inner: Arc<(std::sync::atomic::AtomicBool, tokio::sync::Notify)>,
@@ -211,25 +187,13 @@ impl Cancel {
         }
     }
 
-    /// Resolves when cancelled, immediately if it already has been.
+    /// Resolves when cancelled, immediately if it already has been. Used to
+    /// abort the long poll on shutdown instead of waiting up to 55 seconds.
     ///
-    /// For racing against work that would otherwise have to finish. The
-    /// check-in long poll is held open by the gateway for up to 55 seconds, and
-    /// waiting that out on every SIGTERM is the difference between
-    /// `systemctl restart` taking a second and taking a minute (DAWG-222).
-    ///
-    /// # The registration has to come before the second check
-    ///
-    /// `Notify::notify_waiters` wakes the waiters that are *already*
-    /// registered and remembers nothing for anybody who arrives later. A cancel
-    /// landing between the flag check and the registration would therefore be
-    /// missed for ever, and this future would never resolve. `enable()` is
-    /// tokio's way of joining the wait list without polling to completion, so
-    /// the flag can be re-read afterwards and the window is closed.
-    ///
-    /// The old `sleep` had the same race with a milder symptom: it would have
-    /// waited out the full duration and then noticed. Which for the inventory
-    /// timer is six hours.
+    /// `Notify::notify_waiters` only wakes waiters that are already
+    /// registered, so the future is registered with `enable()` before the
+    /// flag is checked a second time. Otherwise a cancel between the first
+    /// check and the registration would be lost.
     pub async fn cancelled(&self) {
         if self.is_cancelled() {
             return;
@@ -262,10 +226,8 @@ async fn checkin_loop(
 ) {
     let mut backoff = MIN_BACKOFF;
 
-    // A fleet that loses power and comes back does so together, and every
-    // agent would otherwise open its first check-in in the same second. The
-    // first one waits a moment; after that the long poll spreads them out on
-    // its own, because they finish at different times.
+    // Only the first check-in needs spreading. After that the long polls
+    // finish at different times anyway.
     if !startup_spread.is_zero() {
         let settle = jittered(startup_spread);
         tracing::debug!(delay_ms = settle.as_millis(), "first check-in scheduled");
@@ -275,15 +237,9 @@ async fn checkin_loop(
     }
 
     while !cancel.is_cancelled() {
-        // Raced against the cancel token rather than awaited, because this is
-        // the call the gateway deliberately holds open for up to 55 seconds.
-        // Dropping the future aborts the request, which the gateway already
-        // copes with — a long poll dropped by the client is indistinguishable
-        // from one a network trimmed, and it handles that every day.
-        //
-        // The inventory upload below is *not* raced. It takes well under a
-        // second, and interrupting a write to the server is a worse trade than
-        // waiting for it.
+        // The long poll can be held for 55s, so race it against shutdown.
+        // Dropping it just looks like a trimmed connection to the gateway.
+        // The inventory upload below is quick and is left to finish.
         let result = tokio::select! {
             result = checkin.check_in() => result,
             () = cancel.cancelled() => break,
@@ -302,10 +258,7 @@ async fn checkin_loop(
                 }
             }
             Err(error) => {
-                // Sleep somewhere in [half, full] of the current backoff. A
-                // gateway coming back from an outage is met by a fleet that
-                // has been failing in lockstep, and retrying in lockstep is
-                // how it goes down again immediately.
+                // jittered so the fleet doesn't retry in lockstep
                 let wait = wait_after(&error, with_jitter(backoff));
                 tracing::warn!(
                     %error,
@@ -330,7 +283,6 @@ async fn periodic(
     job: InventoryJob,
     cancel: Cancel,
 ) {
-    // Spread first runs across the fleet.
     let first = jittered(interval);
     tracing::debug!(
         task = name,
@@ -397,13 +349,8 @@ mod tests {
         }
     }
 
-    /// A check-in that never answers, which is what a held long poll looks
-    /// like from here.
-    ///
-    /// The gateway holds a check-in open for up to 55 seconds when there is
-    /// nothing to report. `Fake` above returns immediately, so every shutdown
-    /// test written against it has been measuring a scheduler that had nothing
-    /// to interrupt.
+    /// A check-in that never returns, like a held long poll. `Fake` returns
+    /// immediately, so it can't test interrupting one.
     struct Held {
         started: Arc<tokio::sync::Semaphore>,
     }
@@ -412,8 +359,6 @@ mod tests {
     impl CheckIn for Held {
         async fn check_in(&self) -> anyhow::Result<CheckinOutcome> {
             self.started.add_permits(1);
-            // An hour, not a minute: the assertion should fail by being slow,
-            // not by the test hanging for ever if the race is wrong.
             tokio::time::sleep(Duration::from_secs(3600)).await;
             unreachable!("the held check-in was allowed to finish")
         }
@@ -503,7 +448,7 @@ refresh_metadata = "{refresh}"
             wait_after(&anyhow::Error::from(limited()), backoff),
             Duration::from_secs(30)
         );
-        // Through a context, as the check-in wraps it.
+        // wrapped in context, as the check-in does
         assert_eq!(
             wait_after(
                 &anyhow::Error::from(limited()).context("checking in"),
@@ -511,12 +456,10 @@ refresh_metadata = "{refresh}"
             ),
             Duration::from_secs(30)
         );
-        // A longer backoff already is not cut short.
         assert_eq!(
             wait_after(&anyhow::Error::from(limited()), Duration::from_secs(120)),
             Duration::from_secs(120)
         );
-        // Anything else is the backoff.
         assert_eq!(wait_after(&anyhow::anyhow!("refused"), backoff), backoff);
     }
 
@@ -547,16 +490,8 @@ refresh_metadata = "{refresh}"
         );
     }
 
-    /// Half to full, never zero. Full jitter would halve the effective
-    /// backoff, quietly making a long outage noisier than the constants say.
     #[tokio::test]
     async fn shutdown_does_not_wait_out_a_held_check_in() {
-        // DAWG-222. Measured at 39 seconds against a real gateway before the
-        // fix, because the in-flight long poll was awaited rather than raced.
-        //
-        // `shutdown_stops_everything_promptly` below asserts exactly this and
-        // passed throughout, because its check-in returns immediately. The
-        // assertion was right; the input could not exercise it.
         let started = Arc::new(tokio::sync::Semaphore::new(0));
         let held = Arc::new(Held {
             started: started.clone(),
@@ -569,10 +504,7 @@ refresh_metadata = "{refresh}"
             let _ = rx.await;
         }));
 
-        // Wait for the check-in to actually be in flight. Sleeping a fixed
-        // amount here is the difference between a test that is slow and a test
-        // that is flaky, and it would also let a shutdown that never had
-        // anything to interrupt pass by accident.
+        // wait until the check-in is actually in flight
         let _permit = tokio::time::timeout(Duration::from_secs(5), started.acquire())
             .await
             .expect("the check-in never started");
@@ -593,12 +525,8 @@ refresh_metadata = "{refresh}"
 
     #[tokio::test]
     async fn cancelling_between_the_check_and_the_wait_is_not_missed() {
-        // `notify_waiters` wakes only the waiters already registered, so a
-        // cancel landing in the window between reading the flag and joining
-        // the wait list would be lost and `cancelled()` would never resolve.
-        //
-        // Run enough times to hit the window, and with a timeout, so the
-        // failure is a failure rather than a hang.
+        // Repeated to hit the window between the flag check and registering
+        // with the Notify.
         for _ in 0..200 {
             let cancel = Cancel::new();
             let waiter = {
@@ -638,9 +566,6 @@ refresh_metadata = "{refresh}"
         }
     }
 
-    /// Mass restart: ten thousand hosts booting together must not open their
-    /// first check-in in the same instant. The spread is what stops the
-    /// gateway meeting the whole fleet at once.
     #[test]
     fn a_mass_restart_is_spread_across_the_startup_window() {
         let delays: Vec<Duration> = (0..500).map(|_| jittered(STARTUP_SPREAD)).collect();
@@ -648,8 +573,7 @@ refresh_metadata = "{refresh}"
         for d in &delays {
             assert!(*d <= STARTUP_SPREAD, "{d:?} exceeds the window");
         }
-        // Jitter is seeded from the clock, so a tight loop can draw the same
-        // value repeatedly; what matters is that it is not one fixed value.
+        // clock-seeded, so a tight loop can repeat values; just check it varies
         let distinct: std::collections::BTreeSet<u128> =
             delays.iter().map(std::time::Duration::as_millis).collect();
         assert!(
@@ -675,8 +599,6 @@ refresh_metadata = "{refresh}"
         let _ = tx.send(());
         handle.await.unwrap();
 
-        // Everything waits on the cancel token, so nothing sits out a full
-        // sleep before noticing. A service that ignores SIGTERM gets SIGKILLed.
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "shutdown took {:?}",

@@ -16,17 +16,15 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-# Raised from 1.85 for rcgen 0.14.10. The agent ships as a binary built in CI,
-# so the MSRV is not a distro constraint; keeping it low only makes cargo pick
-# older dependency versions silently.
+# Needed by rcgen 0.14.10. We ship binaries, so there's no reason to keep
+# this low.
 rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/Pez-Solutions/updawg-agent"
 authors = ["Updawg"]
 
 [workspace.dependencies]
-# Internal crates. updawg-protocol is the one we publish; everything else is
-# internal to the agent.
+# Only updawg-protocol is published.
 updawg-protocol = { path = "crates/updawg-protocol", version = "0.12.0" }
 updawg-crypto = { path = "crates/updawg-crypto" }
 updawg-collectors = { path = "crates/updawg-collectors" }
@@ -37,24 +35,20 @@ updawg-agent-core = { path = "crates/updawg-agent-core" }
 
 anyhow = "1"
 async-trait = "0.1"
-# One crypto backend for the whole agent: rcgen generates the key pair and CSR,
-# reqwest's rustls terminates TLS, and aws-lc-rs verifies organization
-# signatures. Two backends in one binary would be two sets of primitives to
-# trust and audit.
+# aws-lc-rs is the only crypto backend: rcgen (key pair, CSR), rustls (TLS)
+# and signature verification all use it.
 aws-lc-rs = "1"
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
-# Default features are rustls + the platform certificate verifier, which is what
-# an agent behind a corporate TLS-inspecting proxy needs: the operator's trust
-# store, not a bundled one.
+# rustls with the platform verifier, so hosts behind TLS-inspecting proxies
+# work with the system trust store.
 reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 x509-parser = "0.18"
 serde_json = "1"
-# Inventory uploads. A full package list is 800-2,500 entries of repetitive
-# text, which is the case zstd is best at.
+# Inventory uploads (800-2500 packages compress well).
 zstd = "0.14"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "fs", "signal", "sync"] }
@@ -62,9 +56,6 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Lints applied to every crate in the workspace. The agent runs as root on other
-# people's servers, so the bar for an unhandled panic or a silent truncation is
-# higher than usual.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"
@@ -80,10 +71,7 @@ todo = "allow"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-# New in Rust 1.99's clippy, which the runners install as stable: it wants
-# `assert_eq!(x, [])` for every `assert!(x.is_empty())`. The tests here assert
-# emptiness on purpose, mostly with a message saying why; the rewrite buys
-# nothing and touches dozens of them.
+# New in clippy 1.99; would rewrite every assert!(x.is_empty()) in the tests.
 assert_is_empty = "allow"
 
 [profile.release]

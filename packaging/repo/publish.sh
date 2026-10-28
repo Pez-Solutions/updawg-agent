@@ -1,5 +1,5 @@
 #!/bin/sh
-# Put packages on a channel of pkg.updawg.net (DAWG-45).
+# Put packages on a channel of pkg.updawg.net.
 #
 #   publish.sh beta|stable FILE.deb|FILE.rpm...
 #
@@ -13,8 +13,8 @@
 #   channels/<channel>.txt     the pool files the channel's indexes name
 #   updawg.asc                 the public key the indexes are signed with
 #
-# Order is what keeps a client from seeing an index that names a file not
-# there yet: pool first, then each index, then what signs it, then the list.
+# Ordered so clients never see an index naming a missing file: pool, indexes,
+# signatures, then the list.
 #
 # Needs: BUCKET, SIGN (updawg-release-sign), UPDAWG_RELEASE_KEY and
 # GOOGLE_OAUTH_ACCESS_TOKEN for it, gcloud, apt-ftparchive, createrepo_c.
@@ -29,9 +29,8 @@ esac
 [ $# -gt 0 ] || { echo "publish.sh: no packages" >&2; exit 2; }
 : "${BUCKET:?}" "${SIGN:?}" "${UPDAWG_RELEASE_KEY:?}"
 BASE_URL=${BASE_URL:-https://pkg.updawg.net}
-# Pool files a channel's indexes name: the newest, four to a build (deb and
-# rpm, two architectures). Older ones stay in the pool; they drop out of the
-# index, so apt and dnf are not handed a history to read on every refresh.
+# Number of pool files the index lists: four per build (deb + rpm, two
+# arches). Older files stay in the pool but drop out of the index.
 KEEP=${KEEP:-40}
 
 gs="gs://$BUCKET"
@@ -42,8 +41,7 @@ FRESH="no-cache"
 
 md5() { openssl md5 -binary "$1" | base64; }
 
-# 1. The pool. --no-clobber, so a file already there is left as it is — and
-#    then it had better be the same file.
+# 1. The pool. --no-clobber leaves existing files alone.
 : > "$work/new"
 for f in "$@"; do
   case $f in
@@ -72,7 +70,7 @@ grep '^apt/pool/' "$work/list" | sed "s|^|$gs/|" |
 grep '^rpm/pool/' "$work/list" | sed "s|^|$gs/|" |
   gcloud storage cp --read-paths-from-stdin "$work/rpm/$channel/"
 
-# 4. apt: `deb [signed-by=…] https://pkg.updawg.net/apt <channel> main`.
+# 4. apt: `deb [signed-by=...] https://pkg.updawg.net/apt <channel> main`.
 (
   cd "$work/apt"
   dist="dists/$channel"

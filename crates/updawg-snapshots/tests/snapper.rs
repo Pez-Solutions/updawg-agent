@@ -1,8 +1,7 @@
-//! The snapper parsers, against output captured from a real snapper
-//! (DAWG-116). See `fixtures/snapper/README.md` for where each came from, and
-//! `snapper_live.rs` for the same commands run for real.
+//! The snapper parsers, against captured output (see
+//! `fixtures/snapper/README.md`). `snapper_live.rs` runs the same commands
+//! against a real snapper.
 
-// The whole file is the test: a panic is the assertion.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -34,15 +33,14 @@ fn configurations_and_their_subvolumes() {
     );
 }
 
-/// Snapper's number 0 is the live filesystem, and number 2 is an
-/// administrator's: neither is the agent's to restore or prune.
+// number 0 is the live filesystem, number 2 an administrator's
 #[test]
 fn only_the_agents_own_snapshots_are_listed() {
     let ours = parse_list(&fixture("list.json")).unwrap();
     assert_eq!(ours.len(), 1, "{ours:?}");
     assert_eq!(ours[0].id, "snapper:1:job_x");
     assert_eq!(ours[0].job, "job_x");
-    // A comma in a description is why this is JSON and not CSV.
+    // commas in descriptions are why we parse JSON rather than CSV
     assert_eq!(ours[0].description, "updawg job_x before, with, commas");
     assert_eq!(ours[0].created, "2026-09-28 13:46:27");
 }
@@ -60,7 +58,6 @@ fn they_are_listed_oldest_first_whatever_order_snapper_prints() {
     assert_eq!(ids, ["snapper:1:job_x", "snapper:7:job_y"]);
 }
 
-/// `df -P /srv/bt` on the same host.
 #[test]
 fn free_space_is_df_s_available_column() {
     assert_eq!(
@@ -99,8 +96,6 @@ fn undochange_says_what_it_put_back() {
     assert!(parse_undo("").is_err());
 }
 
-/// The number alone is not an identity, because snapper reuses them: the id
-/// has to carry the job, and anything else is somebody else's id.
 #[test]
 fn an_id_is_the_number_and_the_job() {
     assert_eq!(parse_id("snapper:412:job_abc").unwrap(), (412, "job_abc"));
@@ -119,20 +114,18 @@ fn an_id_is_the_number_and_the_job() {
     }
 }
 
-/// A kernel installed since the snapshot is what a rollback would take away:
-/// only its module directory counts, not what is inside it.
 #[test]
 fn a_kernel_installed_since_the_snapshot_is_found_by_its_modules_directory() {
     assert_eq!(
         parse_status_kernels(&fixture("status-kernel.txt"), "/srv/bt5"),
         vec!["6.8.0-2".to_owned()]
     );
-    // On a real root the subvolume is `/`.
+    // on a real root the subvolume is /
     assert_eq!(
         parse_status_kernels("+..... /lib/modules/6.12.48+deb13-amd64\n", "/"),
         vec!["6.12.48+deb13-amd64".to_owned()]
     );
-    // Removed since, and so put back by a rollback: harmless.
+    // removed since the snapshot, so a rollback restores it
     assert!(parse_status_kernels("-..... /usr/lib/modules/6.8.0-1\n", "/").is_empty());
 }
 

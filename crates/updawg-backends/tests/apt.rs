@@ -1,28 +1,18 @@
-//! The apt parsers, against output captured from real distributions (DAWG-34).
+//! The apt parsers, against output captured from real distributions.
 //!
-//! Every fixture in `tests/fixtures/apt/` is the literal output of running
+//! Each fixture in `tests/fixtures/apt/` is the unedited output of
 //! `dpkg-query`, `apt-get -s dist-upgrade`, `apt-cache policy` and `apt-mark
-//! showhold` inside that distribution's official container image. Nothing here is
-//! hand-written, because hand-written fixtures test what I believed apt prints
-//! rather than what it prints.
+//! showhold` in that distribution's official container image: Ubuntu 20.04,
+//! 22.04 and 24.04 (apt 2.0, 2.4 and 2.8), and Debian 11 and 12.
+//! `tests/apt_live.rs` re-captures them from live containers.
 //!
-//! The five are the ones DAWG-34 names: Ubuntu 20.04, 22.04 and 24.04 (apt 2.0,
-//! 2.4 and 2.8), and Debian 11 and 12. `tests/apt_live.rs` re-captures them from
-//! live containers and is the canary for the format drifting.
-//!
-//! # And why there is a sixth fixture
-//!
-//! `debian12-removals` is a Debian 12 container with three packages built by
-//! `dpkg-deb` into a local repository, one of which `Replaces` and `Conflicts`
-//! the other two, because **no stock image has an upgrade that removes
-//! something** and that is the state DAWG-232 exists for. The packages are
-//! synthetic; the `apt` output is not, and it is what settled the shape of
-//! `PendingRemoval`: apt says a package will be removed and never what
-//! replaced it. `tests/apt_live.rs` rebuilds it.
+//! `debian12-removals` is different: no stock image has an upgrade that
+//! removes something, so it comes from a Debian 12 container with three local
+//! packages, one of which `Replaces` and `Conflicts` the other two. The apt
+//! output is real. It shows apt saying a package will be removed but not what
+//! replaced it, which is why `PendingRemoval` looks the way it does.
 
-// clippy.toml allows unwrap and expect in `#[cfg(test)]` modules, but that does
-// not reach an integration test in `tests/` — the whole file is the test. In here
-// a panic *is* the assertion.
+// clippy.toml's test allowances don't apply to integration tests.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -35,7 +25,7 @@ use updawg_backends::apt::{
     parse_removals, parse_repositories, parse_sources, parse_updates,
 };
 
-/// The five distributions, and the origin each one's own repositories carry.
+/// The distributions, and the origin of each one's own repositories.
 const DISTROS: &[(&str, &str)] = &[
     ("ubuntu2004", "Ubuntu"),
     ("ubuntu2204", "Ubuntu"),
@@ -52,7 +42,6 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
-/// One `===SECTION===` out of a fixture.
 fn section(fixture: &str, name: &str) -> String {
     let start = format!("==={name}===");
     let mut out = String::new();
@@ -79,9 +68,8 @@ fn every_distribution_reports_its_installed_packages() {
         let f = fixture(distro);
         let packages = parse_installed(&section(&f, "DPKG_QUERY"));
 
-        // A base image has 80-120 packages. An empty list would mean the format
-        // string changed and the agent now reports a host with nothing installed
-        // — which reads as a host with nothing to patch.
+        // A base image has 80-120 packages. Fewer means the format string
+        // changed.
         assert!(
             packages.len() > 50,
             "{distro}: only {} packages parsed",
@@ -91,8 +79,8 @@ fn every_distribution_reports_its_installed_packages() {
             assert!(!p.name.is_empty(), "{distro}: a package with no name");
             assert!(!p.version.is_empty(), "{distro}: {} has no version", p.name);
             assert!(!p.arch.is_empty(), "{distro}: {} has no arch", p.name);
-            // dpkg does not know where a package came from; apt does, and only
-            // for packages still available. Guessing would be worse than absent.
+            // dpkg doesn't know where a package came from. apt does, but only
+            // for packages that are still available.
             assert!(p.repo.is_none(), "{distro}: dpkg-query invented a repo");
             assert!(
                 !p.name.contains(':'),
@@ -101,7 +89,6 @@ fn every_distribution_reports_its_installed_packages() {
             );
         }
 
-        // dpkg is always in a base image, and always installed.
         assert!(
             packages.iter().any(|p| p.name == "dpkg"),
             "{distro}: dpkg itself is missing from the installed list"
@@ -111,10 +98,8 @@ fn every_distribution_reports_its_installed_packages() {
 
 #[test]
 fn only_fully_installed_packages_count() {
-    // dpkg also knows config-files (purged, configuration left behind),
-    // half-configured, unpacked and several others. Reporting those would have
-    // the server matching advisories against packages whose files are not on
-    // disk, and proposing upgrades for things that are not there.
+    // Other dpkg states (config-files, half-configured, unpacked, ...) mean
+    // the files aren't really on disk, so advisories shouldn't match them.
     let out = "\
 installed-pkg\t1.0\tamd64\tinstalled
 removed-pkg\t2.0\tamd64\tconfig-files
@@ -128,8 +113,7 @@ unpacked-pkg\t4.0\tamd64\tunpacked
 
 #[test]
 fn a_multi_arch_package_appears_once_per_architecture() {
-    // Two rows, one name, two architectures — which is what the server interns
-    // as two distinct (name, version, arch) rows. Collapsing them would lose one.
+    // Same name, two architectures: the server keeps these as separate rows.
     let out =
         "libc6\t2.39-0ubuntu8.9\tarm64\tinstalled\nlibc6\t2.39-0ubuntu8.9\tarmhf\tinstalled\n";
     let packages = parse_installed(out);
@@ -151,9 +135,8 @@ fn a_truncated_line_is_skipped_rather_than_guessed() {
 
 #[test]
 fn available_updates_are_parsed_where_a_distribution_had_any() {
-    // Ubuntu's images ship behind their own archives, so these have real
-    // upgrades. Debian's are fully patched — an empty list there is correct, and
-    // the Debian-origin parsing is covered by the install simulation below.
+    // Ubuntu's images lag their archives, so they have real upgrades. Debian's
+    // are fully patched; the install simulation below covers Debian origins.
     for distro in ["ubuntu2004", "ubuntu2204", "ubuntu2404"] {
         let f = fixture(distro);
         let updates = parse_updates(&section(&f, "DIST_UPGRADE"));
@@ -187,10 +170,8 @@ fn available_updates_are_parsed_where_a_distribution_had_any() {
 
 #[test]
 fn a_package_being_newly_installed_is_not_an_available_update() {
-    // The whole distinction is the `[current-version]` bracket. `Inst libbrotli1
-    // (1.0.9-2+b6 …)` is apt proposing to pull in a dependency; reporting it
-    // would invent an upgrade for a package the host does not have, and the
-    // server would then propose "upgrading" it.
+    // Only the `[current-version]` bracket tells them apart. `Inst libbrotli1
+    // (1.0.9-2+b6 ...)` without it is a new dependency, not an upgrade.
     for (distro, _) in DISTROS {
         let f = fixture(distro);
         let sim = section(&f, "INSTALL_SIM");
@@ -207,21 +188,18 @@ fn a_package_being_newly_installed_is_not_an_available_update() {
 
 #[test]
 fn the_security_pocket_is_identified_on_both_families() {
-    // Ubuntu publishes every security update to both -updates and -security, and
-    // apt lists both origins. Taking the first would report a security fix as an
-    // ordinary update on every Ubuntu host there is.
+    // Ubuntu publishes security updates to both -updates and -security, and
+    // apt lists both. Taking the first would miss that it's a security fix.
     let line = "Inst perl-base [5.38.2-3.2ubuntu0.4] (5.38.2-3.2ubuntu0.6 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [arm64])";
     let updates = parse_updates(line);
     assert_eq!(updates[0].repo.as_deref(), Some("noble-security"));
 
-    // Debian spells it differently — origin `Debian-Security`, archive
-    // `oldstable-security` — which is why the rule is on the archive suffix
-    // rather than on the origin or the label.
+    // Debian uses origin `Debian-Security` and archive `oldstable-security`,
+    // hence matching on the archive suffix.
     let line = "Inst libssl3 [3.0.20-1~deb12u1] (3.0.20-1~deb12u2 Debian:12.15/oldstable, Debian-Security:12/oldstable-security [arm64])";
     let updates = parse_updates(line);
     assert_eq!(updates[0].repo.as_deref(), Some("oldstable-security"));
 
-    // And an ordinary update keeps its own pocket.
     let line = "Inst libapt-pkg6.0 [2.0.10] (2.0.11 Ubuntu:20.04/focal-updates [arm64])";
     let updates = parse_updates(line);
     assert_eq!(updates[0].repo.as_deref(), Some("focal-updates"));
@@ -247,9 +225,8 @@ fn security_archives_are_recognised_across_families() {
 
 #[test]
 fn a_foreign_architecture_package_keeps_one_name() {
-    // apt names these `libc6:armhf` and dpkg-query names them `libc6` with the
-    // architecture in its own field. If they disagree, the server sees two
-    // packages and an update that never matches an installed version.
+    // apt says `libc6:armhf` where dpkg-query says `libc6` plus an arch field.
+    // They have to agree or the update never matches the installed package.
     let line =
         "Inst libgcc-s1:armhf (14.2.0-4ubuntu2~24.04.1 Ubuntu:24.04/noble-updates [armhf]) []";
     assert!(
@@ -271,10 +248,8 @@ fn a_foreign_architecture_package_keeps_one_name() {
 
 #[test]
 fn held_packages_do_not_appear_as_available_updates() {
-    // apt keeps a held package back, so its upgrade simply stops being offered.
-    // The fixture captures a dist-upgrade taken after holding the first
-    // upgradable package, so this is apt's real behaviour rather than an
-    // assumption about it.
+    // The fixture's dist-upgrade was captured after holding the first
+    // upgradable package, and apt then stops offering it.
     for distro in ["ubuntu2004", "ubuntu2204", "ubuntu2404"] {
         let f = fixture(distro);
         let holds = parse_holds(&section(&f, "HOLDS"));
@@ -290,8 +265,7 @@ fn held_packages_do_not_appear_as_available_updates() {
 
 #[test]
 fn noise_and_prose_around_the_inst_lines_is_ignored() {
-    // apt prints several paragraphs of prose, and `Conf` lines that mirror every
-    // `Inst`. Counting a Conf line would double every update.
+    // Every `Inst` has a matching `Conf` line, which mustn't be counted.
     let out = "\
 Reading package lists...
 Building dependency tree...
@@ -323,7 +297,6 @@ fn every_distribution_reports_its_repositories() {
         for r in &repos {
             assert!(!r.id.is_empty(), "{distro}: repository with no id");
             assert_eq!(r.kind, "deb");
-            // Everything in a stock image comes from the distribution itself.
             assert!(
                 !r.third_party,
                 "{distro}: {} read as third-party in a stock image",
@@ -331,7 +304,7 @@ fn every_distribution_reports_its_repositories() {
             );
         }
 
-        // The local dpkg status file is `a=now`, and is not a repository.
+        // The local dpkg status file (`a=now`) isn't a repository.
         assert!(
             !repos.iter().any(|r| r.id == "now"),
             "{distro}: the dpkg status file was reported as a repository"
@@ -341,8 +314,8 @@ fn every_distribution_reports_its_repositories() {
 
 #[test]
 fn a_repository_that_is_not_the_distributions_is_third_party() {
-    // These are the ones that break a dist-upgrade, because they have no
-    // packages for the target release.
+    // These break a dist-upgrade since they have no packages for the target
+    // release.
     let policy = "\
 Package files:
  100 /var/lib/dpkg/status
@@ -375,8 +348,8 @@ Package files:
 
 #[test]
 fn an_unknown_distribution_treats_everything_as_third_party() {
-    // Failing this direction is the safe one: a third-party repository is
-    // reported and looked at, where a missed one silently breaks a dist-upgrade.
+    // Wrongly flagging a repository as third-party is harmless; missing one
+    // can break a dist-upgrade.
     let policy = "\
  500 http://example.test/ stable/main arm64 Packages
      release o=Ubuntu,a=stable,c=main,b=arm64
@@ -387,9 +360,7 @@ fn an_unknown_distribution_treats_everything_as_third_party() {
 
 #[test]
 fn a_repository_with_no_origin_is_third_party() {
-    // An unsigned or hand-rolled repository often has no origin at all, and those
-    // are exactly the ones worth knowing about. Unknown provenance is not the
-    // distribution's.
+    // Hand-rolled repositories often have no origin. Treat them as third-party.
     let policy = " 500 http://example.test/ ./ Packages\n     release a=unstable,c=main\n";
     let repos = parse_repositories(policy, Some("Debian"));
     assert_eq!(repos.len(), 1);
@@ -398,10 +369,8 @@ fn a_repository_with_no_origin_is_third_party() {
 
 #[test]
 fn debian_security_is_debians_own_repository() {
-    // Debian publishes security under origin `Debian` with label
-    // `Debian-Security`. Reading the label instead of the origin would mark every
-    // Debian host's security repository as third-party — and a third-party
-    // security repo is the sort of finding that gets acted on.
+    // Debian's security repository has origin `Debian` and label
+    // `Debian-Security`. Matching on the label would flag it as third-party.
     let policy = "     release v=12,o=Debian,a=oldstable-security,n=bookworm-security,l=Debian-Security,c=main,b=arm64\n";
     let repos = parse_repositories(policy, Some("Debian"));
     assert_eq!(repos.len(), 1);
@@ -428,7 +397,7 @@ fn every_distribution_reports_its_holds() {
     for (distro, _) in DISTROS {
         let f = fixture(distro);
         let holds = parse_holds(&section(&f, "HOLDS"));
-        // The capture holds perl-base on every image.
+        // The capture script holds perl-base on every image.
         assert!(
             holds.iter().any(|h| h == "perl-base"),
             "{distro}: the held package is missing, got {holds:?}"
@@ -453,12 +422,11 @@ fn the_distribution_origin_comes_from_os_release() {
         Some("Ubuntu")
     );
     assert_eq!(distro_origin("ID=debian\n").as_deref(), Some("Debian"));
-    // Quoted, as some distributions write it.
+    // some distributions quote it
     assert_eq!(
         distro_origin("ID=\"raspbian\"\n").as_deref(),
         Some("Raspbian")
     );
-    // And nothing usable yields nothing, so everything reads as third-party.
     assert_eq!(distro_origin(""), None);
     assert_eq!(distro_origin("NAME=Whatever\n"), None);
     assert_eq!(distro_origin("ID=\n"), None);
@@ -466,8 +434,7 @@ fn the_distribution_origin_comes_from_os_release() {
 
 #[test]
 fn os_release_id_is_not_confused_with_id_like() {
-    // `ID_LIKE=debian` on Ubuntu. Matching the wrong key would make Ubuntu's own
-    // repositories read as Debian's and every one of them third-party.
+    // Ubuntu also sets `ID_LIKE=debian`.
     let os_release = "PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nID_LIKE=debian\nID=ubuntu\n";
     assert_eq!(distro_origin(os_release).as_deref(), Some("Ubuntu"));
 }
@@ -476,9 +443,6 @@ fn os_release_id_is_not_confused_with_id_like() {
 
 #[test]
 fn a_stock_upgrade_removes_nothing() {
-    // The normal answer on every official image, and the reason the fixture
-    // below had to be built: a removal is rare, and rare is exactly what gets
-    // shipped untested.
     for (distro, _) in DISTROS {
         let f = fixture(distro);
         let installed = parse_installed(&section(&f, "DPKG_QUERY"));
@@ -506,11 +470,9 @@ fn a_package_an_upgrade_would_remove_is_reported() {
 
 #[test]
 fn apt_never_says_what_replaced_the_package_it_removes() {
-    // The fact that decided the wire shape. `Remv barpkg [1.0]` carries a name
-    // and a version and nothing else — the `Inst foopkg` line that caused it is
-    // in the same output with nothing linking the two. dnf names the obsoleting
-    // package; apt does not, and inventing one here would be a lie with a name
-    // and a version in it.
+    // `Remv barpkg [1.0]` has only a name and version; nothing links it to the
+    // `Inst foopkg` line that caused it. Unlike dnf, apt doesn't name the
+    // replacement, so we don't guess one.
     let f = fixture("debian12-removals");
     let installed = parse_installed(&section(&f, "DPKG_QUERY"));
     for removal in parse_removals(&section(&f, "DIST_UPGRADE"), &installed) {
@@ -528,15 +490,14 @@ fn the_package_causing_the_removal_is_still_an_ordinary_update() {
         .expect("foopkg is the upgrade that removes the other two");
     assert_eq!(foopkg.installed, "1.0");
     assert_eq!(foopkg.candidate, "2.0");
-    // And nothing it removed is reported as an update, which is the lie the
-    // separate list exists to avoid.
+    // removed packages must not show up as updates
     assert!(!updates.iter().any(|u| u.name == "barpkg"));
 }
 
 #[test]
 fn a_removal_of_something_this_host_does_not_have_is_dropped() {
-    // apt should never propose removing one, and an entry whose architecture
-    // had to be invented would be indistinguishable from a real one downstream.
+    // apt shouldn't propose removing a package that isn't installed, and its
+    // arch would have to be made up.
     assert!(parse_removals("Remv ghost [1.0]\n", &[]).is_empty());
 }
 
@@ -549,7 +510,7 @@ fn a_foreign_architecture_removal_keeps_one_name() {
     assert_eq!(removals[0].arch, "armhf");
 }
 
-/* ---------------------------------------------- applying exactly (DAWG-102) */
+/* --------------------------------------------------------- applying exactly */
 
 mod apply {
     use std::collections::BTreeMap;
@@ -602,8 +563,7 @@ mod apply {
         );
     }
 
-    /// ⚠️ The host moved since the approval — somebody upgraded by hand, or
-    /// downgraded. Installing now would be a change nobody reviewed.
+    /// The package was upgraded or downgraded by hand since the approval.
     #[test]
     fn a_pin_at_neither_end_is_refused() {
         let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
@@ -627,7 +587,7 @@ mod apply {
         assert!(args.contains(&"Dpkg::Options::=--force-confold".to_owned()));
         assert!(args.contains(&"DPkg::Lock::Timeout=600".to_owned()));
         assert_eq!(simulate_args(&todo)[1], "-s");
-        // An architecture-independent package is named bare.
+        // arch-independent packages have no `:arch` suffix
         let all = [Pin {
             arch: "all".into(),
             ..pin("tzdata", "2025a-1", "2025b-1")
@@ -652,8 +612,6 @@ mod apply {
         check_simulation(&todo, &sim(out), &Sources::new()).unwrap();
     }
 
-    /// Each of these is a change nobody approved, and refused before anything
-    /// is touched.
     #[test]
     fn a_simulation_doing_anything_else_is_refused() {
         let pins = [pin("openssl", "3.5.1-1", "3.5.1-2")];
@@ -680,7 +638,7 @@ mod apply {
         assert!(why.contains("3.5.1-3"), "{why}");
         let why = refused(check_simulation(&todo, &sim(""), &Sources::new()));
         assert!(why.contains("held"), "{why}");
-        // The archive moved on and the approved version is gone.
+        // the approved version is no longer in the archive
         let gone = Ran {
             code: 100,
             stdout: String::new(),
@@ -690,8 +648,8 @@ mod apply {
         assert!(why.contains("was not found"), "{why}");
     }
 
-    /// updawg-throwaway-6, 2026-09-29: the kernel metapackage's upgrade
-    /// installs the new ABI's image, a package nobody could have pinned.
+    /// Captured on a Debian 13 VM: the kernel metapackage's upgrade installs
+    /// the new ABI's image, which couldn't have been pinned.
     const KERNEL: &str = "Inst linux-image-6.12.111+deb13-cloud-amd64 (6.12.111-1 Debian-Security:13/stable-security [amd64])\nInst linux-image-cloud-amd64 [6.12.107-1] (6.12.111-1 Debian-Security:13/stable-security [amd64])\n";
 
     const SHOW: &str = "Package: linux-image-cloud-amd64\nSource: linux-signed-amd64 (6.12.111+1)\nVersion: 6.12.111-1\nArchitecture: amd64\n\nPackage: linux-image-6.12.111+deb13-cloud-amd64\nSource: linux-signed-amd64 (6.12.111+1)\nVersion: 6.12.111-1\nArchitecture: amd64\n\nPackage: libnew\nVersion: 2.0\n\nPackage: openssl\nSource: openssl\nVersion: 3.5.1-2\n";
@@ -704,7 +662,8 @@ mod apply {
             upload("linux-image-cloud-amd64", "6.12.111-1"),
             Some(("linux-signed-amd64".to_owned(), "6.12.111+1".to_owned()))
         );
-        // No `Source:` is a source named as the binary; no version is the binary's.
+        // A missing `Source:` means the source has the binary's name and
+        // version.
         assert_eq!(
             upload("libnew", "2.0"),
             Some(("libnew".to_owned(), "2.0".to_owned()))
@@ -731,7 +690,7 @@ mod apply {
             alongside,
             ["linux-image-6.12.111+deb13-cloud-amd64 6.12.111-1"]
         );
-        // Without knowing where it came from, it is refused, as before.
+        // unknown source: still refused
         let why = refused(check_simulation(&todo, &sim(KERNEL), &Sources::new()));
         assert!(why.contains("also install linux-image-6.12.111"), "{why}");
     }
@@ -743,7 +702,7 @@ mod apply {
         let out = "Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])\nInst libnew (2.0 Debian:13/stable [amd64])\n";
         let why = refused(check_simulation(&todo, &sim(out), &parse_uploads(SHOW)));
         assert!(why.contains("also install libnew"), "{why}");
-        // An upgrade of something installed is never excused by its source.
+        // the source never excuses an upgrade of an installed package
         let pins = [pin("linux-image-cloud-amd64", "6.12.107-1", "6.12.111-1")];
         let todo: Vec<&Pin> = pins.iter().collect();
         let upgrade = format!(
@@ -783,9 +742,9 @@ mod apply {
 
 #[test]
 fn a_line_redrawn_with_carriage_returns_is_logged_as_its_last_redraw() {
-    // `apt-get install jq` in debian:13, stdout piped as the agent pipes it.
-    // dpkg ends every line `\r\n` and redraws "Reading database" with bare
-    // `\r`, which is what reached the log as one long line.
+    // `apt-get install jq` in debian:13 with stdout piped, as the agent runs
+    // it. dpkg ends lines with `\r\n` and redraws "Reading database" with a
+    // bare `\r`, which used to come through as one long log line.
     let out = include_str!("fixtures/apt/debian13-install.txt");
     let shown: Vec<&str> = updawg_backends::apt::as_shown(out).collect();
     assert!(shown.iter().all(|l| !l.contains('\r')), "{shown:#?}");
@@ -810,10 +769,9 @@ fn a_line_that_ends_in_a_carriage_return_keeps_what_came_before_it() {
     assert_eq!(shown, ["Progress: [ 50%]"]);
 }
 
-/// DAWG-212: the source package's name and version, from `dpkg-query` on
-/// Debian 13 (captured 2026-09-28). `bash` is a binNMU — its source version is
-/// not its own — and `login` is built from `util-linux`, not `shadow`: neither
-/// could be worked out from the binary.
+/// Source package name and version from `dpkg-query` on Debian 13. `bash` is
+/// a binNMU, so its source version differs from its own, and `login` is built
+/// from `util-linux`. Neither can be derived from the binary package.
 #[test]
 fn the_source_package_comes_with_its_own_version() {
     use updawg_protocol::SourcePackage;
@@ -839,13 +797,13 @@ fn the_source_package_comes_with_its_own_version() {
     );
     assert_eq!(source("login").unwrap().name, "util-linux");
     assert_eq!(source("libc6").unwrap().name, "glibc");
-    // Output without the fields, as the fixtures were captured.
+    // older output without the source fields, as in the fixtures
     assert_eq!(source("old"), None);
 }
 
-/// Where each repository is (DAWG-149), from a GCE Debian 13 host: two Google
-/// repositories named after the release, and Debian's own behind mirror
-/// lists. One entry per URL and suite, whatever its architectures.
+/// From a GCE Debian 13 host: two Google repositories named after the
+/// release, and Debian's own behind mirror lists. One entry per URL and suite,
+/// regardless of architectures.
 #[test]
 fn sources_carry_their_location_and_whose_they_are() {
     let sources = parse_sources(&fixture("policy-gce-trixie"), Some("Debian"));
@@ -886,9 +844,8 @@ fn sources_carry_their_location_and_whose_they_are() {
     );
 }
 
-/// Each package is tied to the repository its **installed** version came
-/// from: google-guest-agent is also in Debian's archive at an older version,
-/// and it is Google's repository that matters to an upgrade.
+/// google-guest-agent is also in Debian's archive at an older version, but
+/// it's Google's repository the installed version came from.
 #[test]
 fn a_package_belongs_to_the_repository_of_its_installed_version() {
     let found = parse_installed_from(&fixture("policy-installed-gce-trixie"));
@@ -906,8 +863,8 @@ fn a_package_belongs_to_the_repository_of_its_installed_version() {
     );
 }
 
-/// A third-party repository says where it is, without credentials, and a
-/// distribution one does not (DAWG-149).
+/// URLs are reported for third-party repositories (without credentials) but
+/// not for the distribution's own.
 #[test]
 fn a_third_party_repository_carries_its_url_and_the_distributions_do_not() {
     let repos = parse_repositories(&fixture("policy-gce-trixie"), Some("Debian"));

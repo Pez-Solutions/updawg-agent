@@ -1,15 +1,11 @@
-//! An organization signing key the **customer** holds (DAWG-157, ADR 0006).
+//! A customer-held organization signing key, used by `updawgctl keygen` and
+//! `updawgctl sign` in the customer's own environment so Updawg never holds a
+//! key its agents accept. Managed hosts only ever see the public half.
 //!
-//! Everywhere else in the agent an organization key is a public half to pin
-//! and verify against. This is the one place a private half exists, and it is
-//! not on a managed host: it is `updawgctl keygen` and `updawgctl sign`, run
-//! by the organization in its own environment, so that Updawg never holds a
-//! key its agents accept.
-//!
-//! The file is an unencrypted PKCS#8 PEM (`BEGIN PRIVATE KEY`), the format
-//! `openssl genpkey -algorithm ed25519` writes, so a customer can generate the
-//! key with their own tools or import this one into an HSM. Protecting the
-//! file is theirs to decide; it is written readable by its owner only.
+//! The file is an unencrypted PKCS#8 PEM (`BEGIN PRIVATE KEY`), the same as
+//! `openssl genpkey -algorithm ed25519` writes, so the key can come from other
+//! tools or go into an HSM. It is written mode 0600; anything beyond that is
+//! up to the customer.
 
 use crate::{CryptoError, ED25519_SPKI_PREFIX, OrgPublicKey, Result};
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
@@ -18,13 +14,11 @@ use std::{fmt, fs, io::Write as _, path::Path};
 
 const PEM_LABEL: &str = "PRIVATE KEY";
 
-/// A customer-held organization key pair.
 pub struct OrgKeyPair {
     pair: Ed25519KeyPair,
     pkcs8: Vec<u8>,
 }
 
-// Never print the private half, even by accident in an error.
 impl fmt::Debug for OrgKeyPair {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OrgKeyPair")
@@ -34,8 +28,6 @@ impl fmt::Debug for OrgKeyPair {
 }
 
 impl OrgKeyPair {
-    /// Generate a fresh key pair.
-    ///
     /// # Errors
     /// Fails only if the platform's random source is unavailable.
     pub fn generate() -> Result<Self> {
@@ -54,8 +46,6 @@ impl OrgKeyPair {
         })
     }
 
-    /// Read a PKCS#8 PEM file.
-    ///
     /// # Errors
     /// Fails if the file cannot be read or is not an Ed25519 private key.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -67,12 +57,8 @@ impl OrgKeyPair {
         Self::from_pkcs8(&decode_pem(&pem)?)
     }
 
-    /// Write the key to `path`, readable only by its owner, refusing to
-    /// replace a file that is already there.
-    ///
-    /// ⚠️ **Refusing is the point.** Overwriting an organization key is
-    /// losing it, and losing it is the one thing nobody, including Updawg,
-    /// can undo: every host would have to be re-enrolled.
+    /// Writes the key with mode 0600. Never overwrites an existing file: a
+    /// lost organization key means re-enrolling every host.
     ///
     /// # Errors
     /// Fails if the file exists or cannot be written.
@@ -95,14 +81,13 @@ impl OrgKeyPair {
             .map_err(failed)
     }
 
-    /// The public half, as agents pin it.
     #[must_use]
     pub fn public(&self) -> OrgPublicKey {
         OrgPublicKey::from_bytes(self.pair.public_key().as_ref().to_vec())
     }
 
-    /// The base64 SPKI, without the `ed25519:` prefix: what `trusted_org_key`
-    /// and the installer's `UPDAWG_ORG_KEY` take, and what the portal asks for.
+    /// Base64 SPKI without the `ed25519:` prefix, the form `trusted_org_key`,
+    /// the installer's `UPDAWG_ORG_KEY` and the portal expect.
     #[must_use]
     pub fn public_spki_base64(&self) -> String {
         let mut der = ED25519_SPKI_PREFIX.to_vec();
@@ -110,10 +95,10 @@ impl OrgKeyPair {
         base64::engine::general_purpose::STANDARD.encode(der)
     }
 
-    /// Sign `message`, which must already be a purpose-labelled message —
+    /// `message` must already carry a purpose label (from
     /// [`updawg_protocol::Job::signing_bytes`] or
-    /// [`updawg_protocol::EndorsementStatement::signing_bytes`] — and never
-    /// raw bytes from somewhere else. See [`updawg_protocol::SignaturePurpose`].
+    /// [`updawg_protocol::EndorsementStatement::signing_bytes`]). See
+    /// [`updawg_protocol::SignaturePurpose`].
     #[must_use]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         self.pair.sign(message).as_ref().to_vec()
@@ -150,14 +135,10 @@ fn decode_pem(pem: &str) -> Result<Vec<u8>> {
         .map_err(|e| CryptoError::MalformedKeyFile(e.to_string()))
 }
 
-/// A fresh signing key id, `sk_` and a `UUIDv7` in simple form, for a key the
-/// organization is about to endorse (DAWG-293).
-///
-/// The customer's side names the next key's id, because the endorsement has
-/// to name it and is signed before the server has a row to give it one. A
-/// `UUIDv7`, like every id the server mints, so keys still sort by when they
-/// were made: 48 bits of Unix milliseconds, the version, the variant, and 74
-/// random bits.
+/// A new signing key id (`sk_` plus a `UUIDv7` in simple form) for a key the
+/// organization is about to endorse. The endorsement has to name the id
+/// before the server has seen the key, so the client picks it. `UUIDv7`
+/// matches the server's ids and sorts by creation time.
 ///
 /// # Errors
 /// Fails only if the platform's random source is unavailable.
@@ -245,9 +226,8 @@ mod tests {
         assert_eq!(mode, 0o600);
     }
 
-    /// What `openssl genpkey -algorithm ed25519` writes: PKCS#8 v1, with no
-    /// public key inside. A customer who made their key with their own tools
-    /// can sign with it.
+    /// `openssl genpkey -algorithm ed25519` output: PKCS#8 v1, no embedded
+    /// public key.
     #[test]
     fn a_key_openssl_made_loads() {
         let path = scratch("openssl");
@@ -259,7 +239,7 @@ mod tests {
         )
         .unwrap();
         let key = OrgKeyPair::load(&path).unwrap();
-        // RFC 8032 §7.1 test 1's public key, which is this seed's.
+        // public key from RFC 8032 section 7.1, test 1
         assert_eq!(
             key.public().as_bytes(),
             [

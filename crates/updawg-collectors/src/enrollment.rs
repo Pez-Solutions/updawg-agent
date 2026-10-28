@@ -1,13 +1,9 @@
 //! The facts needed to enroll, gathered before the host has an identity.
 //!
-//! Deliberately smaller than the full inventory. Enrollment needs just enough
-//! to create the host record and tell one machine from another; everything else
-//! arrives on the first inventory upload, after the host has a certificate and
-//! the operator has had a chance to look at what is being sent.
-//!
-//! It reads the same sources as [`crate::facts`] through the same
-//! [`platform`] module — one place that knows where `/etc/os-release` lives,
-//! not two that can disagree.
+//! Smaller than the full inventory: just enough to create the host record and
+//! tell machines apart. The rest arrives with the first inventory upload, once
+//! the host has a certificate. Reads the same sources as [`crate::facts`] via
+//! [`platform`], so the two can't disagree.
 
 use crate::{Result, platform};
 use platform::Root;
@@ -37,12 +33,11 @@ impl EnrollmentCollector {
         }
     }
 
-    /// Gather everything `POST /enroll` needs.
+    /// Gathers what `POST /enroll` needs.
     ///
     /// # Errors
     /// Fails if the machine id, hostname, kernel or distribution cannot be
-    /// determined. All are required: enrolling a host whose identity or
-    /// platform is unknown would create a record nobody can act on.
+    /// determined.
     pub fn gather(&self) -> Result<EnrollmentFacts> {
         let os = platform::os_release(&self.root)?;
 
@@ -56,9 +51,9 @@ impl EnrollmentCollector {
                 kernel: platform::kernel(&self.root)?,
                 arch: platform::arch(),
                 virtualization: platform::virtualization(&self.root),
-                // Cloud metadata means talking to a link-local endpoint before
-                // the host has enrolled. It belongs with the rest of the fact
-                // collectors, where it can be disabled.
+                // Cloud metadata needs a request to a link-local endpoint;
+                // that belongs in the fact collectors, where it can be
+                // disabled, not in enrollment.
                 cloud: None,
             },
         })
@@ -71,7 +66,7 @@ mod tests {
     use crate::{CollectorError, testing::FakeHost};
 
     #[test]
-    fn a_debian_host_reports_the_facts_the_design_document_shows() {
+    fn a_debian_host_reports_its_facts() {
         let host = FakeHost::debian();
         let got = EnrollmentCollector::new(host.path()).gather().unwrap();
 
@@ -84,9 +79,7 @@ mod tests {
         assert!(!got.facts.arch.is_empty());
     }
 
-    /// A cloned golden image is the case this guards. systemd leaves
-    /// `/etc/machine-id` empty on purpose so first boot fills it in; enrolling
-    /// before that gives every clone the same identity.
+    // Golden images ship an empty /etc/machine-id for first boot to fill in.
     #[test]
     fn an_empty_machine_id_refuses_to_enroll() {
         let host = FakeHost::debian();
@@ -122,9 +115,6 @@ mod tests {
         );
     }
 
-    /// Enrollment and the full inventory must agree about what this host is.
-    /// They read the same sources through the same module; this is the test
-    /// that keeps it that way.
     #[test]
     fn enrollment_facts_match_the_platform_facts_for_the_same_host() {
         let host = FakeHost::ubuntu();

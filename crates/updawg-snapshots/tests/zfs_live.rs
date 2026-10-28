@@ -1,7 +1,7 @@
-//! The ZFS provider against a real `OpenZFS` (DAWG-117).
+//! The ZFS provider against a real `OpenZFS`.
 //!
-//! Ignored by default: it needs root, ZFS, and a dataset it may write to,
-//! which must **not** be the one mounted at `/`. On a scratch host:
+//! Ignored by default: it needs root, ZFS, and a writable dataset other than
+//! the one mounted at `/`. On a scratch host:
 //!
 //! ```text
 //! truncate -s 1G /var/tmp/z.img && zpool create -m none tank /var/tmp/z.img
@@ -49,11 +49,11 @@ async fn take_change_roll_back_and_prune_across_child_datasets() {
     std::fs::write(child.join("openssl.version"), "3.5.1-1\n").unwrap();
     let before = zfs.create("before job_live_1", "job_live_1").await.unwrap();
 
-    // The "install": a file in a child dataset, and a new kernel.
+    // simulate an install: a file in a child dataset, and a new kernel
     std::fs::write(child.join("openssl.version"), "3.5.1-2\n").unwrap();
     std::fs::create_dir_all(root.join("usr/lib/modules/6.8.0-2")).unwrap();
 
-    // An administrator's snapshot since: rolling back destroys it (agreed).
+    // a newer admin snapshot; `zfs rollback -r` will destroy it
     let admin = std::process::Command::new("zfs")
         .args(["snapshot", &format!("{dataset}@admins-own")])
         .status()
@@ -74,7 +74,6 @@ async fn take_change_roll_back_and_prune_across_child_datasets() {
     );
     assert!(!root.join("usr/lib/modules/6.8.0-2").exists());
 
-    // Not one of ours.
     assert!(matches!(
         zfs.rollback(&format!("zfs:{dataset}@updawg-job_nobody"))
             .await,

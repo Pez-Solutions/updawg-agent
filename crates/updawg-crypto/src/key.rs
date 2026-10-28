@@ -1,12 +1,10 @@
 //! The host's own key pair, and the CSR it sends at enrollment.
 //!
-//! The private key is generated on the host and never leaves it. Nothing in
-//! this module serialises it anywhere except the one file it lives in, and
-//! nothing implements `Display` or a revealing `Debug` for it.
+//! The private key is generated on the host and only ever written to its key
+//! file. There is no `Display`, and `Debug` shows only the fingerprint.
 //!
-//! Ed25519, because the certificate is short-lived and re-issued monthly: a
-//! small key with fast signatures matters more than algorithm agility on a
-//! credential with a thirty-day life.
+//! Ed25519: the certificate is reissued monthly, so algorithm agility matters
+//! less than a small key and fast signatures.
 
 use crate::{CryptoError, Result};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ED25519, PublicKeyData};
@@ -16,20 +14,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Permission bits the private key file must not have set.
-///
-/// Group and other, in other words. The agent runs as root and the key is the
-/// host's entire identity; anything readable beyond the owner is a finding.
+/// Group and other bits; the key file must be owner-only.
 #[cfg(unix)]
 const FORBIDDEN_BITS: u32 = 0o077;
 
-/// The host's Ed25519 key pair.
 pub struct AgentKey {
     inner: KeyPair,
 }
 
-// The whole point of this type is that the private half stays put. A derived
-// Debug would put it in the first error message that included the struct.
+// a derived Debug would leak the private key into error messages
 impl fmt::Debug for AgentKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AgentKey")
@@ -40,24 +33,19 @@ impl fmt::Debug for AgentKey {
 }
 
 impl AgentKey {
-    /// Generate a fresh key pair.
-    ///
     /// # Errors
-    /// Fails only if the platform's random source is unavailable, which is not
-    /// a condition worth continuing past.
+    /// Fails only if the platform's random source is unavailable.
     pub fn generate() -> Result<Self> {
         let inner = KeyPair::generate_for(&PKCS_ED25519)
             .map_err(|e| CryptoError::KeyGeneration(e.to_string()))?;
         Ok(Self { inner })
     }
 
-    /// Load the key pair from a PKCS#8 PEM file.
+    /// Loads the key pair from a PKCS#8 PEM file.
     ///
-    /// If the file is readable by anyone but its owner the permissions are
-    /// tightened and the fact is logged at warn level. Refusing to start would
-    /// be the stricter choice, but it turns a permissions slip into an outage
-    /// on a host that is otherwise healthy; fixing it loudly is the better
-    /// trade for something that runs unattended.
+    /// If the file is readable by anyone but its owner, the permissions are
+    /// fixed and a warning logged. Refusing to start would turn a permissions
+    /// slip into an outage on an unattended host.
     ///
     /// # Errors
     /// Fails if the file is missing, unreadable, or not a valid Ed25519 key.
@@ -76,18 +64,14 @@ impl AgentKey {
         Ok(Self { inner })
     }
 
-    /// Whether a key file already exists at this path.
     #[must_use]
     pub fn exists(path: impl AsRef<Path>) -> bool {
         path.as_ref().exists()
     }
 
-    /// Write the key pair to disk, atomically and readable only by its owner.
-    ///
-    /// Temp file, fsync, rename — the same rule as the rest of the agent's
-    /// state. A half-written key file would leave a host that cannot
-    /// authenticate and cannot re-enroll either, because the identity it would
-    /// be re-enrolling with is the thing that got truncated.
+    /// Writes the key atomically (temp file, fsync, rename) with mode 0600. A
+    /// truncated key file would leave the host unable to authenticate or
+    /// re-enroll.
     ///
     /// # Errors
     /// Fails if the directory cannot be created or the file cannot be written.
@@ -105,8 +89,7 @@ impl AgentKey {
 
         let write = || -> std::io::Result<()> {
             let mut f = fs::File::create(&tmp)?;
-            // Narrow the window: create, then restrict, then write. The file is
-            // empty for as long as it is world-readable.
+            // restrict before writing so the key is never world-readable
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -128,39 +111,29 @@ impl AgentKey {
         })
     }
 
-    /// The private key as PKCS#8 PEM.
-    ///
-    /// Only for handing to the TLS stack, which needs the key and certificate
-    /// as one document. It goes into a buffer in memory and nowhere else —
-    /// there is deliberately no `Display` and no `Debug` that reaches it.
+    /// The private key as PKCS#8 PEM, for the TLS stack, which wants key and
+    /// certificate in one buffer.
     #[must_use]
     pub fn private_key_pem(&self) -> String {
         self.inner.serialize_pem()
     }
 
-    /// The `SubjectPublicKeyInfo` DER encoding of the public half.
     #[must_use]
     pub fn public_key_spki(&self) -> Vec<u8> {
         self.inner.subject_public_key_info()
     }
 
-    /// Short fingerprint of the public half, for logs and `updawgctl status`.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         crate::fingerprint_bytes(&self.public_key_spki())
     }
 
-    /// Generate a PEM-encoded certificate signing request.
-    ///
-    /// The subject carries the machine id rather than the hostname. Hostnames
-    /// change and repeat; the machine id is what the server matches on to
-    /// recognise a rebuilt host, so it is what the request should be about.
-    /// The server issues the certificate with the host id in the subject — it
-    /// decides identity, we only prove possession of the key.
+    /// A PEM CSR with the machine id as the subject CN. Hostnames change and
+    /// repeat; the server uses the machine id to recognise a rebuilt host. The
+    /// issued certificate carries the host id the server assigns.
     ///
     /// # Errors
-    /// Fails if the request cannot be serialised, which would mean an invalid
-    /// subject value.
+    /// Fails if the request can't be serialised (an invalid subject value).
     pub fn certificate_request(&self, machine_id: &str) -> Result<String> {
         let mut params = CertificateParams::new(Vec::<String>::new())
             .map_err(|e| CryptoError::Csr(e.to_string()))?;
@@ -175,7 +148,6 @@ impl AgentKey {
     }
 }
 
-/// Tighten a key file's permissions to owner-only, reporting whether it had to.
 #[cfg(unix)]
 fn tighten_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -236,7 +208,6 @@ mod tests {
     fn the_key_is_ed25519_in_spki_form() {
         let key = AgentKey::generate().unwrap();
         let spki = key.public_key_spki();
-        // 12-byte Ed25519 SPKI header, then the 32-byte key.
         assert_eq!(spki.len(), 44);
         assert_eq!(&spki[..12], crate::ED25519_SPKI_PREFIX);
     }

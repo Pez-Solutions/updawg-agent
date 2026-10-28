@@ -1,18 +1,10 @@
 //! Fake hosts to collect from.
 //!
-//! The collectors read files under a root, so a "host" is a directory. That is
-//! what lets the suite cover Ubuntu, Debian, Red Hat-family and Amazon Linux
-//! from one machine that is none of them — and, more usefully, lets a test say
-//! "this host has no `/proc/meminfo`" without anyone having to build one.
-//!
-//! The fixtures are real `/etc/os-release` contents, not approximations. The
-//! whole point of the family detection they feed is that it matches what is
-//! actually on those distributions.
+//! The collectors read files under a root, so a host is just a directory. The
+//! `/etc/os-release` contents are copied from the real distributions.
 
-// A fixture that cannot be written is a broken test environment, not a
-// condition to handle: every caller is a test that is about to assert on the
-// files this writes. The workspace denies `expect` because the agent runs as
-// root on other people's servers — that reasoning does not reach here.
+// Only tests use this, and a fixture that can't be written means the test
+// environment is broken.
 #![allow(clippy::expect_used)]
 
 use crate::platform::Root;
@@ -39,7 +31,6 @@ impl FakeHost {
         Self { dir }
     }
 
-    /// The common shape: `/proc`, a machine id, a hostname, a kernel.
     #[must_use]
     fn linux() -> Self {
         let host = Self::empty();
@@ -124,11 +115,10 @@ impl FakeHost {
         host
     }
 
-    /// Write a file, creating parent directories.
+    /// Writes a file relative to the host root, creating parent directories.
     ///
     /// # Panics
-    /// If the file cannot be written, which in a temp directory means the test
-    /// environment is broken and there is nothing useful to continue to.
+    /// If the file cannot be written.
     pub fn write(&self, rel: &str, contents: &str) {
         let path = self.dir.join(rel);
         if let Some(parent) = path.parent() {

@@ -1,7 +1,7 @@
-//! The snapper provider against a real snapper on a real btrfs (DAWG-116).
+//! The snapper provider against a real snapper on btrfs.
 //!
-//! Ignored by default: it needs root, snapper, and a snapper configuration it
-//! may write to, which must **not** be `root`. On a scratch host:
+//! Ignored by default: it needs root, snapper, and a writable snapper
+//! configuration other than `root`. On a scratch host:
 //!
 //! ```text
 //! truncate -s 2G /var/tmp/bt.img && mkfs.btrfs /var/tmp/bt.img
@@ -45,7 +45,7 @@ async fn take_change_roll_back_and_prune() {
         .unwrap();
     assert!(before.id.ends_with(":job_live_1"), "{}", before.id);
 
-    // The "install": one file changes, one appears.
+    // simulate an install: one file changes, one appears, a new kernel
     std::fs::write(&file, "3.5.1-2\n").unwrap();
     std::fs::write(dir.join("new.conf"), "x\n").unwrap();
     std::fs::create_dir_all(dir.join("usr/lib/modules/6.8.0-9/kernel")).unwrap();
@@ -54,7 +54,7 @@ async fn take_change_roll_back_and_prune() {
         vec!["6.8.0-9".to_owned()]
     );
 
-    // Somebody else's snapshot is neither listed nor pruned.
+    // an admin snapshot must not be listed or pruned
     let admin = std::process::Command::new("snapper")
         .args(["-c", &std::env::var("UPDAWG_SNAPPER_CONFIG").unwrap()])
         .args(["create", "--description", "an administrator's"])
@@ -73,11 +73,10 @@ async fn take_change_roll_back_and_prune() {
     assert!(!dir.join("usr/lib/modules/6.8.0-9").exists());
     assert_eq!(restored.modified, 1);
 
-    // Again, with nothing to put back.
+    // second rollback has nothing to restore
     let again = snapper.rollback(&before.id).await.unwrap();
     assert_eq!((again.created, again.modified, again.deleted), (0, 0, 0));
 
-    // The same number with another job is not this snapshot.
     let (number, _) = updawg_snapshots::snapper::parse_id(&before.id).unwrap();
     let wrong = format!("snapper:{number}:job_somebody_else");
     assert!(matches!(

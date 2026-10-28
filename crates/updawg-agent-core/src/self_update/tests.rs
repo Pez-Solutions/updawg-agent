@@ -7,8 +7,7 @@ use aws_lc_rs::signature::{KeyPair as _, RSA_PKCS1_SHA512};
 use base64::Engine as _;
 use updawg_protocol::ReleaseArtifact;
 
-/// A key of our own, standing in for the release key, and its public half as
-/// the agent embeds one (PKCS#1 DER).
+/// A throwaway key pair; the public half is PKCS#1 DER like `RELEASE_KEY`.
 fn key() -> (RsaKeyPair, Vec<u8>) {
     let pair = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
     let public = pair.public_key().as_ref().to_vec();
@@ -76,8 +75,6 @@ fn a_manifest_another_key_signed_is_refused() {
 
 #[test]
 fn a_genuine_manifest_for_the_other_channel_is_refused() {
-    // Signed, and beta's: served where stable was asked for, it must not
-    // move a stable host onto beta.
     let (pair, public) = key();
     let signed = sign(&pair, unsigned(ReleaseChannel::Beta));
     let error = verify_manifest(&body(&signed), &public, ReleaseChannel::Stable).unwrap_err();
@@ -99,11 +96,9 @@ fn an_unsigned_manifest_is_refused() {
 
 #[test]
 fn the_embedded_release_key_is_an_rsa_4096_public_key() {
-    // PKCS#1 RSAPublicKey: a DER SEQUENCE, 526 bytes for a 4096-bit modulus
-    // with exponent 65537.
+    // DER SEQUENCE, 526 bytes for a 4096-bit modulus and exponent 65537
     assert_eq!(RELEASE_KEY.len(), 526);
     assert_eq!(&RELEASE_KEY[..2], &[0x30, 0x82]);
-    // And it is what the agent checks with: our own signature does not pass.
     let (pair, _) = key();
     let signed = sign(&pair, unsigned(ReleaseChannel::Stable));
     assert!(verify_manifest(&body(&signed), RELEASE_KEY, ReleaseChannel::Stable).is_err());
@@ -125,7 +120,6 @@ fn how_the_agent_was_installed_decides_how_it_updates() {
             dir: PathBuf::from("/usr/local/bin")
         })
     );
-    // Anywhere else, unowned: somebody's own build, left alone.
     assert!(method_for(Path::new("/opt/updawg/updawgd"), false, true).is_err());
     assert!(method_for(Path::new("/usr/bin/updawgd"), false, true).is_err());
 }
@@ -224,7 +218,6 @@ fn a_pending_update_survives_the_restart_it_is_for() {
     let (back, outcome) = state.take_self_update().unwrap().unwrap();
     assert_eq!(back.to, "0.1.0-2");
     assert_eq!(outcome.unwrap().detail, "did not check in");
-    // Taken once: reported once.
     assert!(state.take_self_update().unwrap().is_none());
     assert!(state.self_update_outcome().unwrap().is_none());
     let _ = std::fs::remove_dir_all(&dir);

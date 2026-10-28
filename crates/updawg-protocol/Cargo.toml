@@ -1,16 +1,11 @@
 [package]
 name = "updawg-protocol"
 description = "Wire types for the Updawg agent API: the contract between the Updawg agent and its gateway."
-# Versioned independently of the agent: this crate is published to crates.io
-# and consumed by updawg-server, so it moves at the wire format's pace, not the
-# agent's.
+# Versioned separately from the agent; bumped when the wire format changes.
 version = "0.12.0"
 edition.workspace = true
-# Its own floor, not the agent's. The agent needs 1.88 for a build-time
-# dependency this crate does not have; inheriting that silently stopped
-# updawg-server — which is on 1.85 — from resolving 0.1.1 at all. A wire-types
-# crate that consumers audit should ask for as little as it can, and edition
-# 2024 is the real floor here.
+# Lower than the agent's MSRV on purpose, so consumers on older toolchains can
+# use it. Edition 2024 is the real floor.
 rust-version = "1.85"
 
 license.workspace = true
@@ -23,7 +18,6 @@ readme = "README.md"
 keywords = ["updawg", "patching", "linux", "agent", "protocol"]
 categories = ["api-bindings", "network-programming", "os::linux-apis"]
 
-# Only the crate itself. No build scratch, no fixtures.
 include = ["src/**/*.rs", "README.md", "LICENSE"]
 
 [dependencies]

@@ -1,17 +1,16 @@
-//! Applying exact versions against real dnf, in a container (DAWG-102).
+//! Applying exact versions against real dnf in a container.
 //!
-//! `#[ignore]`d like the other Docker canaries; run with
+//! Ignored by default since it needs Docker. Run with
 //!
 //! ```text
 //! cargo test -p updawg-backends --test dnf_apply_live -- --ignored --nocapture
 //! ```
 //!
-//! The command lines are the ones [`install_args`], [`simulate_args`] and
-//! [`query_args`] build, so what is tested is what the agent runs. The
-//! packages are the distribution's own `openssl` family, which every image
-//! has and whose repositories keep several versions: the third newest is installed
-//! and a job is approved for the **second newest**, so the newest is on offer
-//! and must not be what lands.
+//! The command lines come from [`install_args`], [`simulate_args`] and
+//! [`query_args`], so this tests what the agent actually runs. It uses the
+//! distribution's own `openssl` packages, since every image has them and the
+//! repositories keep several versions. The third newest is installed and the
+//! job is approved for the second newest; the newest must not get installed.
 
 #![allow(
     clippy::expect_used,
@@ -81,7 +80,7 @@ impl Drop for Container {
     }
 }
 
-/// Every `%{evr}` the repositories offer for `openssl-libs`, oldest first.
+/// Every `%{evr}` offered for `openssl-libs`, oldest first.
 fn offered(c: &Container) -> Vec<String> {
     let out =
         c.sh("dnf -q repoquery --showduplicates --qf '%{evr}' openssl-libs 2>/dev/null | sort -uV");
@@ -92,9 +91,9 @@ fn offered(c: &Container) -> Vec<String> {
         .collect()
 }
 
-/// A script putting every installed member of the openssl family at
-/// `version`, together: on Amazon Linux `openssl-fips-provider-latest` is
-/// locked to `openssl-libs`, and moving one alone cannot resolve.
+/// Shell script that downgrades every installed openssl package to `version`
+/// in one transaction. On Amazon Linux `openssl-fips-provider-latest` is
+/// locked to `openssl-libs`, so moving one alone won't resolve.
 fn back_to(version: &str) -> String {
     format!(
         "set -e; dnf -q -y --setopt=install_weak_deps=False install openssl >/dev/null 2>&1 || true; \
@@ -104,7 +103,7 @@ fn back_to(version: &str) -> String {
     )
 }
 
-/// The openssl family at `version`, as far as this image has each of them.
+/// Pins for whichever openssl packages this image offers at `to`.
 fn family(c: &Container, arch: &str, from: &str, to: &str) -> Vec<Pin> {
     ["openssl", "openssl-libs"]
         .iter()
@@ -138,17 +137,16 @@ fn the_approved_version_is_installed_and_not_the_newest() {
             "{image}: need three versions, have {versions:?}"
         );
         let n = versions.len();
-        // Third newest, not oldest: Amazon Linux still offers a 2022 openssl
-        // that nothing current can be installed beside.
+        // Not the oldest: Amazon Linux still offers a 2022 openssl that
+        // nothing current can be installed alongside.
         let (oldest, approved, newest) = (&versions[n - 3], &versions[n - 2], &versions[n - 1]);
 
-        // Whatever else the family holds at `oldest` (fips providers, …) is
-        // put there too, so the host starts where an approval would find it.
+        // Move the rest of the family (fips providers etc.) to `oldest` too.
         let setup = c.sh(&back_to(oldest));
         assert_eq!(setup.code, 0, "{image}: {}{}", setup.stdout, setup.stderr);
 
-        // Approve the family, plus whatever dnf says moves with it, and
-        // nothing more: the first simulation is how that set is learned.
+        // Approve the family plus whatever dnf says moves with it. The first
+        // simulation tells us what that is.
         let mut pins = family(&c, &arch, oldest, approved);
         let probe = c.exec("dnf", &simulate_args(&pins.iter().collect::<Vec<_>>()));
         for row in updawg_backends::dnf::parse_transaction(&probe.stdout) {
@@ -201,7 +199,7 @@ fn half_an_approval_and_a_version_that_is_gone_are_refused_before_anything_chang
         assert_eq!(setup.code, 0, "{image}: {}{}", setup.stdout, setup.stderr);
         let before = c.sh("rpm -qa | sort").stdout;
 
-        // openssl-libs alone: dnf moves openssl with it, and nobody approved that.
+        // openssl-libs alone: dnf also moves openssl, which isn't approved.
         let half = [Pin {
             name: "openssl-libs".into(),
             arch: arch.clone(),

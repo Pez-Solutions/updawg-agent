@@ -1,7 +1,7 @@
-//! The LVM provider against a real thin pool (DAWG-118).
+//! The LVM provider against a real thin pool.
 //!
-//! Ignored by default: it needs root, LVM and a thin volume it may write to,
-//! mounted somewhere that is **not** `/`. On a scratch host:
+//! Ignored by default: it needs root, LVM and a writable thin volume mounted
+//! somewhere other than `/`. On a scratch host:
 //!
 //! ```text
 //! truncate -s 2G /var/tmp/lv.img && LOOP=$(losetup --show -f /var/tmp/lv.img)
@@ -12,9 +12,9 @@
 //!   cargo test -p updawg-snapshots --test lvm_live -- --ignored --nocapture
 //! ```
 //!
-//! The merge is put off while the volume is mounted, exactly as for a real
-//! root; the test then does what a boot does — unmount, deactivate, activate,
-//! mount — and looks.
+//! The merge is deferred while the volume is mounted, as it is for a real
+//! root, so the test unmounts, deactivates, reactivates and remounts it to
+//! simulate a boot.
 
 #![allow(
     clippy::expect_used,
@@ -49,7 +49,7 @@ async fn take_change_roll_back_at_the_next_activation_and_prune() {
     std::fs::write(state.join("pending-reboot.json"), "stale\n").unwrap();
     let before = lvm.create("before job_live_1", "job_live_1").await.unwrap();
 
-    // The "install", a new kernel, and the agent's record moving on.
+    // simulate an install: a changed file, a new kernel, updated agent state
     std::fs::write(mount.join("openssl.version"), "3.5.1-2\n").unwrap();
     std::fs::create_dir_all(mount.join("usr/lib/modules/5.14.0-2")).unwrap();
     std::fs::write(state.join("seen-jobs.json"), "after\n").unwrap();
@@ -64,13 +64,13 @@ async fn take_change_roll_back_at_the_next_activation_and_prune() {
     let restored = lvm.rollback(&before.id).await.unwrap();
     println!("restored: {restored}");
     assert!(restored.at_next_boot, "a mounted volume merges later");
-    // Nothing yet.
+    // not merged yet
     assert_eq!(
         std::fs::read_to_string(mount.join("openssl.version")).unwrap(),
         "3.5.1-2\n"
     );
 
-    // What a boot does.
+    // simulate a boot
     let lv = String::from_utf8(
         Command::new("findmnt")
             .args(["-n", "-o", "SOURCE"])
@@ -105,7 +105,7 @@ async fn take_change_roll_back_at_the_next_activation_and_prune() {
             .await
             .unwrap();
     }
-    // The merged one is gone already: three left, and keeping two prunes one.
+    // the merged snapshot is gone, so three are left and keeping two prunes one
     let pruned = lvm.prune(2).await.unwrap();
     assert_eq!(pruned.len(), 1, "{pruned:?}");
     assert!(pruned[0].ends_with("/updawg_job_live_2"), "{pruned:?}");

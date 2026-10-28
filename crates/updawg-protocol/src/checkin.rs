@@ -1,12 +1,11 @@
 //! Check-in: `POST /agent/v1/checkin`.
 //!
-//! The hot path. The gateway returns immediately if jobs are waiting or the
-//! agent's inventory hash is stale; otherwise it holds the request open, waits
-//! on a notification for that host, and answers as soon as a job appears or the
-//! timeout is reached. Near-instant delivery without persistent sockets.
+//! The gateway returns immediately if jobs are waiting or the agent's
+//! inventory hash is stale. Otherwise it holds the request open until a job
+//! appears or the timeout is reached, which gives near-instant delivery
+//! without persistent sockets.
 //!
-//! The request body is deliberately small. It rides on every check-in, which at
-//! fleet scale is roughly nine hundred a second.
+//! This is the hot path, so the request body is kept small.
 
 use crate::{
     config::{LocalPolicy, ServerConfig},
@@ -15,21 +14,19 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Whether the host needs a reboot, as it can tell (DAWG-210).
+/// Whether the host needs a reboot, as far as it can tell.
 ///
-/// Three values, because the mechanisms are uneven across distributions and
-/// **a host that cannot answer is not a host whose answer is no**. Before 0.4
-/// this was a `bool` on the wire, the one place the unknown was flattened
-/// into `false`.
+/// Detection varies across distributions, so some hosts can't answer. Before
+/// 0.4 this was a `bool` and unknown was reported as `false`.
 ///
-/// Reads the old `true`/`false` too, so a gateway on 0.4 understands an agent
-/// that is not; an absent field is [`RebootRequired::Unknown`].
+/// Still accepts the old `true`/`false`. An absent field is
+/// [`RebootRequired::Unknown`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RebootRequired {
     Yes,
     No,
-    /// No mechanism on this host could answer. Never to be read as `No`.
+    /// No mechanism on this host could answer. Don't treat it as `No`.
     #[default]
     Unknown,
 }
@@ -45,7 +42,7 @@ impl RebootRequired {
         self != Self::Unknown
     }
 
-    /// `Some` when the host could say, which is how the database stores it.
+    /// `None` for unknown.
     #[must_use]
     pub const fn known(self) -> Option<bool> {
         match self {
@@ -71,36 +68,34 @@ impl<'de> Deserialize<'de> for RebootRequired {
             Wire::Word(w) => match w.as_str() {
                 "yes" => Self::Yes,
                 "no" => Self::No,
-                // Including a word from a newer agent: not knowing what it
-                // means is not knowing.
+                // includes words from a newer agent
                 _ => Self::Unknown,
             },
         })
     }
 }
 
-/// Whether the host can take snapshots before a change, and roll back to
-/// them (DAWG-115). Detected by the agent at start.
+/// Whether the host can take snapshots before a change and roll back to them.
+/// Detected by the agent at start.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SnapshotSupport {
-    /// The provider in use, e.g. `snapper`. `None`: this host cannot take
-    /// snapshots, and [`SnapshotSupport::reason`] says why.
+    /// The provider in use, such as `snapper`. `None` if this host can't take
+    /// snapshots, in which case [`SnapshotSupport::reason`] says why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// How the agent was installed, which decides how it updates (DAWG-46,
-/// protocol 0.9). Detected by the agent at start.
+/// How the agent was installed, which decides how it updates. Detected by the
+/// agent at start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInstall {
     pub method: InstallMethod,
-    /// The channel the host's package repository follows, as the repository
-    /// spells it (`stable`, `beta`). A package host can only move to builds
-    /// its own repository holds, so a stable host offered a beta build
-    /// refuses it. `None` for a binary install, which can take either, and
-    /// when the repository file could not be read.
+    /// The channel the host's package repository follows (`stable`, `beta`).
+    /// A package install can only move to builds its repository holds, so a
+    /// stable host refuses a beta build. `None` for a binary install, which
+    /// can take either, or when the repository file couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
 }
@@ -112,11 +107,10 @@ pub enum InstallMethod {
     Apt,
     /// The .rpm from pkg.updawg.net, through dnf.
     Dnf,
-    /// install.sh's binaries in /usr/local/bin, updated from the signed
-    /// manifest.
+    /// Binaries from `install.sh` in `/usr/local/bin`, updated from the
+    /// signed manifest.
     Binary,
-    /// A method this version does not know, from a newer agent, or an agent
-    /// installed some way it cannot update itself.
+    /// Unknown to this version, or an install the agent can't update itself.
     #[serde(other)]
     Other,
 }
@@ -145,8 +139,7 @@ pub struct HostMetrics {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckinRequest {
-    /// Changes on reboot, which is how the server detects one it did not ask
-    /// for.
+    /// Changes on reboot, so the server can spot one it didn't ask for.
     pub boot_id: String,
     pub uptime_s: u64,
     /// Hash of the inventory the agent last uploaded. If it disagrees with what
@@ -158,56 +151,43 @@ pub struct CheckinRequest {
     /// not hand out the same work twice.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub running_job_ids: Vec<JobId>,
-    /// The longest the agent would like this request held open (DAWG-205).
+    /// The longest the agent would like this request held open.
     ///
-    /// A long poll looks exactly like an idle connection, and a great deal of
-    /// corporate networking equipment exists to kill those. An agent that has
-    /// watched something trim its polls after thirty seconds asks for
-    /// comfortably less than thirty and completes them instead.
+    /// Some middleboxes kill connections that look idle. An agent that has
+    /// seen its polls cut off after 30 seconds can ask for less than that.
     ///
-    /// **Advisory, and clamped.** The gateway decides, through
-    /// [`CheckinRequest::hold_seconds`]; a client cannot ask to be held for
-    /// ever, and a gateway too old to know about this field simply holds for
-    /// its own default — which is why the agent must not shorten its own
-    /// request timeout to match what it asked for. Doing that is how an agent
-    /// starts abandoning polls the gateway was about to answer.
+    /// Advisory: the gateway clamps it in [`CheckinRequest::hold_seconds`],
+    /// and an older gateway ignores it and holds for its own default. So the
+    /// agent must not shorten its own request timeout to match, or it will
+    /// abandon polls the gateway was about to answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_hold_s: Option<u64>,
-    /// What `/etc/updawg/agent.toml` permits (DAWG-223).
-    ///
-    /// Sent every check-in rather than at enrollment, because the file changes
-    /// without one. `None` means an agent too old to say — which is not the
-    /// same as an agent that may do nothing, and the server must not read it
-    /// that way.
+    /// What `/etc/updawg/agent.toml` permits. `None` means the agent is too
+    /// old to report it, not that it may do nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_policy: Option<LocalPolicy>,
-    /// Whether this host can take snapshots (DAWG-115). `None` means an agent
-    /// too old to say, which is not the same as a host that cannot.
+    /// Whether this host can take snapshots. `None` means the agent is too old
+    /// to report it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<SnapshotSupport>,
     /// The agent build this host is running, as its packages name it
     /// (`0.2.0-20261003083653.gdd21454`).
     ///
-    /// Sent every check-in so the server's idea of a host's version cannot go
-    /// stale: before this it learnt the version at enrollment, certificate
-    /// renewal and a reported self-update, and missed any upgrade done by hand
-    /// (`apt upgrade`, a rerun of the installer). `None` means an agent too old
-    /// to say; the server keeps what it last knew.
+    /// Sent on every check-in so the server notices manual upgrades (`apt
+    /// upgrade`, rerunning the installer). `None` from older agents; the
+    /// server keeps the last version it knew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_version: Option<String>,
-    /// How this agent was installed and which channel it follows (protocol
-    /// 0.9). `None` from an agent too old to say.
+    /// How this agent was installed and which channel it follows. `None` from
+    /// older agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<AgentInstall>,
-    /// The organization signing keys this agent has pinned, by id (protocol
-    /// 0.11, DAWG-293).
+    /// The organization signing keys this agent has pinned, by id.
     ///
-    /// What the agent holds, not what the server offered it: a host keeps
-    /// verifying against the keys it pinned at enrollment and adopted at a
-    /// renewal, and the server's record of offers cannot tell whether an
+    /// The server only knows what it offered, which doesn't show whether an
     /// endorsement was refused or a renewal never happened. An organization
-    /// handing signing over to its own key needs this to see every host is on
-    /// it before retiring Updawg's. `None` means an agent too old to say.
+    /// moving to its own signing key uses this to confirm every host has it
+    /// before retiring the old one. `None` from older agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_keys: Option<Vec<SigningKeyId>>,
 }
@@ -215,14 +195,9 @@ pub struct CheckinRequest {
 impl CheckinRequest {
     /// How long to actually hold this request open, in seconds.
     ///
-    /// The one place the negotiation happens, so that no gateway can forget to
-    /// clamp: a request asking for a day is held for `max`, one asking for
-    /// nothing at all is held for `max`, and one asking for less than
-    /// [`CHECKIN_MIN_HOLD_SECONDS`](crate::CHECKIN_MIN_HOLD_SECONDS) is held
-    /// for that floor. The floor matters more than the ceiling — an agent that
-    /// asked for zero and was given zero would poll as fast as the network
-    /// allows, which is a self-inflicted denial of service that looks like a
-    /// busy fleet.
+    /// The request's `max_hold_s` clamped to between
+    /// [`CHECKIN_MIN_HOLD_SECONDS`](crate::CHECKIN_MIN_HOLD_SECONDS) and `max`,
+    /// or `max` if it didn't ask.
     #[must_use]
     pub fn hold_seconds(&self, max: u64) -> u64 {
         let max = max.max(crate::CHECKIN_MIN_HOLD_SECONDS);
@@ -240,7 +215,7 @@ pub struct CheckinResponse {
     pub next_checkin_s: u64,
     /// The server wants a full inventory, usually because the hash disagreed.
     pub inventory_requested: bool,
-    /// Bumped when server-side configuration changes; the agent re-reads
+    /// Bumped when server-side configuration changes; the agent re-fetches
     /// `/config` when it moves.
     pub config_version: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -249,15 +224,12 @@ pub struct CheckinResponse {
     /// trip on the hot path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<ServerConfig>,
-    /// Renew the client certificate now rather than when it falls due
-    /// (protocol 0.12, DAWG-308).
+    /// Renew the client certificate now rather than when it falls due.
     ///
-    /// The organization has a signing key newer than any this host was
-    /// offered, and a host adopts keys at renewal: after a rotation, a
-    /// hand-over or a compromise, waiting for the scheduled renewal would leave
-    /// it verifying against the old key for weeks. The agent renews within
-    /// minutes, spread per host so a fleet does not arrive at once. Absent from
-    /// an older gateway, which never asks.
+    /// Set when the organization has a signing key this host hasn't been
+    /// offered. Hosts pick up keys at renewal, so without this a host could
+    /// keep verifying against the old key for weeks after a rotation. The
+    /// agent renews within minutes, with per-host jitter.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub renew_certificate: bool,
 }
@@ -308,9 +280,6 @@ mod tests {
 
     #[test]
     fn a_request_cannot_ask_to_be_answered_immediately_for_ever() {
-        // Zero would be a self-inflicted denial of service: the agent would
-        // reconnect as fast as the network allows and it would look like a busy
-        // fleet rather than a bug.
         let mut req = request();
         req.max_hold_s = Some(0);
         assert_eq!(req.hold_seconds(55), crate::CHECKIN_MIN_HOLD_SECONDS);
@@ -334,9 +303,7 @@ mod tests {
 
     #[test]
     fn an_older_gateway_reading_a_newer_request_ignores_what_it_does_not_know() {
-        // The other direction of the same promise: this crate's own structs are
-        // what the server deserialises with, so a field it has never heard of
-        // must not fail the parse.
+        // the server deserialises with these same structs
         let mut req = request();
         req.max_hold_s = Some(30);
         let mut value: serde_json::Value = serde_json::to_value(&req).unwrap();
@@ -345,8 +312,7 @@ mod tests {
         assert_eq!(back.max_hold_s, Some(30));
     }
 
-    /// DAWG-210: an agent before 0.4 sends a bool, and one that says nothing
-    /// is one that could not tell.
+    /// Agents before 0.4 send a bool.
     #[test]
     fn reboot_required_reads_the_old_bool_and_the_new_words() {
         let read = |v: serde_json::Value| -> RebootRequired {
@@ -404,8 +370,6 @@ mod tests {
             renew_certificate: false,
         };
         let json = serde_json::to_string(&resp).unwrap();
-        // The common case is "nothing for you". It rides on every check-in
-        // across the whole fleet, so it should stay tiny.
         assert!(json.len() < 100, "empty check-in response grew: {json}");
         assert!(!json.contains("jobs"));
     }

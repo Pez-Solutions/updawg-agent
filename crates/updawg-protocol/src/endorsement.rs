@@ -1,16 +1,12 @@
 //! Key rotation: the outgoing organization key endorsing its replacement.
 //!
 //! An agent pins an organization's signing keys at enrollment and verifies
-//! every job against them. Rotation changes that material, and the design's
-//! claim is that **an agent never has to take the server's word for a new
-//! key**: the outgoing key signs a statement about the incoming one, and the
-//! agent follows the chain from a key it already trusts.
+//! every job against them. On rotation the agent doesn't take the server's
+//! word for a new key: the outgoing key signs a statement about the incoming
+//! one, and the agent follows the chain from a key it already trusts.
 //!
-//! [ADR 0002] decides the bytes. This module is where they live, so that the
-//! signer and the agent cannot produce two slightly different answers to "what
-//! was signed".
-//!
-//! [ADR 0002]: https://github.com/Pez-Solutions/updawg-docs/blob/main/decisions/0002-signing-key-rotation-endorsements.md
+//! The signer and the agent both use the definitions here, so they agree on
+//! exactly what was signed.
 
 use crate::{
     ids::{OrgId, SigningKeyId},
@@ -21,10 +17,8 @@ use serde::{Deserialize, Serialize};
 
 /// One end of an endorsement: a key named by both its id and its material.
 ///
-/// ⚠️ **The material is here on purpose.** An endorsement that named a key only
-/// by `key_id` would leave the server free to choose which bytes that id refers
-/// to, and would therefore cover nothing the agent cares about. `public_key` is
-/// what the agent is about to pin, or what it already has pinned.
+/// The material is included because an id alone would let the server decide
+/// which key bytes it refers to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndorsedKey {
     pub key_id: SigningKeyId,
@@ -35,38 +29,29 @@ pub struct EndorsedKey {
 
 /// What an endorsement says.
 ///
-/// Every field answers an attack from [ADR 0002] and none is decorative:
-///
-/// - `org_id` — an endorsement legitimately produced in one tenant is not a
-///   valid endorsement of that same key in another.
-/// - `previous_key` — the agent checks that the endorsing key is one it holds
-///   as `active` or `retiring`, **by material and id together**, so an
-///   endorsement chains from a specific key rather than from a name. Without
-///   it, an endorsement of a key since revoked re-verifies for ever.
-/// - `new_key` — the endorsement covers the bytes about to be pinned.
-/// - `issued_at` — *not* a freshness check. An agent that has been off for a
-///   month must still be able to follow a rotation that happened while it was
-///   off. It is there so that the audit trail and the agent's log agree on
-///   which rotation this was when there have been several.
-///
-/// [ADR 0002]: https://github.com/Pez-Solutions/updawg-docs/blob/main/decisions/0002-signing-key-rotation-endorsements.md
+/// - `org_id`: an endorsement from one tenant isn't valid in another.
+/// - `previous_key`: the agent checks the endorsing key against the keys it
+///   holds as `active` or `retiring`, by material and id together. Without
+///   this, an endorsement by a since-revoked key would keep verifying.
+/// - `new_key`: covers the bytes about to be pinned.
+/// - `issued_at`: not a freshness check, since an agent that was off for a
+///   month still needs to follow a rotation. It lets the audit trail and the
+///   agent's log agree on which rotation this was.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndorsementStatement {
     pub org_id: OrgId,
     pub issued_at: DateTime<Utc>,
-    /// The key making the endorsement — one the agent should already hold.
+    /// The key making the endorsement, which the agent should already hold.
     pub previous_key: EndorsedKey,
     /// The key being endorsed.
     pub new_key: EndorsedKey,
 }
 
 impl EndorsementStatement {
-    /// The canonical document: this statement's JSON, which is the string an
-    /// [`Endorsement`] carries verbatim.
+    /// The canonical document, which [`Endorsement`] carries verbatim.
     ///
-    /// `serde_json` orders object keys deterministically and emits no
-    /// insignificant whitespace, which is what makes this canonical. It is the
-    /// same rule [`crate::Job::document`] uses.
+    /// `serde_json` orders keys deterministically and emits no extra
+    /// whitespace. Same rule as [`crate::Job::document`].
     pub fn to_document(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
@@ -81,23 +66,12 @@ impl EndorsementStatement {
 /// A statement and the signature over it, as they travel on
 /// [`crate::OrgSigningKey::endorsement`].
 ///
-/// # ⚠️ Why the statement is carried rather than rebuilt
-///
-/// The obvious wire format is a bare signature, with the agent reconstructing
-/// the statement from what it knows. It cannot. `issued_at` is not derivable
-/// from anything the agent holds, and even if it were, **a rebuilt document is
-/// not a byte-identical document** — that is what DAWG-209 cost on the job
-/// document, where "nearly identical" verified as forged. An agent that had to
-/// guess the bytes would be an agent that fails a rotation for a reason nobody
-/// can see.
-///
-/// So the signed bytes travel with the signature, and verification never
-/// re-serialises anything. The statement is the **string that was signed**, not
-/// an object to be parsed and re-encoded: an agent whose build predates a field
-/// added later would drop that field on the round trip and compute a document
-/// the signature does not cover. Parsing it (via [`Endorsement::statement`]) is
-/// for deciding whether to *accept* the endorsement; it is never how the bytes
-/// are recovered.
+/// The statement travels as the exact string that was signed. The agent can't
+/// rebuild it: `issued_at` isn't derivable from anything it holds, and
+/// re-serialising a parsed statement would drop any field added in a later
+/// build, producing bytes the signature doesn't cover. [`Endorsement::statement`]
+/// parses it for deciding whether to accept the endorsement; verification
+/// always uses the original string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Endorsement {
     /// The canonical JSON of an [`EndorsementStatement`], verbatim.
@@ -108,12 +82,8 @@ pub struct Endorsement {
 }
 
 impl Endorsement {
-    /// Build one from a statement and the signature its previous key produced.
-    ///
-    /// The signature must have been made over [`EndorsementStatement::signing_bytes`]
-    /// for the same statement — this serialises the statement once and hands
-    /// back the pair, so the document that is signed and the document that is
-    /// sent cannot differ.
+    /// Pairs a statement with the signature its previous key made over
+    /// [`EndorsementStatement::signing_bytes`].
     pub fn new(
         statement: &EndorsementStatement,
         signature_base64: impl Into<String>,
@@ -124,21 +94,15 @@ impl Endorsement {
         })
     }
 
-    /// The exact bytes the signature covers.
-    ///
-    /// Infallible, and deliberately so: it reads the string that arrived rather
-    /// than re-deriving it, so there is no encoding step here that can fail or
-    /// disagree with the signer's.
+    /// The exact bytes the signature covers, taken from the string as it
+    /// arrived.
     #[must_use]
     pub fn signing_bytes(&self) -> Vec<u8> {
         SignaturePurpose::Endorsement.bytes_to_sign(self.statement.as_bytes())
     }
 
-    /// What the endorsement claims.
-    ///
-    /// ⚠️ For **deciding** whether to accept it — which organization, which
-    /// previous key, which material. Never for recovering the signed bytes; use
-    /// [`Endorsement::signing_bytes`] for that.
+    /// What the endorsement claims, for deciding whether to accept it. Don't
+    /// re-serialise this to verify; use [`Endorsement::signing_bytes`].
     pub fn statement(&self) -> Result<EndorsementStatement, serde_json::Error> {
         serde_json::from_str(&self.statement)
     }
@@ -176,14 +140,11 @@ mod tests {
         assert!(bytes.starts_with(b"updawg-endorsement-v1\0"));
     }
 
-    /// The reason the statement travels as a string. A verifier that parsed and
-    /// re-serialised would be computing its own document; this asserts that the
-    /// one it verifies is the one that arrived, byte for byte.
     #[test]
     fn verification_reads_the_bytes_that_arrived_rather_than_rebuilding_them() {
         let wire = Endorsement {
-            // Key order and spacing a re-serialisation would not reproduce, and
-            // a field this build does not know about.
+            // key order and spacing a re-serialisation wouldn't reproduce, plus
+            // a field this build doesn't know
             statement: "{\"new_key\":{\"key_id\":\"sk_new\",\"public_key\":\"ed25519:AAAAnew\"} , \"org_id\":\"org_1\",\"issued_at\":\"2026-09-24T11:00:00Z\",\"previous_key\":{\"key_id\":\"sk_old\",\"public_key\":\"ed25519:AAAAold\"},\"note\":\"from a later build\"}".into(),
             signature: "c2ln".into(),
         };
@@ -191,7 +152,6 @@ mod tests {
             wire.signing_bytes(),
             SignaturePurpose::Endorsement.bytes_to_sign(wire.statement.as_bytes())
         );
-        // And it still parses into something this build can make a decision on.
         let parsed = wire.statement().unwrap();
         assert_eq!(parsed.new_key.key_id.as_str(), "sk_new");
         assert_ne!(
@@ -216,9 +176,6 @@ mod tests {
         assert_eq!(s, back);
     }
 
-    /// Both ends name the key by material as well as by id. An endorsement that
-    /// dropped `public_key` would still deserialise into something plausible if
-    /// the field were optional, so it is required and this says why.
     #[test]
     fn a_statement_missing_a_key_material_is_rejected() {
         let json = "{\"org_id\":\"org_1\",\"issued_at\":\"2026-09-24T11:00:00Z\",\

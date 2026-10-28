@@ -1,15 +1,11 @@
 #!/bin/sh
-# The distro matrix (DAWG-40), on one runner: one fake gateway, then the real
-# agent in a container of each distribution at once — enrolled with
-# updawgctl, then updawgd until the gateway has its first inventory — then
-# what the gateway recorded for each, checked.
+# Distro matrix: starts the fake gateway, runs the agent in a container per
+# distro (enroll, then updawgd until the first inventory arrives) and checks
+# what the gateway recorded.
 #
 #   .github/distros/run.sh <image> <expected os-release ID> [<image> <ID> ...]
 #
-# One job rather than one per distribution: each check is half a minute of
-# work, and twelve jobs held twelve runner slots, which is what starved main's
-# release jobs ("not acquired by Runner"). The gateway already keys what it
-# records by enrollment token, so one serves them all.
+# All distros share one gateway, which keys records by enrollment token.
 #
 # Expects mbin/updawgd and mbin/updawgctl (x86_64 musl, built with
 # insecure-extra-root) and mbin/fake_gateway.
@@ -28,9 +24,8 @@ gateway=$!
 trap 'kill $gateway 2>/dev/null || true; [ -z "$containers" ] || docker rm -f $containers >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 50); do [ -s "$gw/ca.pem" ] && break; sleep 0.1; done
 
-# In each container: a machine id if the image has none (a container image
-# usually doesn't, and enrollment sends it), an observe-mode agent.toml, the
-# enrollment, then the daemon in the foreground.
+# Per container: create a machine id if missing (enrollment needs one), write
+# an observe-mode agent.toml, enroll, run the daemon.
 # Split again below with set -- $pairs: image names have no spaces.
 pairs="$*"
 while [ $# -gt 0 ]; do
@@ -48,9 +43,8 @@ while [ $# -gt 0 ]; do
     ' >/dev/null
 done
 
-# Until every host's inventory is in, or one has stopped, or six minutes
-# (dnf fetches its metadata first, which is most of it, and here six
-# distributions fetch at once).
+# Wait for every inventory, a failure, or six minutes (dnf metadata fetches
+# are slow when several run at once).
 has_inventory() {
   [ -s "$gw/results.json" ] && jq -e --arg t "$1" '.[$t].inventory' "$gw/results.json" >/dev/null
 }
@@ -90,8 +84,7 @@ while [ $# -gt 0 ]; do
       elif ($h.checkins < 1) then error("\($image): never checked in with its certificate")
       elif ($h.inventory.kind != "full") then error("\($image): the first inventory was not a full one")
       elif ($h.inventory.packages < 20) then error("\($image): only \($h.inventory.packages) packages")
-      # Not the repository count: apt in a fresh container has no package lists,
-      # so none, and that says nothing about the agent.
+      # Skip the repo count: a fresh apt container has no package lists.
       elif ($h.inventory.facts.ecosystem != $ecosystem) then error("\($image): reported \($h.inventory.facts.ecosystem) packages, not \($ecosystem)")
       elif (($h.inventory.sample.name // "") == "" or ($h.inventory.sample.version // "") == "") then error("\($image): a package with no name or version")
       else "ok: \($image) enrolled as \($h.host_id) (\($h.facts.distro) \($h.facts.version)), checked in \($h.checkins)x, inventory of \($h.inventory.packages) \($ecosystem) packages, \($h.inventory.repositories) repositories"

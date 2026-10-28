@@ -1,17 +1,12 @@
 name: Release
 
-# Every commit on main produces the agent as it is served from get.updawg.net
-# (DAWG-44): static binaries, the unit, install.sh and a SHA256SUMS covering all
-# of them. updawg-infra publishes the artifact; this only builds it.
+# Builds the agent for every commit on main: static binaries, the systemd
+# unit, install.sh and SHA256SUMS, as served from get.updawg.net. x86_64 files
+# sit at the top level (where existing installers look), aarch64 under
+# `aarch64/`.
 #
-# Two architectures (DAWG-41). x86_64's files stay at the top of the artifact,
-# where every install.sh already in the world looks for them; aarch64's go in
-# `aarch64/`, and one SHA256SUMS covers both.
-#
-# And the same binaries as .deb and .rpm (DAWG-42), tested through install,
-# upgrade and removal on each distribution. On a pull request only when the
-# packaging or this workflow changes: that is when there is something new to
-# test.
+# Also packages them as .deb and .rpm and tests install, upgrade and removal
+# on each distro. On PRs this only runs when packaging or this file changes.
 on:
   push:
     branches: [main]
@@ -26,10 +21,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Every job here runs on the release runner group on main (DAWG-291), not
-  # only `publish`: the builds make the artifacts `publish` signs, so a build
-  # on a runner pull requests also use could hand it something tampered with.
-  # Pull requests build on the shared runners and publish nothing.
+  # On main, every job (not just `publish`) uses the release runner group,
+  # since the builds produce what gets signed. PRs build on the shared runners
+  # and publish nothing.
   x86_64:
     name: x86_64-unknown-linux-musl
     runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
@@ -37,8 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # musl, so one static binary runs on every supported distribution — CI
-      # checks that it compiles; this is the only place it is linked.
+      # Static musl build. CI only checks that it compiles; it's linked here.
       - name: Install Rust and musl
         run: |
           rustup toolchain install stable --profile minimal
@@ -52,7 +45,7 @@ jobs:
 
       - name: build
         run: |
-          # The version it reports is the packages' (DAWG-46).
+          # Same version string as the packages.
           export UPDAWG_BUILD=$(sh packaging/release-id.sh)
           cargo build --release --target x86_64-unknown-linux-musl \
             --bin updawgd --bin updawgctl
@@ -80,8 +73,7 @@ jobs:
     timeout-minutes: 45
     env:
       CROSS_VERSION: v0.2.5
-      # Of the release tarball, pinned: it builds what runs as root on other
-      # people's servers.
+      # Pinned release tarball.
       CROSS_SHA256: a486cefa6cb486971b97be321ea9dfc2e90c1979550295314a368f53fab6d588
     steps:
       - uses: actions/checkout@v7
@@ -102,11 +94,10 @@ jobs:
         with:
           key: release-aarch64-musl
 
-      # In cross's container, which carries the aarch64 musl C toolchain that
-      # aws-lc-rs needs; Docker is on the runners.
+      # cross provides the aarch64 musl C toolchain aws-lc-rs needs.
       - name: build
         run: |
-          # Through Cross.toml's passthrough into the container.
+          # Passed through to the container by Cross.toml.
           export UPDAWG_BUILD=$(sh packaging/release-id.sh)
           cross build --release --target aarch64-unknown-linux-musl \
             --bin updawgd --bin updawgctl
@@ -117,8 +108,7 @@ jobs:
           for b in updawgd updawgctl; do
             cp "target/aarch64-unknown-linux-musl/release/$b" "out/$b"
           done
-          # Stripped with the container's own binutils: the runner's strip
-          # does not know aarch64.
+          # The runner's strip doesn't handle aarch64; use the container's.
           docker run --rm -v "$PWD/out:/out" \
             "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5" \
             aarch64-linux-musl-strip /out/updawgd /out/updawgctl
@@ -156,14 +146,13 @@ jobs:
           cp packaging/install.sh dist/install.sh
           cp packaging/systemd/updawgd.service dist/updawgd.service
           git rev-parse HEAD > dist/REVISION
-          # ⚠️ Paths relative to dist/. install.sh checks the download with
-          # `sha256sum --check` in the directory it downloaded to, keeping the
-          # `aarch64/` part, so a `dist/updawgd` line would match nothing.
+          # Paths must be relative to dist/: install.sh runs
+          # `sha256sum --check` from its download directory.
           (cd dist && sha256sum updawgd updawgctl aarch64/updawgd aarch64/updawgctl \
             updawgd.service install.sh > SHA256SUMS)
           cat dist/SHA256SUMS
 
-      # The name stays what updawg-infra's get role downloads.
+      # Artifact name is referenced by the deploy, don't rename.
       - uses: actions/upload-artifact@v7
         with:
           name: updawg-agent-linux-x86_64
@@ -201,9 +190,8 @@ jobs:
           echo "${NFPM_SHA256}  nfpm.tgz" | sha256sum -c -
           mkdir -p .nfpm && tar -xzf nfpm.tgz -C .nfpm nfpm
 
-      # The version is Cargo.toml's, always: packaging/bump-version.sh moves
-      # it. A tag only marks a build, and has to agree with it. The release is
-      # packaging/release-id.sh's.
+      # Version from Cargo.toml (a tag must match it), release from
+      # packaging/release-id.sh.
       - name: build
         run: |
           VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
@@ -212,9 +200,8 @@ jobs:
             exit 1
           fi
           RELEASE=$(sh packaging/release-id.sh)
-          # The binaries say the same, or a self-update could never tell it
-          # had arrived (DAWG-46).
-          # Artifacts lose the executable bit on the way.
+          # The binaries must report the same version, or self-update can't
+          # tell it succeeded. Artifacts lose the executable bit.
           chmod +x bin/amd64/updawgctl
           bin/amd64/updawgctl --version 2>/dev/null | grep -F -- "${VERSION}-${RELEASE}" ||
             { file bin/amd64/updawgctl; echo "the binaries do not report ${VERSION}-${RELEASE}" >&2; exit 1; }
@@ -234,7 +221,7 @@ jobs:
               ARCH=$ARCH RELEASE=$RELEASE .nfpm/nfpm package -f packaging/nfpm/nfpm.yaml -p $fmt -t out/
             done
           done
-          # The same, one release on, for the upgrade test and nothing else.
+          # A second build one release ahead, for the upgrade test.
           stage amd64
           for fmt in deb rpm; do
             ARCH=amd64 RELEASE="${RELEASE}.1" .nfpm/nfpm package -f packaging/nfpm/nfpm.yaml -p $fmt -t next/
@@ -274,9 +261,7 @@ jobs:
           name: packages-next
           path: next/
 
-      # Every image at once, in one job: a job per image held a runner slot
-      # each, and with PRs queued that is how this run lost jobs ("not
-      # acquired by Runner") and never published.
+      # One job for all images; a job per image tied up too many runners.
       - name: install, upgrade, remove
         run: |
           deb_old=$(ls out/*_amd64.deb) deb_new=$(ls next/*_amd64.deb)
@@ -301,21 +286,15 @@ jobs:
           done
           [ -z "$failed" ] || { echo "FAILED:$failed"; exit 1; }
 
-  # Every build of main, onto pkg.updawg.net's beta channel (DAWG-45), once
-  # its packages installed, upgraded and removed cleanly everywhere above.
-  # `stable` is the promote button: .github/workflows/promote.yml (DAWG-46).
-  #
-  # Off until the key, the identity and the bucket exist: they are in
-  # updawg-infra's terraform/gcp, which a person applies. Set the repository
-  # variable PKG_PUBLISH to `true` after that apply.
+  # Publish every main build that passed the package tests to the beta
+  # channel. Stable is promote.yml. Gated on the PKG_PUBLISH repo variable.
   publish:
     name: publish to pkg.updawg.net (beta)
     needs: [packages, packages-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PKG_PUBLISH == 'true'
     runs-on: ${{ github.event_name == 'pull_request' && fromJSON('["self-hosted","copenhagen"]') || fromJSON('["self-hosted","release"]') }}
     timeout-minutes: 20
-    # One publish at a time: each rebuilds a channel's indexes from its list,
-    # and two interleaved would each drop the other's build.
+    # Each publish rebuilds the channel index, so they can't overlap.
     concurrency:
       group: pkg-updawg-net
       cancel-in-progress: false
@@ -330,8 +309,7 @@ jobs:
           name: updawg-agent-packages
           path: out/
 
-      # The same build's binaries, for self-update on hosts install.sh set up
-      # (DAWG-46).
+      # Binaries for self-update on hosts installed without a package.
       - uses: actions/download-artifact@v8
         with:
           name: updawg-agent-linux-x86_64
@@ -340,9 +318,7 @@ jobs:
       - id: tools
         uses: ./.github/actions/pkg-tools
 
-      # Never backwards: a build that sorts below what beta holds would be
-      # one apt and dnf never install, and a manifest that moves agents back.
-      # Compared as dpkg compares, which is how the hosts will.
+      # Refuse a build that sorts below beta's current one (dpkg ordering).
       - name: newer than beta
         run: |
           NEW=$(ls out/*_amd64.deb | sed 's/.*updawg-agent_\(.*\)_amd64\.deb/\1/')
@@ -358,13 +334,13 @@ jobs:
           SIGN: ${{ steps.tools.outputs.sign }}
         run: sh packaging/repo/publish.sh beta out/*.deb out/*.rpm
 
-      # After the packages: a manifest must never name a build apt and dnf
-      # cannot install yet. The version is the binaries' own word for it.
+      # After the packages, so the manifest never names a build apt and dnf
+      # can't install yet.
       - name: the beta self-update manifest
         env:
           SIGN: ${{ steps.tools.outputs.sign }}
         run: |
-          # Not `bin/`: that is the binaries' source in this repository.
+          # Not bin/, which holds the crates.
           mkdir -p release-bin/x86_64-unknown-linux-musl release-bin/aarch64-unknown-linux-musl
           cp dist/updawgd dist/updawgctl release-bin/x86_64-unknown-linux-musl/
           cp dist/aarch64/updawgd dist/aarch64/updawgctl release-bin/aarch64-unknown-linux-musl/

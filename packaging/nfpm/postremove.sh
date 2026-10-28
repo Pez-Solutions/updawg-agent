@@ -13,9 +13,8 @@ if [ -d /run/systemd/system ]; then
   systemctl daemon-reload || true
 fi
 
-# Only a deb purge takes the host's identity with it: its key, certificate
-# and pinned signing keys. A removal keeps it, so reinstalling needs no new
-# enrolment, and rpm has no purge.
+# Only a deb purge deletes the host identity, so a reinstall doesn't need to
+# enroll again. rpm has no purge.
 if [ "$1" = purge ]; then
   rm -rf /var/lib/updawg
   rmdir /etc/updawg 2>/dev/null || true

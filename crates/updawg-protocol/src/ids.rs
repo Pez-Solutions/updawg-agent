@@ -1,8 +1,8 @@
 //! Type-prefixed identifiers.
 //!
 //! The server stores `UUIDv7` primary keys and exposes them with a type prefix
-//! (`hst_`, `job_`, `org_`). Keeping them as distinct newtypes rather than bare
-//! strings means a host id cannot be passed where a job id is expected.
+//! (`hst_`, `job_`, `org_`). Separate newtypes stop a host id being passed
+//! where a job id is expected.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

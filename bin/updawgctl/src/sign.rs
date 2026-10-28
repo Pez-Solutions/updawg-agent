@@ -1,17 +1,13 @@
-//! `updawgctl prove-key` and `updawgctl sign`: the organization's side of a
-//! customer-held signing key (DAWG-157, ADR 0006).
+//! `updawgctl prove-key`, `endorse` and `sign`: the organization's side of a
+//! customer-held signing key.
 //!
-//! Run where the key lives — a workstation, a CI job, a box in front of an
-//! HSM — never on a managed host. Neither command needs an enrolled agent.
+//! Run these where the key lives (a workstation, a CI job, a machine in front
+//! of an HSM), not on a managed host. None of them need an enrolled agent.
 //!
-//! # What `sign` shows is decoded from what it signs
-//!
-//! Each job is described from its own document, parsed with the same
-//! protocol crate an agent uses, and the signature covers
-//! [`Job::signing_bytes`] of that same parse — exactly what every host will
-//! verify. Nothing the server says *about* a job (a proposal title, a host's
-//! name) decides what gets signed; the hostname is shown for orientation and
-//! labelled as the server's.
+//! `sign` describes each job from its own document, parsed with the same
+//! protocol crate the agent uses, and signs [`Job::signing_bytes`] of that
+//! same parse. Metadata from the server, like the proposal or hostname, is
+//! shown for context only and labelled as the server's.
 
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
@@ -84,8 +80,8 @@ struct Signer {
 }
 
 impl Signer {
-    /// Sign `message` and check the result against the public half, so a
-    /// misbehaving `--command` fails here rather than on every host.
+    /// Verifies the result against the public half, so a misbehaving
+    /// `--command` fails here rather than on every host.
     fn sign(&self, message: &[u8]) -> Result<String> {
         let signature = match &self.how {
             How::File(key) => key.sign(message),
@@ -135,16 +131,14 @@ fn run_signer(command: &str, message: &[u8]) -> Result<Vec<u8>> {
 
 /* ------------------------------------------------------------- prove-key */
 
-/// `updawgctl prove-key --org org_… (--key FILE | --command … --public-key …)`.
-///
-/// Prints the proof the portal asks for before it hands signing over to this
-/// key: the key endorsing **itself**, for this organization, now. It shows the
-/// key's holder can sign with it — a hand-over to a key nobody holds cannot be
-/// undone — and it is useless as an endorsement, because an agent only
-/// follows one from a key it already trusts.
+/// Prints the proof the portal asks for before handing signing over to this
+/// key: the key endorsing itself, for this organization, now. It shows the
+/// holder can actually sign with it, since a hand-over to a key nobody holds
+/// can't be undone. It's useless as a real endorsement because agents only
+/// follow endorsements from a key they already trust.
 pub(crate) fn prove_key(org: &str, source: &KeySource) -> Result<()> {
     if !org.starts_with("org_") {
-        bail!("--org is your organization's id, `org_…`, as the portal shows it");
+        bail!("--org is your organization's id, `org_...`, as the portal shows it");
     }
     let signer = source.signer()?;
     let me = EndorsedKey {
@@ -161,7 +155,7 @@ pub(crate) fn prove_key(org: &str, source: &KeySource) -> Result<()> {
     let proof = Endorsement::new(&statement, signature)?;
     println!("{}", serde_json::to_string(&proof)?);
     eprintln!(
-        "Paste the line above into the portal (Settings → Signing keys) within 24 hours. \
+        "Paste the line above into the portal (Settings > Signing keys) within 24 hours. \
          Key fingerprint: {}",
         signer.public.fingerprint()
     );
@@ -170,14 +164,10 @@ pub(crate) fn prove_key(org: &str, source: &KeySource) -> Result<()> {
 
 /* --------------------------------------------------------------- endorse */
 
-/// `updawgctl endorse --org org_… --from sk_… --next-public-key ed25519:…
-/// (--key FILE | --command … --public-key …)`.
-///
-/// Your active key endorsing the next one (DAWG-293), for rotating a key your
-/// organization holds. Hosts follow it as they follow any rotation: from a
-/// key they already pin, at their next certificate renewal. The portal also
-/// wants the next key's own proof (`prove-key` with it), so a rotation to a
-/// key nobody holds cannot happen.
+/// The active key endorsing the next one, for rotating a key the organization
+/// holds. Hosts follow it at their next certificate renewal. The portal also
+/// wants a `prove-key` proof from the next key, so nobody can rotate to a key
+/// that isn't held.
 pub(crate) fn endorse(org: &str, from: &str, next: &str, source: &KeySource) -> Result<()> {
     let signer = source.signer()?;
     let next = OrgPublicKey::parse_configured("--next-public-key", next)?;
@@ -185,7 +175,7 @@ pub(crate) fn endorse(org: &str, from: &str, next: &str, source: &KeySource) -> 
     let statement = endorsement.statement()?;
     println!("{}", serde_json::to_string(&endorsement)?);
     eprintln!(
-        "Paste the line above into the portal (Settings → Signing keys → Rotate your key) \
+        "Paste the line above into the portal (Settings > Signing keys > Rotate your key) \
          within 24 hours, with the output of `updawgctl prove-key --org {org}` run with the \
          next key. The next key will be {} (fingerprint {}).",
         statement.new_key.key_id.as_str(),
@@ -194,8 +184,8 @@ pub(crate) fn endorse(org: &str, from: &str, next: &str, source: &KeySource) -> 
     Ok(())
 }
 
-/// The endorsement itself, signed, with the next key's id minted here: the
-/// statement names it, and is signed before the server has a row for it.
+/// The next key's id is minted here, because the statement names it and is
+/// signed before the server knows about the key.
 fn endorsement(
     org: &str,
     from: &str,
@@ -204,10 +194,10 @@ fn endorsement(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Endorsement> {
     if !org.starts_with("org_") {
-        bail!("--org is your organization's id, `org_…`, as the portal shows it");
+        bail!("--org is your organization's id, `org_...`, as the portal shows it");
     }
     if !from.starts_with("sk_") {
-        bail!("--from is your active key's id, `sk_…`, as the portal lists it");
+        bail!("--from is your active key's id, `sk_...`, as the portal lists it");
     }
     if *next == signer.public {
         bail!("the next key is the key you are rotating away from");
@@ -262,20 +252,18 @@ pub(crate) struct SignOptions {
     pub(crate) org: String,
     pub(crate) token: String,
     pub(crate) yes: bool,
-    /// What unattended signing may sign (DAWG-293). `None`: everything this
-    /// key is asked for, as before.
+    /// What unattended signing may sign. `None` signs everything waiting for
+    /// this key.
     pub(crate) policy: Option<crate::policy::SignPolicy>,
 }
 
-/// `updawgctl sign`: every job waiting for this key, shown, confirmed,
-/// signed and handed back.
+/// Shows, confirms, signs and uploads every job waiting for this key.
 pub(crate) async fn sign(options: SignOptions, source: &KeySource) -> Result<()> {
     let signer = source.signer()?;
     let api = Api::new(&options)?;
 
-    // Which id the organization knows this key by. A job naming another key
-    // is for another key: signing it with this one is a signature every host
-    // refuses.
+    // The id the organization knows this key by. Jobs naming a different key
+    // are skipped, since hosts would reject the signature.
     let keys: Vec<ListedKey> = api.get("signing-keys").await?;
     let mine = keys
         .iter()
@@ -335,7 +323,6 @@ pub(crate) async fn sign(options: SignOptions, source: &KeySource) -> Result<()>
     Ok(())
 }
 
-/// What a job will do, from its document.
 fn describe(job: &Job, hostname: &str, proposal: Option<i64>) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -405,7 +392,7 @@ fn pins(out: &mut String, packages: &[PackagePin]) {
     }
 }
 
-/// An enum's wire spelling, which is what the portal shows too.
+/// An enum's wire spelling, which the portal also uses.
 pub(crate) fn word<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
@@ -499,9 +486,6 @@ mod tests {
         }
     }
 
-    /// DAWG-293: the active key endorses the next, under its own id and
-    /// material, naming a fresh id for the next, and the signature is one a
-    /// host holding the active key accepts.
     #[test]
     fn an_endorsement_is_the_active_key_vouching_for_the_next() {
         let active = OrgKeyPair::generate().unwrap();
@@ -568,8 +552,6 @@ mod tests {
         assert!(shown.contains("#142"), "{shown}");
     }
 
-    /// What `sign` produces is what a host checks: a signature over
-    /// `signing_bytes` that the pinned key verifies.
     #[test]
     fn a_signature_from_a_key_file_verifies_as_a_host_checks_it() {
         let key = OrgKeyPair::generate().unwrap();
@@ -590,7 +572,6 @@ mod tests {
         pinned.verify_job(&job).expect("a host accepts it");
     }
 
-    /// A signing command that signs with some other key is caught here.
     #[test]
     fn a_command_signing_with_the_wrong_key_is_refused() {
         let signer = Signer {

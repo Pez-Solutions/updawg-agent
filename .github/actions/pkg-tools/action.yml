@@ -1,8 +1,6 @@
-# What publishing to pkg.updawg.net needs (DAWG-45): the tools that build apt
-# and dnf indexes, the signer, gcloud, and a credential for the one identity
-# allowed to sign — release-signer, which only updawg-agent's `main` can
-# become (updawg-infra terraform/gcp/packages.tf). Production's project,
-# `updawg-prod`, since 2026-10-07 (DAWG-184).
+# Tools for publishing to pkg.updawg.net: apt and dnf index builders, the
+# signer, gcloud, and credentials for the signing identity (only usable from
+# main).
 name: pkg.updawg.net tools
 description: apt-ftparchive, createrepo_c, updawg-release-sign and release-signer's credential.
 outputs:

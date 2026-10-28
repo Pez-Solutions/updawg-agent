@@ -1,38 +1,30 @@
-//! Filesystem snapshot providers (DAWG-115).
+//! Filesystem snapshot providers.
 //!
-//! Being able to undo is what lets a customer agree to automatic patching.
-//! Where the filesystem supports it, the executor takes a snapshot before it
-//! changes anything, and a `rollback` job puts the host back.
+//! Where the filesystem supports it, the executor takes a snapshot before
+//! changing anything, and a `rollback` job restores it. A new provider needs
+//! a [`SnapshotProvider`] implementation and a case in [`detect`]. Snapper
+//! (btrfs), ZFS and LVM thin are implemented.
 //!
-//! Adding a provider means implementing [`SnapshotProvider`] and a row in
-//! [`detect`]; nothing else in the agent changes. Snapper (btrfs, DAWG-116),
-//! ZFS (DAWG-117) and LVM thin (DAWG-118) are built.
+//! # Kernels and a separate `/boot`
 //!
-//! # A kernel the rollback would take away
+//! Snapshots cover `/`. If `/boot` is a separate filesystem (the Fedora and
+//! RHEL default, or a ZFS `bpool`), rolling back past a kernel install leaves
+//! that kernel and its boot entry in `/boot` but removes its modules, and the
+//! host may not boot. [`SnapshotProvider::kernels_rolled_away`] reports those
+//! kernels and the executor refuses the rollback.
 //!
-//! A snapshot is of `/`. Where `/boot` is a filesystem of its own — Fedora's
-//! and RHEL's default, a ZFS `bpool` — a rollback that removes a kernel
-//! installed since leaves that kernel in `/boot`, its boot entry pointing at
-//! it, and its modules gone: the next boot can come up with none.
-//! [`SnapshotProvider::kernels_rolled_away`] says which, and the executor
-//! refuses such a rollback before changing anything.
+//! # Scope of a rollback
 //!
-//! # What a rollback restores, and what it does not
+//! A rollback restores the whole filesystem, not just the packages: config
+//! edits and logs written since are reverted too if they live on it. The
+//! agent's own state directory is carried across by the executor so no job
+//! runs twice.
 //!
-//! A snapshot is of a filesystem, not of a package change. Rolling back puts
-//! **everything** on that filesystem back as it was: the packages and the
-//! package database, and also configuration somebody edited since and logs
-//! written since, if they live on it. That is the honest meaning of the word,
-//! and the portal says so before anybody confirms one (DAWG-120). The agent's
-//! own state is the exception: it is carried across by the executor, because
-//! forgetting which jobs have run would let one run twice.
+//! # Ownership
 //!
-//! # Only our own
-//!
-//! A provider lists, restores and prunes only the snapshots the agent took.
-//! An administrator's snapshots, or the distribution's own pre/post pairs,
-//! are theirs: the server cannot name one to roll back to, and pruning never
-//! counts or deletes them.
+//! Providers only list, restore and prune snapshots the agent took. Snapshots
+//! made by an administrator or by the distribution (snapper pre/post pairs)
+//! can't be rolled back to and are never pruned.
 
 pub mod lvm;
 pub mod snapper;
@@ -77,8 +69,8 @@ pub enum Provider {
 }
 
 impl Provider {
-    /// The prefix of this provider's snapshot ids, e.g. `snapper` in
-    /// `snapper:412`.
+    /// The prefix of this provider's snapshot ids (`snapper` in
+    /// `snapper:412`).
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -94,13 +86,12 @@ impl Provider {
 /// One snapshot the agent took.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// Provider-qualified, e.g. `snapper:412:job_…`. What goes into
-    /// `JobComplete::snapshot_id` and comes back in a `rollback` job.
+    /// Provider-qualified, like `snapper:412:job_abc`. Sent as
+    /// `JobComplete::snapshot_id` and returned in a `rollback` job.
     pub id: String,
     pub description: String,
-    /// The job it was taken for.
     pub job: String,
-    /// As the provider prints it. Informational only: ordering is by id.
+    /// As the provider prints it. Display only; ordering is by id.
     pub created: String,
 }
 
@@ -110,8 +101,7 @@ pub struct Restored {
     pub created: u64,
     pub modified: u64,
     pub deleted: u64,
-    /// Nothing has changed yet: it happens at the next boot (LVM), and there
-    /// are no counts to give.
+    /// The restore happens at the next boot (LVM), so there are no counts.
     pub at_next_boot: bool,
 }
 
@@ -134,37 +124,36 @@ pub trait SnapshotProvider: Send + Sync {
     /// Whether this provider can take a snapshot on this host now, and if
     /// not, why not.
     async fn available(&self) -> std::result::Result<(), String>;
-    /// Bytes free where a snapshot would live (DAWG-121). A snapshot pins
-    /// the files an install replaces, so the install needs room for both.
+    /// Bytes free where a snapshot would live. A snapshot pins the files an
+    /// install replaces, so the install needs room for both.
     async fn free_bytes(&self) -> Result<u64>;
-    /// Take one, marked as the agent's and as taken for `job`.
+    /// Takes a snapshot, marked as the agent's and tagged with `job`.
     async fn create(&self, description: &str, job: &str) -> Result<Snapshot>;
-    /// The agent's own, oldest first.
+    /// The agent's snapshots, oldest first.
     async fn list(&self) -> Result<Vec<Snapshot>>;
-    /// Put the filesystem back as it was when `id` was taken.
     async fn rollback(&self, id: &str) -> Result<Restored>;
-    /// Delete the agent's own beyond the newest `keep`, and say which went.
-    /// Unbounded snapshots fill disks, which is its own outage.
+    /// Deletes all but the newest `keep` of the agent's snapshots and returns
+    /// the ids removed.
     async fn prune(&self, keep: usize) -> Result<Vec<String>>;
-    /// Kernels installed since snapshot `id` — their module directories, e.g.
-    /// `6.8.0-2` — which rolling back to it would take away.
+    /// Kernels installed since snapshot `id` (module directory names such as
+    /// `6.8.0-2`), which rolling back would remove.
     async fn kernels_rolled_away(&self, id: &str) -> Result<Vec<String>>;
     /// Whether a rollback takes effect only at the next boot, as an LVM merge
     /// into a mounted root does.
     fn restores_at_next_boot(&self) -> bool {
         false
     }
-    /// For a provider whose rollback happens at the next boot: make `dir` in
-    /// snapshot `id` exactly what it is now, so the agent's own state is not
-    /// rolled back with everything else. Nothing to do for the others, whose
-    /// rollback happens while the agent watches and puts it back itself.
+    /// For providers that restore at the next boot: copy the current `dir`
+    /// into snapshot `id` so the agent's state survives the rollback. Other
+    /// providers roll back while the agent is running, and the executor
+    /// restores the state itself.
     async fn carry_into(&self, _id: &str, _dir: &std::path::Path) -> Result<()> {
         Ok(())
     }
 }
 
-/// The kernel whose module directory `path` is — `lib/modules/<kernel>` or
-/// `usr/lib/modules/<kernel>`, relative to the root and nothing deeper.
+/// The kernel name if `path` is exactly `lib/modules/<kernel>` or
+/// `usr/lib/modules/<kernel>` (relative to the root).
 #[must_use]
 pub fn kernel_dir(path: &str) -> Option<String> {
     let path = path.trim_start_matches('/');
@@ -177,10 +166,8 @@ pub fn kernel_dir(path: &str) -> Option<String> {
 
 /// The provider `wanted` names on this host, or why there is none.
 ///
-/// `Auto` tries each built provider in turn and settles on the first that is
-/// usable; `None` is a choice, not a failure, and says so. A provider named
-/// explicitly and not usable is reported as such rather than silently
-/// replaced by another: whoever wrote `agent.toml` asked for that one.
+/// `Auto` picks the first usable provider. An explicitly configured provider
+/// that isn't usable is an error; we don't fall back to another one.
 pub async fn detect(wanted: Provider) -> std::result::Result<Box<dyn SnapshotProvider>, String> {
     match wanted {
         Provider::None => Err("agent.toml sets `[snapshots] provider = \"none\"`".into()),

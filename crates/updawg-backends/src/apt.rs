@@ -1,30 +1,18 @@
-//! Debian-family backend (DAWG-34).
+//! Debian-family backend.
 //!
 //! Installed packages come from `dpkg-query -W` with a tab-separated format
 //! string, candidates and pending removals from one simulated
 //! `apt-get -s dist-upgrade`, repository origin from `apt-cache policy`, and
 //! holds from `apt-mark showhold`.
 //!
-//! Shelling out rather than linking `libapt` is what keeps the binary statically
-//! linked against musl, so one build per architecture runs on every supported
-//! distribution.
+//! All output parsing is done by plain functions over `&str`, tested against
+//! output captured from Ubuntu 20.04, 22.04, 24.04 and Debian 11 and 12
+//! containers (`tests/fixtures/apt/`). The trait methods just run a command
+//! and call one of them.
 //!
-//! # Where the logic lives
-//!
-//! Every function that interprets output is a **pure function over `&str`**, and
-//! every one of them is tested against output captured from real containers —
-//! Ubuntu 20.04, 22.04, 24.04 and Debian 11, 12, in `tests/fixtures/apt/`. The
-//! methods below are a shell invocation and a call to one of those. That split is
-//! deliberate: the parsing is where the bugs are, and it is the part that can be
-//! tested without a package manager present.
-//!
-//! # What the agent does not decide
-//!
-//! Whether an update is *security* is reported here only as what apt itself says
-//! — the candidate comes from a pocket whose archive ends in `-security`. That is
-//! a local hint for the heartbeat, not a classification: the authoritative answer
-//! is the server's, against advisory data, because the distribution's own
-//! metadata is incomplete and inconsistent between families.
+//! The security flag is only apt's view (the candidate comes from a
+//! `-security` pocket). The server makes the real classification from
+//! advisory data.
 
 use crate::{
     ApplyOutcome, ApplyPlan, BackendError, Change, LogSink, PackageBackend, PendingChanges, Pin,
@@ -35,11 +23,9 @@ use updawg_protocol::{AvailableUpdate, Ecosystem, InstalledPackage, PendingRemov
 
 #[derive(Debug, Default, Clone)]
 pub struct AptBackend {
-    /// The distribution's own origin, as `apt-cache policy` spells it — `Ubuntu`,
-    /// `Debian`, `Raspbian`. Everything else is third-party.
-    ///
-    /// Read from `/etc/os-release` rather than hard-coded, so a derivative
-    /// reports its own archives as its own rather than as somebody else's.
+    /// The distribution's origin as `apt-cache policy` spells it (`Ubuntu`,
+    /// `Debian`, `Raspbian`). Anything else is third-party. Read from
+    /// `/etc/os-release` so derivatives are handled correctly.
     origin: Option<String>,
 }
 
@@ -64,9 +50,9 @@ impl PackageBackend for AptBackend {
             &[
                 "-W",
                 "-f",
-                // The source's name and version last (DAWG-212), so output
-                // without them — the captured fixtures — still parses. Both
-                // fields exist in dpkg as old as Ubuntu 20.04's 1.19.7.
+                // Source name and version go last so output without them
+                // (the older fixtures) still parses. Both fields exist as far
+                // back as dpkg 1.19.7 (Ubuntu 20.04).
                 "${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\t${source:Package}\t${source:Version}\n",
             ],
         )
@@ -79,13 +65,8 @@ impl PackageBackend for AptBackend {
     }
 
     async fn pending_changes(&self) -> Result<PendingChanges> {
-        // Simulated, so it takes no locks and changes nothing. `-s` implies
-        // Debug::NoLocking, which is what lets this run while unattended-upgrades
-        // holds the real lock — an agent that could only report when nothing else
-        // was working would be silent exactly when it mattered.
-        //
-        // One simulation answers both halves: apt prints `Inst` and `Remv` lines
-        // from the same run, and this is the expensive call in a collection pass.
+        // `-s` implies Debug::NoLocking, so this works while
+        // unattended-upgrades holds the lock.
         let installed = self.installed().await?;
         let out = run("apt-get", &["-s", "dist-upgrade"]).await?;
         let mut updates = parse_updates(&out);
@@ -138,8 +119,6 @@ impl PackageBackend for AptBackend {
         &self,
         updates: &[AvailableUpdate],
     ) -> Result<std::collections::BTreeSet<String>> {
-        // Already answered by the collection that produced `updates`: apt names
-        // the pocket a candidate comes from, and `-security` is the whole signal.
         Ok(updates
             .iter()
             .filter(|u| u.repo.as_deref().is_some_and(is_security_archive))
@@ -147,23 +126,6 @@ impl PackageBackend for AptBackend {
             .collect())
     }
 
-    /// Install exactly the approved versions, or nothing (DAWG-102).
-    ///
-    /// Four steps, and the first three change nothing:
-    ///
-    /// 1. **What is installed now.** Each pin must be at its `from` version —
-    ///    or already at its `to`, which is done and skipped. Anything else is
-    ///    a host that moved since the approval, and is refused.
-    /// 2. **What apt would do**, by simulation with the exact command line.
-    ///    It must upgrade exactly the pins that remain, to exactly their
-    ///    versions, and nothing else: a removal, or a package pulled in that
-    ///    nobody approved, is refused. So is an approved version apt can no
-    ///    longer find — the candidate moved on.
-    /// 3. **Do it**, with the same command line: non-interactive, keeping
-    ///    local configuration files, waiting for the dpkg lock rather than
-    ///    fighting `unattended-upgrades` for it.
-    /// 4. **What is installed after.** Each pin must now be at its `to`. The
-    ///    changes reported are what dpkg says, not what was asked for.
     async fn dist_upgrade(&self, target: &str, log: &dyn LogSink) -> Result<ApplyOutcome> {
         if crate::release::this_host()?.id == "ubuntu" {
             crate::ubuntu_upgrade::upgrade(self, target, log).await
@@ -190,6 +152,17 @@ impl PackageBackend for AptBackend {
         simulate(&todo).await
     }
 
+    /// Installs exactly the approved versions, or nothing.
+    ///
+    /// 1. Each pin must be at its `from` version (or already at `to`, which
+    ///    is skipped). Otherwise the host has moved since approval: refuse.
+    /// 2. Simulate the exact command line. It must upgrade only the remaining
+    ///    pins, to exactly their versions. Removals, unapproved new packages,
+    ///    or an approved version apt can no longer find are refused.
+    /// 3. Run it for real: non-interactive, keeping local config files, and
+    ///    waiting for the dpkg lock instead of fighting `unattended-upgrades`.
+    /// 4. Each pin must now be at `to`. The reported changes come from dpkg,
+    ///    not from the plan.
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome> {
         let before = installed_versions(&plan.packages).await?;
         let todo = still_to_do(&plan.packages, &before)?;
@@ -234,15 +207,12 @@ impl PackageBackend for AptBackend {
     }
 }
 
-/* ------------------------------------------------------------- the parsers */
-
-/// `dpkg-query -W` output: name, version, architecture, status, and, when
-/// asked for, the source package's name and version.
+/// `dpkg-query -W` output: name, version, architecture, status, and
+/// optionally the source package's name and version.
 ///
-/// **Only `installed` counts.** dpkg also knows `config-files` (purged but
-/// configuration left behind), `half-configured`, `unpacked` and several others.
-/// Reporting those as installed would have the server matching advisories against
-/// packages whose files are not on disk, and proposing upgrades for them.
+/// Only status `installed` counts. Other states (`config-files`,
+/// `half-configured`, `unpacked`, ...) don't have the package's files on
+/// disk, so matching advisories against them would be wrong.
 #[must_use]
 pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
     out.lines()
@@ -268,12 +238,10 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
                 name: name.to_owned(),
                 version: version.to_owned(),
                 arch: arch.to_owned(),
-                // dpkg does not know which repository a package came from; that
-                // is apt's view, and it is only true for packages still
-                // available. Left absent rather than guessed.
+                // dpkg doesn't know the repository, and apt only knows it
+                // for packages still available.
                 repo: None,
                 source,
-                // apt has no modules.
                 module: None,
             })
         })
@@ -289,11 +257,9 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
 /// Inst libbrotli1 (1.0.9-2+b6 Debian:12.15/oldstable [arm64])
 /// ```
 ///
-/// **The bracket before `(` is the whole distinction.** With it, the package is
-/// installed at that version and an upgrade is available. Without it, apt is
-/// proposing to install something new — a dependency being pulled in — and
-/// reporting that as an available update would invent an upgrade for a package
-/// the host does not have.
+/// The bracketed version before `(` means the package is installed and has
+/// an upgrade. Without it, apt is installing something new (a dependency),
+/// which isn't an update.
 #[must_use]
 pub fn parse_updates(out: &str) -> Vec<AvailableUpdate> {
     out.lines()
@@ -301,17 +267,13 @@ pub fn parse_updates(out: &str) -> Vec<AvailableUpdate> {
             let rest = line.strip_prefix("Inst ")?;
             let (name, rest) = rest.split_once(' ')?;
 
-            // A new install, not an upgrade.
+            // no `[installed]` means a new install
             let rest = rest.strip_prefix('[')?;
             let (installed, rest) = rest.split_once(']')?;
 
-            // Everything that matters — the candidate version, the origins and
-            // the architecture — is inside the parentheses. Anything after them
-            // is not: apt appends `[]` to mark a package pulled in as a
-            // dependency (`Inst libgcc-s1:armhf (… [armhf]) []`), and taking the
-            // parenthesised group is the whole of what excludes it. There is only
-            // ever one such group, so `find` and `rfind` are interchangeable here
-            // and neither is load-bearing.
+            // Candidate, origins and arch are inside the parentheses. apt may
+            // append `[]` after them for a dependency pull-in
+            // (`Inst libgcc-s1:armhf (... [armhf]) []`), which this skips.
             let open = rest.find('(')?;
             let close = rest.rfind(')')?;
             let inner = rest.get(open + 1..close)?;
@@ -319,46 +281,34 @@ pub fn parse_updates(out: &str) -> Vec<AvailableUpdate> {
             let (candidate, origins) = inner.split_once(' ').unwrap_or((inner, ""));
 
             Some(AvailableUpdate {
-                // Foreign-architecture packages are named `libc6:armhf` here and
-                // plain `libc6` in dpkg-query, where the architecture is its own
-                // field. Stripping it keeps one package one name.
+                // apt says `libc6:armhf` for foreign arches; dpkg-query says
+                // `libc6` with the arch in its own field.
                 name: name.split(':').next().unwrap_or(name).to_owned(),
                 arch: architecture(inner).unwrap_or_default(),
                 installed: installed.to_owned(),
                 candidate: candidate.to_owned(),
                 repo: pocket(origins),
-                // apt has no `updateinfo`. The pocket on `repo` is the whole of
-                // what it says about an update, and it is already there.
                 advisories: Vec::new(),
-                // Filled in by `candidate_sources`, from `apt-cache show`.
+                // filled in by `candidate_sources`
                 source: None,
             })
         })
         .collect()
 }
 
-/// The `Remv` lines of `apt-get -s dist-upgrade` (DAWG-232).
+/// The `Remv` lines of `apt-get -s dist-upgrade`.
 ///
 /// ```text
 /// Remv barpkg [1.0]
 /// Inst foopkg [1.0] (2.0 localhost [all])
 /// ```
 ///
-/// **apt says that a package will be removed and never what replaces it.**
-/// Captured from a Debian 12 container with a package built to `Replaces` and
-/// `Conflicts` another: the `Remv` line carries a name and the installed
-/// version, and nothing links it to the `Inst` line that caused it. That is why
-/// [`PendingRemoval::replaced_by`] is an `Option` — dnf names the obsoleting
-/// package and apt does not, and inventing one here would be a lie with a name
-/// and a version in it.
+/// apt doesn't say what replaces a removed package; nothing links the `Remv`
+/// line to the `Inst` that caused it. So [`PendingRemoval::replaced_by`] is
+/// always `None` here (dnf does fill it in).
 ///
-/// The architecture comes from the installed set rather than from the line, for
-/// the same reason `parse_updates` strips `:armhf` from a name: apt writes
-/// `name:arch` only for a foreign architecture, and dpkg keeps the architecture
-/// in its own field. A package the host does not have is dropped, which is the
-/// same guard as everywhere else here — apt should never propose removing one,
-/// and an entry with an invented architecture would be indistinguishable from a
-/// real one downstream.
+/// The architecture is taken from the installed set, since apt only writes
+/// `name:arch` for foreign architectures. Packages not installed are dropped.
 #[must_use]
 pub fn parse_removals(out: &str, installed: &[InstalledPackage]) -> Vec<PendingRemoval> {
     out.lines()
@@ -377,12 +327,8 @@ pub fn parse_removals(out: &str, installed: &[InstalledPackage]) -> Vec<PendingR
         .collect()
 }
 
-/// The architecture apt printed in the trailing `[arm64]`.
-///
-/// `inner` is already the parenthesised group, so the `[]` apt appends after it
-/// for a dependency pull-in is not in scope here. Verified by mutation rather
-/// than assumed: `a_foreign_architecture_package_keeps_one_name` parses a line
-/// carrying that `[]` and still reads `armhf`.
+/// The architecture in the trailing `[arm64]`. `inner` is just the
+/// parenthesised group, so a trailing `[]` after it doesn't interfere.
 fn architecture(inner: &str) -> Option<String> {
     let open = inner.rfind('[')?;
     let close = inner[open..].find(']')? + open;
@@ -390,24 +336,19 @@ fn architecture(inner: &str) -> Option<String> {
     (!arch.is_empty()).then(|| arch.to_owned())
 }
 
-/// The pocket a candidate comes from, e.g. `noble-security`.
+/// The pocket a candidate comes from, such as `noble-security`.
 ///
-/// apt renders origins as `Origin:version/archive`, comma-separated when a
-/// version is in more than one: `Ubuntu:24.04/noble-updates,
-/// Ubuntu:24.04/noble-security`. **A security pocket anywhere in that list wins**,
-/// because that is what it means for an update to be available from security —
-/// taking the first would report the noble-updates copy of a security fix as an
-/// ordinary update, and every Ubuntu security update is published to both.
+/// apt lists origins as `Origin:version/archive`, comma-separated when a
+/// version is in several: `Ubuntu:24.04/noble-updates,
+/// Ubuntu:24.04/noble-security`. A security pocket anywhere in the list wins,
+/// since Ubuntu publishes every security fix to `-updates` too.
 fn pocket(origins: &str) -> Option<String> {
     let archives: Vec<&str> = origins
         .split(',')
         .filter_map(|o| o.trim().split('/').nth(1))
-        // The architecture group rides on the end of the last origin —
-        // `Ubuntu:24.04/noble-security [arm64]` — so the archive has to be cut at
-        // whitespace. Without this the suffix test never matches the last origin,
-        // and since Ubuntu lists -updates first and publishes every security
-        // update to both, *every* Ubuntu security update would be reported as an
-        // ordinary one.
+        // The last origin has the arch appended
+        // (`Ubuntu:24.04/noble-security [arm64]`), so cut at whitespace or the
+        // `-security` suffix check misses it.
         .map(|a| a.split_whitespace().next().unwrap_or(a))
         .filter(|a| !a.is_empty())
         .collect();
@@ -419,12 +360,9 @@ fn pocket(origins: &str) -> Option<String> {
         .map(|a| (*a).to_owned())
 }
 
-/// Whether an archive name is a security pocket.
-///
-/// One rule covers both families, which is why it is done on the archive rather
-/// than the origin or the label: Ubuntu publishes to `noble-security` with
-/// `o=Ubuntu`, and Debian to `bookworm-security` with `o=Debian` and
-/// `l=Debian-Security`. The suffix is the only part they agree on.
+/// Whether an archive name is a security pocket. Checked on the archive
+/// because Ubuntu and Debian differ in origin and label but both use the
+/// `-security` suffix.
 #[must_use]
 pub fn is_security_archive(archive: &str) -> bool {
     archive.ends_with("-security") || archive == "security"
@@ -444,7 +382,7 @@ pub fn is_security_archive(archive: &str) -> bool {
 #[must_use]
 pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Repository> {
     let mut repos: Vec<Repository> = Vec::new();
-    // The priority line above each `release` line says where it is.
+    // from the priority line above each `release` line
     let mut uri: Option<String> = None;
 
     for line in out.lines() {
@@ -467,13 +405,12 @@ pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Reposit
             }
         }
 
-        // The local dpkg status file, which is not a repository.
         if archive == Some("now") {
             continue;
         }
         let Some(archive) = archive else { continue };
 
-        // `noble-security/main`, matching how apt names it to a human.
+        // `noble-security/main`, as apt shows it
         let id = component.map_or_else(
             || archive.to_owned(),
             |component| format!("{archive}/{component}"),
@@ -482,9 +419,8 @@ pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Reposit
             continue;
         }
 
-        // Absent origin counts as third-party: an unsigned or hand-rolled
-        // repository often has none, and those are exactly the ones that
-        // break a dist-upgrade. Unknown provenance is not the distribution's.
+        // No origin counts as third-party. Hand-rolled repositories often
+        // have none, and they're the ones likely to break a dist-upgrade.
         let third_party =
             !matches!((origin, distro_origin), (Some(o), Some(d)) if origin_is_distro(o, d));
         repos.push(Repository {
@@ -492,7 +428,7 @@ pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Reposit
             kind: "deb".to_owned(),
             third_party,
             enabled: true,
-            // Only a third-party one's, and without credentials (DAWG-149).
+            // third-party only, credentials stripped
             url: location
                 .filter(|_| third_party)
                 .and_then(|u| updawg_protocol::public_url(&u)),
@@ -502,12 +438,12 @@ pub fn parse_repositories(out: &str, distro_origin: Option<&str>) -> Vec<Reposit
     repos
 }
 
-/// Repositories with their locations, from `apt-cache policy` (DAWG-149).
+/// Repositories with their locations, from `apt-cache policy`.
 ///
-/// The priority line carries the base URL and `suite/component`; the
-/// `release` line under it carries the origin, which decides third-party the
-/// same way [`parse_repositories`] does. One entry per URL and suite: the
-/// components of one suite are published together.
+/// The priority line has the base URL and `suite/component`; the `release`
+/// line under it has the origin, used for third-party the same way as
+/// [`parse_repositories`]. One entry per URL and suite, since a suite's
+/// components are published together.
 ///
 /// ```text
 ///  500 https://packages.cloud.google.com/apt cloud-sdk-trixie/main amd64 Packages
@@ -542,11 +478,10 @@ pub fn parse_sources(out: &str, distro_origin: Option<&str>) -> Vec<crate::RepoS
     sources
 }
 
-/// Frozen when **every** distribution source is a dated snapshot
-/// (DAWG-233), pinned at the oldest of them. One live source — a
-/// security pocket left pointing at the mirror — means updates still
-/// arrive, and the host is not reported frozen. Third-party repositories
-/// do not count either way.
+/// Frozen when every distribution source is a dated snapshot, pinned at the
+/// oldest. A single live source (say a security pocket still on the mirror)
+/// means updates still arrive, so the host isn't frozen. Third-party
+/// repositories are ignored.
 #[must_use]
 pub fn frozen_sources(sources: &[crate::RepoSource]) -> Option<updawg_protocol::Frozen> {
     let distro: Vec<&crate::RepoSource> = sources.iter().filter(|s| !s.third_party).collect();
@@ -565,10 +500,9 @@ pub fn frozen_sources(sources: &[crate::RepoSource]) -> Option<updawg_protocol::
     })
 }
 
-/// `https://snapshot.debian.org/archive/debian/20240101T000000Z` →
-/// `20240101T000000Z`: the moment a snapshot service's URL is fixed to, on
-/// snapshot.debian.org and snapshot.ubuntu.com (where apt's own `Snapshot`
-/// option points too).
+/// The timestamp in a snapshot.debian.org or snapshot.ubuntu.com URL, so
+/// `https://snapshot.debian.org/archive/debian/20240101T000000Z` gives
+/// `20240101T000000Z`. apt's `Snapshot` option uses the same services.
 fn snapshot_stamp(uri: &str) -> Option<&str> {
     let (_, rest) = uri.split_once("://")?;
     let (host, path) = rest.split_once('/')?;
@@ -584,7 +518,7 @@ fn snapshot_stamp(uri: &str) -> Option<&str> {
     well_formed.then_some(stamp)
 }
 
-/// `500 https://host/path suite/component arch Packages` → (URL, suite).
+/// `500 https://host/path suite/component arch Packages` to (URL, suite).
 fn source_line(line: &str) -> Option<(String, String)> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     if tokens.len() < 4 || tokens.last() != Some(&"Packages") || tokens[0].parse::<i32>().is_err() {
@@ -594,10 +528,9 @@ fn source_line(line: &str) -> Option<(String, String)> {
     Some((tokens[1].trim_end_matches('/').to_owned(), suite.to_owned()))
 }
 
-/// Which repository each package's **installed** version came from, from
-/// `apt-cache policy <package>...` (DAWG-149): the source lines under the
-/// `***` version. A version only `/var/lib/dpkg/status` knows — its
-/// repository no longer carries it — names nothing.
+/// Which repository each package's installed version came from, from
+/// `apt-cache policy <package>...` (the source lines under the `***`
+/// version). A version only in `/var/lib/dpkg/status` gives nothing.
 ///
 /// ```text
 /// google-cloud-cli:
@@ -624,7 +557,7 @@ pub fn parse_installed_from(out: &str) -> Vec<(String, String, String)> {
             continue;
         }
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        // Another version of the same package: `1:9.20.26-1~deb13u1 500`.
+        // another version of the same package: `1:9.20.26-1~deb13u1 500`
         if tokens.len() == 2 && tokens[1].parse::<i32>().is_ok() && !trimmed.contains('/') {
             installed = false;
             continue;
@@ -636,11 +569,7 @@ pub fn parse_installed_from(out: &str) -> Vec<(String, String, String)> {
     found
 }
 
-/// Whether an apt origin belongs to the distribution the host is running.
-///
-/// Debian publishes security updates under the origin `Debian` but some
-/// derivatives use a suffixed form, so this is a prefix match on the
-/// distribution's own name rather than equality.
+/// Prefix match, since some derivatives use a suffixed origin.
 fn origin_is_distro(origin: &str, distro: &str) -> bool {
     origin.eq_ignore_ascii_case(distro)
         || origin
@@ -648,12 +577,8 @@ fn origin_is_distro(origin: &str, distro: &str) -> bool {
             .starts_with(&distro.to_ascii_lowercase())
 }
 
-/// The apt origin for the distribution described by `/etc/os-release`.
-///
-/// `ID=ubuntu` becomes `Ubuntu`, which is how apt spells it. Returns `None` when
-/// the file says nothing useful, and then every repository reads as third-party —
-/// the safe direction, because a third-party repository is reported and reviewed
-/// rather than silently trusted.
+/// The apt origin for the distribution in `/etc/os-release`: `ID=ubuntu`
+/// becomes `Ubuntu`. With `None`, every repository counts as third-party.
 #[must_use]
 pub fn distro_origin(os_release: &str) -> Option<String> {
     let id = os_release.lines().find_map(|line| {
@@ -669,9 +594,6 @@ pub fn distro_origin(os_release: &str) -> Option<String> {
 }
 
 /// `apt-mark showhold` output: one package name per line.
-///
-/// A held package will not be upgraded no matter what a proposal says, so a plan
-/// that ignores these is a plan that silently does nothing.
 #[must_use]
 pub fn parse_holds(out: &str) -> Vec<String> {
     out.lines()
@@ -681,12 +603,7 @@ pub fn parse_holds(out: &str) -> Vec<String> {
         .collect()
 }
 
-/* ------------------------------------------------------ applying, decided */
-
-/// `name:arch` as apt and dpkg spell a package on one architecture.
-///
-/// `all` is left off: an architecture-independent package has one version for
-/// every architecture, and older apt refuses the qualifier.
+/// `name:arch`. Omitted for `all`, which older apt rejects as a qualifier.
 fn qualified(pin: &Pin) -> String {
     if pin.arch == "all" || pin.arch.is_empty() {
         pin.name.clone()
@@ -695,11 +612,9 @@ fn qualified(pin: &Pin) -> String {
     }
 }
 
-/// The pins not already at their approved version, or a refusal naming the
-/// first one that is at neither end.
+/// The pins not yet at their approved version.
 ///
-/// `installed` maps [`qualified`] names to the version dpkg reports; a package
-/// that is not installed at all is absent.
+/// `installed` maps [`qualified`] names to the version dpkg reports.
 ///
 /// # Errors
 /// [`BackendError::Refused`] when a package moved since the approval.
@@ -733,19 +648,16 @@ const APT_OPTIONS: &[&str] = &[
     "-y",
     "--only-upgrade",
     "--no-install-recommends",
-    // Wait for the lock rather than fight unattended-upgrades for it. Ten
-    // minutes is longer than it ever holds it.
+    // wait for unattended-upgrades to release the lock
     "-o",
     "DPkg::Lock::Timeout=600",
-    // A changed configuration file keeps the local version. The package's
-    // new one is left beside it as `.dpkg-dist`, for a person to read.
+    // keep local config; the package's version is left as `.dpkg-dist`
     "-o",
     "Dpkg::Options::=--force-confdef",
     "-o",
     "Dpkg::Options::=--force-confold",
 ];
 
-/// The exact `apt-get install` command line for these pins.
 #[must_use]
 pub fn install_args(todo: &[&Pin]) -> Vec<String> {
     let mut args = vec!["install".to_owned()];
@@ -754,12 +666,9 @@ pub fn install_args(todo: &[&Pin]) -> Vec<String> {
     args
 }
 
-/// Output as a terminal would have left it on screen.
-///
-/// dpkg redraws "Reading database ... 45%" in place with `\r`, so split on
-/// newlines alone and one line of the log is every percentage from 0 to 100.
-/// What a person saw is the last redraw of each line, and blank lines are
-/// dropped.
+/// Output as it would look on a terminal. dpkg redraws progress lines
+/// ("Reading database ... 45%") with `\r`, so keep only the last redraw of
+/// each line and drop blank ones.
 pub fn as_shown(output: &str) -> impl Iterator<Item = &str> {
     output
         .lines()
@@ -771,7 +680,6 @@ pub fn as_shown(output: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.trim().is_empty())
 }
 
-/// The same command line, simulated.
 #[must_use]
 pub fn simulate_args(todo: &[&Pin]) -> Vec<String> {
     let mut args = install_args(todo);
@@ -779,7 +687,7 @@ pub fn simulate_args(todo: &[&Pin]) -> Vec<String> {
     args
 }
 
-/// What an `apt-get` run said, whatever its exit status.
+/// Output of a command, whatever its exit status.
 #[derive(Debug, Clone)]
 pub struct Ran {
     pub code: i32,
@@ -787,13 +695,11 @@ pub struct Ran {
     pub stderr: String,
 }
 
-/// Which source upload built a binary: `(source package, source version)`,
-/// keyed by `(package, version)` as apt names them.
+/// `(package, version)` to `(source package, source version)`.
 pub type Sources = std::collections::BTreeMap<(String, String), (String, String)>;
 
-/// Packages the simulation would install that are **not installed at all**
-/// and nobody pinned: `Inst name (version …)`, with no `[old]`. The ones whose
-/// source is worth asking about.
+/// New, unpinned packages the simulation would install
+/// (`Inst name (version ...)` with no `[old]`).
 #[must_use]
 pub fn unpinned_new_installs(todo: &[&Pin], simulated: &Ran) -> Vec<(String, String)> {
     simulated
@@ -810,8 +716,8 @@ pub fn unpinned_new_installs(todo: &[&Pin], simulated: &Ran) -> Vec<(String, Str
         .collect()
 }
 
-/// An `Inst` line: name, the version it replaces, and the new version.
 /// `Inst openssl [3.5.1-1] (3.5.1-2 Debian-Security:13/stable-security [amd64])`
+/// as name, old version, new version.
 fn inst(line: &str) -> Option<(String, Option<String>, String)> {
     let rest = line.strip_prefix("Inst ")?;
     let name = rest.split_whitespace().next()?.to_owned();
@@ -830,27 +736,25 @@ fn inst(line: &str) -> Option<(String, Option<String>, String)> {
     Some((name, old, new))
 }
 
-/// Whether apt's simulation does exactly what was approved and nothing else
-/// — apart from packages **not installed yet** that are built from the same
-/// source upload as one that was approved.
+/// Checks the simulation does exactly what was approved, except that it may
+/// also install new packages built from the same source upload as an
+/// approved one.
 ///
-/// That exception is the kernel (Pez, 2026-09-29): upgrading
-/// `linux-image-cloud-amd64` to 6.12.111-1 installs
-/// `linux-image-6.12.111+deb13-cloud-amd64`, a package with a new name every
-/// ABI, and so one no inventory ever lists as an upgrade. Both come from
-/// `linux-signed-amd64` at one version: the same upload, which is what the
-/// approver looked at. A new package from any other source is refused, as is
-/// every removal and any version other than the approved one.
+/// That exception exists for kernels: upgrading `linux-image-cloud-amd64` to
+/// 6.12.111-1 installs `linux-image-6.12.111+deb13-cloud-amd64`, whose name
+/// changes with every ABI, so it never shows up as an upgrade. Both come from
+/// the same `linux-signed-amd64` upload. Any other new package, any removal,
+/// or any unapproved version is refused.
 ///
-/// `sources` says which upload built each binary; see [`parse_uploads`]. Ok
-/// carries what it would install alongside, as `name version`.
+/// `sources` comes from [`parse_uploads`]. Returns the extra packages as
+/// `name version`.
 ///
 /// # Errors
 /// [`BackendError::Refused`] naming what differs.
 pub fn check_simulation(todo: &[&Pin], simulated: &Ran, sources: &Sources) -> Result<Vec<String>> {
     if simulated.code != 0 {
-        // Almost always "Version 'x' for 'y' was not found": the archive moved
-        // on and the approved version is gone.
+        // usually "Version 'x' for 'y' was not found": the approved version
+        // has left the archive
         let why = simulated
             .stderr
             .lines()
@@ -907,16 +811,16 @@ pub fn check_simulation(todo: &[&Pin], simulated: &Ran, sources: &Sources) -> Re
         .find(|p| !upgraded.contains_key(&p.name) && !upgraded.contains_key(&qualified(p)))
     {
         return Err(BackendError::Refused(format!(
-            "apt would not upgrade {} — is it held?",
+            "apt would not upgrade {}; is it held?",
             missing.name
         )));
     }
     Ok(alongside)
 }
 
-/// `apt-cache show name=version …`: which source upload built each stanza.
-/// `Source:` is absent when the source is named as the binary, and carries
-/// `(version)` only when its version differs from the binary's.
+/// `apt-cache show name=version ...`: the source upload for each stanza.
+/// `Source:` is absent when the source has the binary's name, and only has a
+/// `(version)` when that differs from the binary's.
 #[must_use]
 pub fn parse_uploads(show: &str) -> Sources {
     let mut out = Sources::new();
@@ -945,19 +849,15 @@ pub fn parse_uploads(show: &str) -> Sources {
     out
 }
 
-/// Each candidate's source package (protocol 0.7, DAWG-287), from
-/// `apt-cache show name=version`, 200 at a time. What the server looks its
-/// changelog up by; the installed package's source is not always it (a
-/// kernel's binary and source versions differ).
-///
-/// A hint, so a failure costs the hint and not the inventory: an update apt
-/// cannot describe is sent without one.
+/// Fills in each candidate's source package from `apt-cache show`, 200 at a
+/// time. The server uses it to look up changelogs; it can differ from the
+/// installed package's source (kernels, for instance). Best effort: on
+/// failure the update is sent without it.
 async fn candidate_sources(updates: &mut [AvailableUpdate]) {
     for chunk in updates.chunks_mut(200) {
         let mut args = vec!["show".to_owned()];
         args.extend(chunk.iter().map(|u| format!("{}={}", u.name, u.candidate)));
-        // Exits 100 if any one is missing; what it did describe is still an
-        // answer.
+        // exits 100 if any are missing; the rest is still usable
         let Ok(shown) = run_status("apt-cache", &args).await else {
             continue;
         };
@@ -975,8 +875,8 @@ async fn candidate_sources(updates: &mut [AvailableUpdate]) {
     }
 }
 
-/// Which upload built each package the simulation would install new, and
-/// each pinned target — asked only when there is a new package to explain.
+/// Source uploads for the new packages and the pinned targets. Only queried
+/// when there's a new package.
 async fn sources_for(todo: &[&Pin], simulated: &Ran) -> Result<Sources> {
     let new = unpinned_new_installs(todo, simulated);
     if new.is_empty() {
@@ -988,11 +888,10 @@ async fn sources_for(todo: &[&Pin], simulated: &Ran) -> Result<Sources> {
         let bare = name.split(':').next().unwrap_or(name);
         format!("{bare}={version}")
     }));
-    // Exits 100 if any one is missing; what it did find is still an answer,
-    // and a package it could not describe is refused by the check.
+    // exits 100 if any are missing; those get refused by the check
     let shown = run_status("apt-cache", &args).await?;
     let mut sources = parse_uploads(&shown.stdout);
-    // The simulation may name a new package `name:arch`; describe it both ways.
+    // the simulation may say `name:arch`, so key it both ways
     for (name, version) in &new {
         let bare = name.split(':').next().unwrap_or(name).to_owned();
         if let Some(built) = sources.get(&(bare, version.clone())).cloned() {
@@ -1002,21 +901,19 @@ async fn sources_for(todo: &[&Pin], simulated: &Ran) -> Result<Sources> {
     Ok(sources)
 }
 
-/// Simulate installing `pins` and check it does only what they approve.
-/// Read-only: it is the first half of [`AptBackend::apply`], and what a
-/// preflight runs.
+/// The read-only first half of [`AptBackend::apply`], also used by the
+/// preflight.
 async fn simulate(todo: &[&Pin]) -> Result<Vec<String>> {
     let simulated = run_status("apt-get", &simulate_args(todo)).await?;
     let sources = sources_for(todo, &simulated).await?;
     check_simulation(todo, &simulated, &sources)
 }
 
-/// What changed, from dpkg's own account afterwards.
+/// What changed, according to dpkg afterwards.
 ///
 /// # Errors
-/// [`BackendError::CommandFailed`] when apt exited cleanly and a package is
-/// still not at its approved version — which would otherwise be reported as a
-/// success that patched nothing.
+/// [`BackendError::CommandFailed`] when apt exited cleanly but a package
+/// still isn't at its approved version.
 pub fn changes(
     todo: &[&Pin],
     after: &std::collections::BTreeMap<String, String>,
@@ -1041,12 +938,10 @@ pub fn changes(
     Ok(changed)
 }
 
-/// `/var/run/reboot-required`, which Debian and Ubuntu's packages touch.
 fn reboot_required() -> bool {
     std::path::Path::new("/var/run/reboot-required").exists()
 }
 
-/// The version dpkg reports for each pin's package, where installed.
 async fn installed_versions(pins: &[Pin]) -> Result<std::collections::BTreeMap<String, String>> {
     let names: Vec<String> = pins.iter().map(qualified).collect();
     let mut args = vec![
@@ -1054,7 +949,7 @@ async fn installed_versions(pins: &[Pin]) -> Result<std::collections::BTreeMap<S
         "-f=${Package}:${Architecture}\t${Version}\t${db:Status-Status}\n".to_owned(),
     ];
     args.extend(names);
-    // Exit 1 means "one of these is not installed", which is an answer.
+    // exit 1 just means one of them isn't installed
     let ran = run_status("dpkg-query", &args).await?;
     Ok(parse_versions(&ran.stdout))
 }
@@ -1075,14 +970,11 @@ pub fn parse_versions(out: &str) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-/* ------------------------------------- running apt, whatever it answers */
-
 async fn run_status(tool: &'static str, args: &[String]) -> Result<Ran> {
     let output = tokio::process::Command::new(tool)
         .args(args)
         .env("DEBIAN_FRONTEND", "noninteractive")
-        // Ubuntu's needrestart would otherwise restart services by itself,
-        // which is a decision this job was not approved to make. `l` lists.
+        // stop needrestart restarting services on its own; `l` only lists
         .env("NEEDRESTART_MODE", "l")
         .env("LC_ALL", "C")
         .env("LANG", "C")
@@ -1102,17 +994,12 @@ async fn run_status(tool: &'static str, args: &[String]) -> Result<Ran> {
     })
 }
 
-/* ------------------------------------------------------------- the shelling */
-
 async fn run(tool: &'static str, args: &[&str]) -> Result<String> {
     let output = tokio::process::Command::new(tool)
         .args(args)
-        // Non-interactive and predictable. Without these apt will occasionally
-        // try to open a pager or ask a question, and an agent has nobody to ask.
         .env("DEBIAN_FRONTEND", "noninteractive")
-        // Parsing depends on the exact words apt prints. A host with LANG set to
-        // anything else would parse as an empty upgrade list — no error, no
-        // updates, and a fleet that looks perfectly patched.
+        // The parsers match apt's English output. Under another locale they'd
+        // silently find no updates.
         .env("LC_ALL", "C")
         .env("LANG", "C")
         .output()
@@ -1127,8 +1014,7 @@ async fn run(tool: &'static str, args: &[&str]) -> Result<String> {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        // A lock is a wait-and-retry, not a failure to report: forcing it
-        // corrupts the package database, and the caller decides when to come back.
+        // the caller retries later; forcing the lock corrupts the database
         if stderr.contains("Could not get lock") || stderr.contains("Unable to acquire the dpkg") {
             return Err(BackendError::Locked);
         }

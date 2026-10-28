@@ -1,6 +1,5 @@
-//! The ZFS parsers, against output captured from a real `OpenZFS`
-//! (DAWG-117). See `fixtures/zfs/README.md`, and `zfs_live.rs` for the same
-//! commands run for real.
+//! The ZFS parsers, against captured output (see `fixtures/zfs/README.md`).
+//! `zfs_live.rs` runs the same commands against a real `OpenZFS`.
 
 #![allow(
     clippy::expect_used,
@@ -31,7 +30,7 @@ fn the_root_dataset_is_what_findmnt_says_is_mounted() {
     assert_eq!(parse_findmnt(""), None);
 }
 
-/// ZFS prints `-` for an unset property: an administrator's snapshot.
+// the administrator's snapshot has `-` for the unset property
 #[test]
 fn only_the_agents_own_snapshots_are_listed() {
     let ours = parse_list(&fixture("list.txt"));
@@ -41,8 +40,6 @@ fn only_the_agents_own_snapshots_are_listed() {
     assert_eq!(ours[0].created, "1790609289");
 }
 
-/// What a rollback does is the opposite of what happened since: a file
-/// created since is removed, one removed since is put back.
 #[test]
 fn a_diff_says_what_a_rollback_puts_back_and_which_kernels_it_takes() {
     let (root, kernels) = parse_diff(&fixture("diff-root.txt"), "/srv/zroot/sys");
@@ -59,7 +56,7 @@ fn a_diff_says_what_a_rollback_puts_back_and_which_kernels_it_takes() {
     let (varlib, kernels) = parse_diff(&fixture("diff-varlib.txt"), "/srv/zroot/sys");
     assert_eq!(varlib.modified, 1);
     assert!(kernels.is_empty());
-    // On a real root, the mountpoint is `/`.
+    // on a real root the mountpoint is /
     let (_, kernels) = parse_diff("+\t/usr/lib/modules/6.8.0-2\n", "/");
     assert_eq!(kernels, vec!["6.8.0-2".to_owned()]);
 }

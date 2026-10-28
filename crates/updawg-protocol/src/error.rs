@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 /// without breaking behaviour on hosts running older builds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiError {
-    /// Stable machine-readable code, e.g. `inventory_base_mismatch`.
+    /// Stable machine-readable code, such as `inventory_base_mismatch`.
     pub code: String,
-    /// Human-readable detail. For logs and operators, not for control flow.
+    /// Human-readable detail for logs. Don't branch on it.
     pub message: String,
     /// Present when retrying later might succeed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

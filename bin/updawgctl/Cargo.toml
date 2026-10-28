@@ -12,10 +12,8 @@ name = "updawgctl"
 path = "src/main.rs"
 
 [features]
-# Lets this binary be told to trust a certificate authority the platform does
-# not, for running against a gateway you started yourself (DAWG-206). Off by
-# default: with it off clap has never heard of `--insecure-extra-root`, so the
-# binary people install cannot be talked into it. Release builds do not set it.
+# Adds --insecure-extra-root for testing against a local gateway. Never
+# enabled in release builds.
 insecure-extra-root = ["updawg-agent-core/insecure-extra-root"]
 
 [dependencies]
@@ -29,11 +27,11 @@ anyhow.workspace = true
 base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
-# `updawgctl sign` talks to the Updawg API (DAWG-157).
+# `updawgctl sign` talks to the Updawg API.
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# `updawgctl sign --policy` (DAWG-293).
+# `updawgctl sign --policy`.
 toml.workspace = true
 tokio.workspace = true
 

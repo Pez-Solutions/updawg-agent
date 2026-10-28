@@ -1,15 +1,9 @@
 //! The Updawg agent daemon.
 //!
-//! Runs as root, because installing packages requires it, with systemd
-//! hardening that stops short of breaking package management. It makes only
-//! outbound connections and executes only the closed set of signed job kinds
-//! defined in `updawg-protocol`.
-//!
-//! Scope note: DAWG-29 brings the scheduler, configuration and local state,
-//! DAWG-30 enrollment, DAWG-31 the authenticated transport and certificate
-//! renewal, DAWG-32 the check-in loop and DAWG-33 the fact collectors. Jobs
-//! that arrive are reported and not run, because verifying and executing one
-//! is DAWG-38; the daemon says so rather than dropping them quietly.
+//! Runs as root, since installing packages requires it, with as much systemd
+//! hardening as package management tolerates. It makes only outbound
+//! connections and executes only the closed set of signed job kinds defined in
+//! `updawg-protocol`.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -59,25 +53,20 @@ struct Cli {
     extra_root: extra_root::ExtraRoot,
 }
 
-/// The `--insecure-extra-root` flag, which exists only in a build that asked
-/// for it.
+/// The `--insecure-extra-root` flag, only present in builds with the
+/// `insecure-extra-root` feature.
 ///
-/// Two definitions of one struct, chosen by feature. The disabled one has no
-/// fields, so clap has never heard of the flag and `--insecure-extra-root
-/// ca.pem` comes back as "unexpected argument". That is what DAWG-206 asked
-/// for: not a flag that refuses, a flag that is not there.
-///
-/// Flattening it means the rest of this binary calls `load()` once and carries
-/// no `#[cfg]` anywhere.
+/// Without the feature the struct has no fields, so clap rejects the flag as
+/// an unexpected argument. Flattening it keeps `#[cfg]` out of the rest of the
+/// binary.
 mod extra_root {
     #[cfg(feature = "insecure-extra-root")]
     #[derive(Debug, clap::Args)]
     pub(super) struct ExtraRoot {
         /// PEM certificate authority to trust in addition to the system store.
         ///
-        /// For running against a gateway you started yourself. Deliberately
-        /// accepts no environment variable: every other option here does, and
-        /// this is the one that should not be settable by something inherited.
+        /// For running against a gateway you started yourself. Unlike the other
+        /// options, this can't be set from the environment.
         #[arg(long = "insecure-extra-root", value_name = "PEM")]
         path: Option<std::path::PathBuf>,
     }
@@ -87,10 +76,6 @@ mod extra_root {
     pub(super) struct ExtraRoot {}
 
     impl ExtraRoot {
-        /// The PEM to trust, if this build can be told to trust one and was.
-        ///
-        /// Returns `Ok(None)` in a release build without looking at anything,
-        /// because there is nothing to look at.
         #[cfg(feature = "insecure-extra-root")]
         pub(super) fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
             use anyhow::Context as _;
@@ -129,8 +114,7 @@ async fn main() -> Result<()> {
         "updawgd starting"
     );
 
-    // Loaded before anything talks to the gateway, so the warning is in the
-    // log above the first request rather than somewhere in the middle of it.
+    // load before any gateway traffic so the warning comes first in the log
     let extra_root = cli.extra_root.load()?;
 
     let config = AgentConfig::load(&cli.config).context("loading configuration")?;
@@ -169,31 +153,29 @@ async fn main() -> Result<()> {
 
     // A job that rebooted the machine is finished by
     // `Executor::resume_after_reboot`, started in `build_checkin` once there is
-    // a transport to report through (DAWG-103). ⚠️ Nothing before that may
-    // read the pending-reboot record: reading it takes it, and a report taken
-    // and not sent leaves the job running on the server for ever.
+    // a transport. Nothing before that may read the pending-reboot record:
+    // reading it consumes it, and if the report isn't sent the job stays
+    // "running" on the server.
 
     report_identity(&config, &state).context("reading identity")?;
     report_host(&Root::default());
 
-    // Renewal on the way up catches the host that was powered off through its
-    // whole renewal window, which is the common way a certificate is allowed to
-    // expire. While the daemon is up, the check-in loop looks every hour, and
-    // renews within minutes when the gateway asks (DAWG-308).
+    // Renewing at startup covers a host that was powered off through its whole
+    // renewal window. While running, the check-in loop checks hourly, and
+    // renews within minutes when the gateway asks.
     if state.is_enrolled() {
         renew_certificate(&config, &state, extra_root.as_deref()).await;
     }
 
+    // No identity isn't fatal. The operator may be about to run `updawgctl
+    // enroll`, and a running unit that logs what it needs is easier to notice
+    // than a dead one.
     let placeholder = Arc::new(NotWiredUp);
-    // Not fatal when there is no identity. An agent that schedules and says
-    // what it needs is more useful than one that exits: the operator may be
-    // about to run `updawgctl enroll`, and a dead unit is harder to notice
-    // than a running one complaining.
-    // Inventory first: the job executor uploads a fresh one after every job,
-    // so the server sees what changed without waiting six hours.
+    // built first so the job executor can upload a fresh inventory after each
+    // job
     let real_inventory = build_inventory(&config, &state, extra_root.as_deref());
-    // Looked for once, at start (DAWG-115). None is a normal answer: jobs
-    // that require a snapshot are then refused, with the reason.
+    // Detected once. Having none is normal; jobs that require a snapshot are
+    // then refused with the reason.
     let snapshots: updawg_agent_core::jobs::Snapshots =
         updawg_snapshots::detect(config.snapshots.provider.provider())
             .await
@@ -227,11 +209,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// The one place a transport is built, so an extra root cannot reach two of the
-/// three callers and miss the third.
-///
-/// It was three copies of `MtlsTransport::new` before DAWG-206, which is fine
-/// until they need to agree about something.
+/// Every transport is built here so the extra root applies to all of them.
 fn transport(
     config: &AgentConfig,
     state: &LocalState,
@@ -244,14 +222,11 @@ fn transport(
     )
 }
 
-/// Say who this host is and what it will verify jobs against.
-///
-/// The pinned keys go in the log on purpose. An operator should be able to
-/// compare this line against what the portal shows without running anything:
-/// pinning nobody can check is pinning nobody trusts.
+/// Logs the host identity and the pinned keys, so an operator can compare
+/// them with what the portal shows.
 fn report_identity(config: &AgentConfig, state: &LocalState) -> Result<()> {
     let Some(identity) = state.identity()? else {
-        tracing::warn!("not enrolled — run `updawgctl enroll --token ...`");
+        tracing::warn!("not enrolled, run `updawgctl enroll --token ...`");
         return Ok(());
     };
 
@@ -275,9 +250,8 @@ fn report_identity(config: &AgentConfig, state: &LocalState) -> Result<()> {
                 );
             }
         }
-        // Not a warning: a host whose pinned keys no longer parse will reject
-        // every job it is sent, and would otherwise look perfectly healthy
-        // until one arrived.
+        // An error, not a warning: this host will reject every job, and would
+        // otherwise look healthy until one arrived.
         Err(error) => tracing::error!(
             host_id = %identity.host_id,
             %error,
@@ -287,7 +261,6 @@ fn report_identity(config: &AgentConfig, state: &LocalState) -> Result<()> {
     Ok(())
 }
 
-/// Build the real check-in loop, if this host can talk to the gateway at all.
 fn build_checkin(
     config: &AgentConfig,
     state: &LocalState,
@@ -313,15 +286,11 @@ fn build_checkin(
         }
     };
 
-    // `None` on a host with no package manager the agent knows: jobs are then
-    // refused with that reason, rather than failing halfway.
+    // `None` with no known package manager; jobs are then refused up front
+    // instead of failing halfway.
     let backend: Option<Arc<dyn updawg_backends::PackageBackend>> =
         updawg_backends::detect().ok().map(Arc::from);
-    // Told to the server on every check-in, so the portal can say when a
-    // rollback is not possible here (DAWG-115).
     let support = updawg_agent_core::jobs::snapshot_support(&snapshots);
-    // Verified, permission-checked and run (DAWG-38, DAWG-102). Observe mode
-    // refuses every job that changes the host, and says so to the server.
     let jobs = Arc::new(
         Executor::new(
             Arc::clone(&transport) as Arc<dyn Reporter>,
@@ -332,15 +301,15 @@ fn build_checkin(
         )
         .with_snapshots(snapshots),
     );
-    // A job that rebooted this host is finished from here (DAWG-103): the
-    // health checks run again and the report goes out. In the background, so
-    // a slow check does not hold up the first check-in.
+    // Finish a job that rebooted this host: rerun its health checks and send
+    // the report. In the background so a slow check doesn't delay the first
+    // check-in.
     tokio::spawn({
         let jobs = Arc::clone(&jobs);
         async move { jobs.resume_after_reboot().await }
     });
-    // And a self-update (DAWG-46), which waits for this agent's first
-    // check-in before it reports, so it must not hold anything up either.
+    // Same for a self-update, which waits for the first check-in before
+    // reporting.
     tokio::spawn({
         let jobs = Arc::clone(&jobs);
         async move { jobs.resume_after_self_update().await }
@@ -352,24 +321,18 @@ fn build_checkin(
             state.clone(),
             collector,
             jobs,
-            // What this file permits, reported on every check-in so the server
-            // can narrow against it rather than guess (DAWG-223).
             config.local_policy(),
         )
         .with_snapshots(support)
-        // Once, at start: it asks dpkg or rpm who owns this binary, and the
+        // Detected once. It asks dpkg or rpm who owns this binary, and the
         // agent restarts whenever a package or install.sh replaces it.
         .with_install(updawg_agent_core::self_update::install()),
     ))
 }
 
-/// Wire up inventory collection and upload, if this host can do it (DAWG-36).
-///
-/// `None` rather than a stub on failure, and the caller logs why. A host with no
-/// recognised package manager is a real thing — it still enrolls, heartbeats and
-/// reports its release — and it should say so rather than uploading an empty
-/// package list, which the server would take as "this host has nothing
-/// installed".
+/// `None` if this host can't collect inventory. A host with no recognised
+/// package manager still enrolls and checks in, but it must not upload an
+/// empty package list, which the server would read as nothing installed.
 fn build_inventory(
     config: &AgentConfig,
     state: &LocalState,
@@ -402,12 +365,8 @@ fn build_inventory(
     )))
 }
 
-/// Say what this host is and what is true about it right now.
-///
-/// Collected at startup and logged rather than held, because until the
-/// check-in loop exists (DAWG-32) there is nowhere to send it — and an operator
-/// installing the agent should be able to see that it reads their machine
-/// correctly before it is trusted to act on it.
+/// Logs platform facts and current state at startup, so an operator can see
+/// the agent reads the machine correctly.
 fn report_host(root: &Root) {
     match PlatformFacts::new(root.clone()).gather() {
         Ok(facts) => tracing::info!(
@@ -433,9 +392,7 @@ fn report_host(root: &Root) {
     match collector.gather() {
         Ok(state) => tracing::info!(
             uptime_days = state.uptime_s / 86_400,
-            // Logged as a word, not a bool: "unknown" and "no" are different
-            // answers and flattening them here is exactly the mistake the
-            // tri-state exists to prevent.
+            // keep unknown distinct from no
             reboot_required = ?state.reboot_required,
             services_needing_restart = state.services_needing_restart.len(),
             load1 = state.metrics.load1,
@@ -446,11 +403,8 @@ fn report_host(root: &Root) {
     }
 }
 
-/// Renew the client certificate if it is inside its renewal window.
-///
-/// Never fatal. A daemon that refuses to start because it could not reach the
-/// gateway is a daemon that cannot report anything at all, including the fact
-/// that it could not reach the gateway.
+/// Renews the client certificate if it's inside its renewal window. Failure
+/// is logged, never fatal.
 async fn renew_certificate(config: &AgentConfig, state: &LocalState, extra_root: Option<&[u8]>) {
     let transport = match transport(config, state, extra_root) {
         Ok(t) => t,
@@ -483,11 +437,8 @@ async fn renew_certificate(config: &AgentConfig, state: &LocalState, extra_root:
     }
 }
 
-/// Stands in for the transport and collectors until they exist.
-///
-/// It reports honestly rather than pretending to succeed: a scheduler that
-/// looks like it is working when nothing is connected is exactly the kind of
-/// thing that gets shipped by accident.
+/// Stands in for check-in and inventory when the host has no usable identity
+/// or package backend.
 #[derive(Debug)]
 struct NotWiredUp;
 
@@ -505,19 +456,17 @@ impl CheckIn for NotWiredUp {
 #[async_trait]
 impl Inventory for NotWiredUp {
     async fn collect_and_upload(&self) -> Result<()> {
-        tracing::debug!("inventory skipped: collectors not implemented (DAWG-33)");
+        tracing::debug!("inventory skipped: no usable identity or package backend");
         Ok(())
     }
     async fn refresh_metadata(&self) -> Result<()> {
-        tracing::debug!("metadata refresh skipped: backends not implemented (DAWG-34/35)");
+        tracing::debug!("metadata refresh skipped: no usable identity or package backend");
         Ok(())
     }
 }
 
-/// Resolves on SIGTERM or SIGINT.
-///
-/// systemd sends SIGTERM and then waits. Ignoring it means being `SIGKILL`ed,
-/// which for an agent mid-apply is how a package database gets left half-written.
+/// Resolves on SIGTERM or SIGINT. Ignoring SIGTERM gets us `SIGKILL`ed by
+/// systemd, which mid-apply can leave the package database half-written.
 async fn shutdown_signal() {
     let interrupt = async {
         if tokio::signal::ctrl_c().await.is_err() {
@@ -532,7 +481,7 @@ async fn shutdown_signal() {
                 sig.recv().await;
             }
             Err(error) => {
-                tracing::error!(%error, "cannot listen for SIGTERM — shutdown will not be graceful");
+                tracing::error!(%error, "cannot listen for SIGTERM; shutdown will not be graceful");
                 std::future::pending::<()>().await;
             }
         }

@@ -1,14 +1,8 @@
 //! Platform facts: what this machine is.
 //!
-//! Sent with a full inventory rather than on every check-in, because these
-//! change on the order of never. The exhaustive list of what is collected lives
-//! in [`SystemFacts`]; anything not represented there is not gathered, and that
-//! is a promise `updawgctl --print-inventory` exists to make checkable.
-//!
-//! What is deliberately absent is as much the point as what is present: no file
-//! contents, no environment, no process arguments, no user data. A host's
-//! operator should be able to read this module in a few minutes and be
-//! satisfied.
+//! Sent with a full inventory, not on every check-in, since these almost never
+//! change. Everything collected is a field of [`SystemFacts`], and
+//! `updawgctl --print-inventory` shows exactly what would be sent.
 
 use crate::{Collector, FactCollector, Result, platform};
 use async_trait::async_trait;
@@ -27,8 +21,6 @@ impl PlatformFacts {
         Self { root }
     }
 
-    /// Gather everything, synchronously.
-    ///
     /// # Errors
     /// Fails only on the facts nothing downstream works without: the machine
     /// id, the distribution, the kernel and the package ecosystem. Everything
@@ -38,8 +30,7 @@ impl PlatformFacts {
 
         let virtualization = platform::virtualization(&self.root);
         if virtualization.is_none() {
-            // Not an error and not "bare metal" — we could not tell. Worth a
-            // line, because it is the sort of gap that gets noticed much later.
+            // not bare metal either, we just couldn't tell
             tracing::debug!("could not determine virtualization for this host");
         }
 
@@ -116,7 +107,7 @@ mod tests {
         assert_eq!(facts.distro, "amzn");
         assert_eq!(facts.version_id, "2023");
         assert_eq!(facts.ecosystem, Ecosystem::Rpm);
-        // Amazon Linux has no VERSION_CODENAME, which is absence, not failure.
+        // Amazon Linux has no VERSION_CODENAME
         assert_eq!(facts.codename, None);
     }
 
@@ -128,8 +119,6 @@ mod tests {
         assert_eq!(facts.virtualization.as_deref(), Some("kvm"));
     }
 
-    /// Bare metal and "could not tell" are both `None` on the wire, but the
-    /// collector must not invent a hypervisor for a machine that has none.
     #[tokio::test]
     async fn bare_metal_reports_no_virtualization_rather_than_guessing() {
         let host = FakeHost::debian();
@@ -142,7 +131,7 @@ mod tests {
     async fn an_fqdn_is_optional() {
         let host = FakeHost::debian();
         let facts = PlatformFacts::new(host.root()).facts().await.unwrap();
-        // The fixture root never shells out, so there is no FQDN to find.
+        // the fixture root never shells out, so there's no FQDN to find
         assert_eq!(facts.fqdn, None);
     }
 
@@ -166,9 +155,8 @@ mod tests {
         assert!(!PlatformFacts::new(bare.root()).is_available().await);
     }
 
-    /// The cloned-golden-image case. systemd leaves this file empty on purpose
-    /// so first boot fills it in; collecting before that gives every clone the
-    /// same identity.
+    // Cloned golden images ship an empty machine-id for first boot to fill
+    // in. Collecting before then would give every clone the same identity.
     #[tokio::test]
     async fn an_empty_machine_id_is_refused() {
         let host = FakeHost::debian();

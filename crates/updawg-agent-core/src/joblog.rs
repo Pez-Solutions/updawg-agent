@@ -1,18 +1,13 @@
-//! A job's log, streamed to the gateway while it runs (DAWG-101).
+//! A job's log, streamed to the gateway while it runs.
 //!
-//! Every line the package manager prints, and a few of the agent's own, is
-//! kept here with a sequence number and sent in batches of NDJSON: every
-//! [`FLUSH_EVERY`] while the job runs, and all of what is left before the
-//! job's report. The gateway stores each batch as it arrives, so somebody
-//! watching the portal sees apt working rather than a spinner.
+//! Package manager output and some of the agent's own lines get a sequence
+//! number and are sent as NDJSON batches every [`FLUSH_EVERY`], with the rest
+//! flushed before the job's report.
 //!
-//! # A log never holds up a job
-//!
-//! Sending is best effort. A batch that fails is kept and tried again with the
-//! next; one the gateway refuses for good is dropped; and at most
-//! [`MAX_PENDING`] lines wait, the oldest going first, so an unreachable
-//! gateway costs memory that is bounded and never an install that stalls.
-//! The report that follows is what the proposal settles on, not the log.
+//! Sending is best effort and never blocks the job. A failed batch is retried
+//! with the next one, a batch the gateway rejects is dropped, and at most
+//! [`MAX_PENDING`] lines are buffered (oldest dropped first) while the gateway
+//! is unreachable. The job's outcome comes from the report, not the log.
 
 use crate::jobs::Reporter;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
@@ -25,9 +20,9 @@ pub const FLUSH_EVERY: Duration = Duration::from_secs(2);
 pub const BATCH: usize = 500;
 /// The most lines kept waiting for an unreachable gateway.
 pub const MAX_PENDING: usize = 20_000;
-/// Where the sequence resumes after a reboot. The count is not persisted
-/// across one, so the second half of a job's log starts well clear of the
-/// first; the gateway takes sequence numbers up to ten million.
+/// Where the sequence resumes after a reboot. The counter isn't persisted, so
+/// this keeps post-reboot lines clear of the earlier ones. The gateway accepts
+/// sequence numbers up to ten million.
 pub const AFTER_REBOOT: u64 = 5_000_000;
 
 struct Pending {
@@ -47,7 +42,7 @@ pub struct JobLog {
 }
 
 impl JobLog {
-    /// Start a job's log, numbering from `first_seq`, with a flusher running.
+    /// Starts the log and its background flusher, numbering from `first_seq`.
     pub fn start(reporter: Arc<dyn Reporter>, job: Job, first_seq: u64) -> Arc<Self> {
         let log = Arc::new(Self {
             job,
@@ -74,7 +69,7 @@ impl JobLog {
         log
     }
 
-    /// One of the agent's own lines: what it is about to do, what it did.
+    /// Logs a line from the agent itself.
     pub fn agent(&self, line: impl Into<String>) {
         let line = line.into();
         tracing::info!(job = %self.job.id, "{line}");
@@ -99,7 +94,7 @@ impl JobLog {
         }
     }
 
-    /// Send one batch, if there is anything. `true` if lines remain.
+    /// Returns `true` if lines remain after a successful send.
     async fn send_one(&self) -> bool {
         let _one_at_a_time = self.sending.lock().await;
         let batch: Vec<LogLine> = {
@@ -130,8 +125,8 @@ impl JobLog {
             return false;
         };
         if sent {
-            // Only what was sent: the flusher may have pushed more meanwhile,
-            // and the oldest may have been dropped for room. Match by seq.
+            // more lines may have arrived, or old ones been evicted, while
+            // sending; remove by seq
             let last = batch.last().map_or(0, |l| l.seq);
             while pending.lines.front().is_some_and(|l| l.seq <= last) {
                 pending.lines.pop_front();
@@ -140,9 +135,8 @@ impl JobLog {
         sent && !pending.lines.is_empty()
     }
 
-    /// Stop the flusher and send what is left, trying a few times. Called
-    /// before the job's report, and before a reboot, which may be the last
-    /// chance this process has.
+    /// Stops the flusher and sends what is left, with a few retries. Called
+    /// before the job's report and before a reboot.
     pub async fn finish(&self) {
         if let Ok(mut flusher) = self.flusher.lock()
             && let Some(handle) = flusher.take()

@@ -1,11 +1,7 @@
-//! `updawgctl` — the local tool for people who are about to trust this thing.
+//! `updawgctl`, the local command-line tool for the agent.
 //!
-//! `--print-inventory` is the important one. It shows exactly what would be
-//! uploaded, and that output is a promise to the customer: a test asserts it is
-//! byte-identical to what the agent actually sends (DAWG-37).
-//!
-//! Scope note: DAWG-19 wires up the command surface, DAWG-30 implements
-//! `enroll`. The rest are implemented alongside the features they expose.
+//! `print-inventory` shows exactly what would be uploaded; it goes through the
+//! same code path as the agent's own upload.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -44,25 +40,16 @@ struct Cli {
     command: Command,
 }
 
-/// The `--insecure-extra-root` flag, which exists only in a build that asked
-/// for it.
-///
-/// Two definitions of one struct, chosen by feature. The disabled one has no
-/// fields, so clap has never heard of the flag and `--insecure-extra-root
-/// ca.pem` comes back as "unexpected argument". That is what DAWG-206 asked
-/// for: not a flag that refuses, a flag that is not there.
-///
-/// Flattening it means the rest of this binary calls `load()` once and carries
-/// no `#[cfg]` anywhere.
+/// The `--insecure-extra-root` flag, only present in builds with the
+/// `insecure-extra-root` feature. Same arrangement as in `updawgd`.
 mod extra_root {
     #[cfg(feature = "insecure-extra-root")]
     #[derive(Debug, clap::Args)]
     pub(super) struct ExtraRoot {
         /// PEM certificate authority to trust in addition to the system store.
         ///
-        /// For running against a gateway you started yourself. Deliberately
-        /// accepts no environment variable: every other option here does, and
-        /// this is the one that should not be settable by something inherited.
+        /// For running against a gateway you started yourself. Unlike the other
+        /// options, this can't be set from the environment.
         #[arg(long = "insecure-extra-root", value_name = "PEM")]
         path: Option<std::path::PathBuf>,
     }
@@ -72,10 +59,6 @@ mod extra_root {
     pub(super) struct ExtraRoot {}
 
     impl ExtraRoot {
-        /// The PEM to trust, if this build can be told to trust one and was.
-        ///
-        /// Returns `Ok(None)` in a release build without looking at anything,
-        /// because there is nothing to look at.
         #[cfg(feature = "insecure-extra-root")]
         pub(super) fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
             use anyhow::Context as _;
@@ -109,9 +92,9 @@ enum Command {
         #[arg(long, env = "UPDAWG_TOKEN")]
         token: String,
 
-        /// The gateway to report to, for an organization outside the EU
-        /// (DAWG-296): written to the config as `server` before enrolling.
-        /// The portal's install command sets it when it is needed.
+        /// The gateway to report to, for an organization outside the EU.
+        /// Written to the config as `server` before enrolling. The portal's
+        /// install command sets it when needed.
         #[arg(long, env = "UPDAWG_SERVER")]
         server: Option<String>,
 
@@ -137,7 +120,7 @@ enum Command {
     },
     /// Show recent jobs recorded on this host.
     Jobs,
-    /// Run the preflight checks here, and change nothing (DAWG-147, DAWG-149).
+    /// Run the preflight checks here, and change nothing.
     ///
     /// Without --release it checks the host as a package change would; with
     /// it, as an upgrade to that release (`14`, `24.04` or a codename),
@@ -148,7 +131,7 @@ enum Command {
         release: Option<String>,
     },
     /// Make an organization signing key for your organization to hold
-    /// itself (Enterprise, DAWG-157).
+    /// itself (Enterprise).
     ///
     /// Run this where the key will live, not on a managed host. It writes the
     /// private key to --out, readable only by you, and prints the public half:
@@ -161,27 +144,26 @@ enum Command {
         out: std::path::PathBuf,
     },
     /// Renew this host's certificate at the agent's next check-in, picking up
-    /// any signing key the organization has rotated to (DAWG-308). The
-    /// gateway asks hosts to do this by itself after a rotation; this is for
-    /// not waiting even minutes.
+    /// any signing key the organization has rotated to. The gateway already
+    /// asks hosts to do this after a rotation; this skips the wait.
     Renew,
     /// Prove you hold an organization key, for handing signing over to it
-    /// in the portal (Enterprise, DAWG-157). Prints one line to paste.
+    /// in the portal (Enterprise). Prints one line to paste.
     ProveKey {
-        /// Your organization's id, `org_…`, as the portal shows it.
+        /// Your organization's id, `org_...`, as the portal shows it.
         #[arg(long)]
         org: String,
         #[command(flatten)]
         source: sign::KeySource,
     },
     /// Endorse the next key with your active one, to rotate a key your
-    /// organization holds (Enterprise, DAWG-293). Prints one line to paste,
-    /// beside `prove-key` run with the next key.
+    /// organization holds (Enterprise). Prints one line to paste, along with
+    /// the output of `prove-key` for the next key.
     Endorse {
-        /// Your organization's id, `org_…`, as the portal shows it.
+        /// Your organization's id, `org_...`, as the portal shows it.
         #[arg(long)]
         org: String,
-        /// Your active key's id, `sk_…`, as the portal lists it.
+        /// Your active key's id, `sk_...`, as the portal lists it.
         #[arg(long)]
         from: String,
         /// The next key's public half, as `keygen` printed it.
@@ -191,8 +173,7 @@ enum Command {
         #[command(flatten)]
         source: sign::KeySource,
     },
-    /// Sign the jobs waiting for your organization's own key (Enterprise,
-    /// DAWG-157).
+    /// Sign the jobs waiting for your organization's own key (Enterprise).
     ///
     /// Shows what each job will do, decoded from the bytes being signed, and
     /// asks before signing it. Needs an API token with the `read` and
@@ -212,16 +193,15 @@ enum Command {
         /// Sign every waiting job without asking.
         #[arg(long)]
         yes: bool,
-        /// Sign only what this policy file allows (DAWG-293); anything else
-        /// is left waiting for a person. Meant for --yes on a schedule.
+        /// Sign only what this policy file allows; anything else is left for a
+        /// person. Meant for --yes on a schedule.
         #[arg(long)]
         policy: Option<std::path::PathBuf>,
         #[command(flatten)]
         source: sign::KeySource,
     },
-    /// Carry out the self-update the agent prepared (DAWG-46). The agent
-    /// starts this in a transient systemd unit of its own; it is not for
-    /// running by hand.
+    /// Carry out the self-update the agent prepared. The agent starts this in
+    /// its own transient systemd unit; not for running by hand.
     #[command(hide = true)]
     SelfUpdateRun,
 }
@@ -249,7 +229,7 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            // Deliberately never echo the token back, not even truncated.
+            // never echo the token, not even truncated
             enroll(
                 &cli.config,
                 &state,
@@ -357,7 +337,6 @@ async fn enroll(
     Ok(())
 }
 
-/// `updawgctl keygen --out org.key`.
 fn keygen(out: &std::path::Path) -> Result<()> {
     let key = updawg_crypto::OrgKeyPair::generate().context("generating a key")?;
     key.save_new(out)
@@ -371,13 +350,12 @@ fn keygen(out: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Have the running daemon pick up the identity just written.
+/// Restarts updawgd so it picks up the new identity.
 ///
-/// updawgd reads its identity once, when it starts, and one that started
-/// unenrolled runs without checking in rather than exiting — so without this
-/// a host installed from a package and then enrolled would never check in.
-/// Only a daemon systemd is running is restarted: one stopped on purpose stays
-/// stopped, and without systemd there is nothing here to ask.
+/// The daemon reads its identity only at startup, and one that started
+/// unenrolled keeps running without checking in, so a host installed from a
+/// package and then enrolled would otherwise never check in. Only restarts a
+/// daemon systemd is running; a stopped one stays stopped.
 fn restart_daemon() {
     const UNIT: &str = "updawgd.service";
     let running = std::path::Path::new("/run/systemd/system").exists()
@@ -400,9 +378,7 @@ fn restart_daemon() {
     }
 }
 
-/// Show what got pinned. This is the line an operator should be able to compare
-/// against what the portal shows, which is the only way pinning is checkable by
-/// the person it protects.
+/// Printed so the operator can compare the pinned keys with the portal.
 fn print_pinned(org_keys: &[String]) {
     println!("Pinned organization signing keys:");
     for key in org_keys {
@@ -418,8 +394,7 @@ macro_rules! say {
 }
 
 fn status(cli: &Cli, state: &LocalState) -> Result<()> {
-    // Written to a buffer and emitted at once, so `updawgctl status | head`
-    // ends quietly instead of panicking on the closed pipe.
+    // buffered so `updawgctl status | head` doesn't panic on the closed pipe
     let mut out = String::new();
     say!(out, "updawgctl {VERSION}");
     say!(out, "config:    {}", cli.config);
@@ -445,12 +420,10 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
                     );
                     match cert.remaining(SystemTime::now()) {
                         Some(left) => say!(out, "expires:   in {} days", left.as_secs() / 86_400),
-                        // Not a footnote: an expired certificate means every
-                        // request is already being refused.
-                        None => say!(out, "expires:   EXPIRED — re-enroll with --force"),
+                        None => say!(out, "expires:   EXPIRED, re-enroll with --force"),
                     }
                 }
-                Err(e) => say!(out, "cert:      UNREADABLE — {e}"),
+                Err(e) => say!(out, "cert:      UNREADABLE: {e}"),
             }
             let trusted = AgentConfig::load(&cli.config)
                 .ok()
@@ -461,17 +434,16 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
                     for key in pinned.describe() {
                         say!(out, "  {key}");
                     }
-                    // A host told to trust its organization's own key that has
-                    // not pinned it enrolled before the setting. It follows the
-                    // key at its next renewal once the organization has taken
-                    // its key over, which is the endorsement it needs.
+                    // Configured but not pinned means the host enrolled before
+                    // trusted_org_key was set. It picks the key up at its next
+                    // renewal once the organization has taken over signing.
                     if let Some(trusted) = trusted {
                         if pinned.contains_material(&trusted) {
                             say!(out, "trusted:   {} (pinned)", trusted.fingerprint());
                         } else {
                             say!(
                                 out,
-                                "trusted:   {} NOT PINNED YET — this host enrolled before \
+                                "trusted:   {} NOT PINNED YET: this host enrolled before \
                                  trusted_org_key was set. It follows the key at its next \
                                  certificate renewal once your organization has taken over \
                                  signing; `updawgctl enroll --force` pins it now",
@@ -480,10 +452,8 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
                         }
                     }
                 }
-                // Worth surfacing rather than hiding: an identity whose pinned
-                // keys no longer parse cannot verify a job, and the host would
-                // otherwise look healthy until one arrived.
-                Err(e) => say!(out, "org keys:  UNUSABLE — {e}"),
+                // no job can verify, and the host would otherwise look healthy
+                Err(e) => say!(out, "org keys:  UNUSABLE: {e}"),
             }
         }
     }
@@ -491,11 +461,9 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
     let now = chrono::Utc::now();
     match state.last_checkin() {
         Ok(Some(last)) => say!(out, "{}", describe_checkin(&last, now)),
-        // Not enrolled: there is nothing to check in as, and "is updawgd
-        // running?" would send somebody looking for the wrong problem.
         Ok(None) if !state.is_enrolled() => say!(out, "check-in:  none: this host is not enrolled"),
         Ok(None) => say!(out, "check-in:  none recorded yet (is updawgd running?)"),
-        Err(e) => say!(out, "check-in:  UNREADABLE — {e}"),
+        Err(e) => say!(out, "check-in:  UNREADABLE: {e}"),
     }
     match state.pending_reboot() {
         Ok(Some(pending)) => say!(
@@ -504,7 +472,7 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
             pending.job.id
         ),
         Ok(None) => {}
-        Err(e) => say!(out, "reboot:    record UNREADABLE — {e}"),
+        Err(e) => say!(out, "reboot:    record UNREADABLE: {e}"),
     }
     let running: Vec<_> = state
         .job_history()
@@ -522,8 +490,6 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
     emit(&out)
 }
 
-/// One line about the last check-in, for a person: when, and whether the
-/// gateway answered.
 fn describe_checkin(
     last: &updawg_agent_core::state::LastCheckin,
     now: chrono::DateTime<chrono::Utc>,
@@ -552,7 +518,7 @@ fn ago(d: chrono::Duration) -> String {
     }
 }
 
-/// `updawgctl jobs`: the jobs this host has seen lately, newest first.
+/// Newest first.
 fn jobs(state: &LocalState) -> Result<()> {
     let history = state.job_history().context("reading the job history")?;
     if history.is_empty() {
@@ -579,31 +545,23 @@ fn describe_job(job: &updawg_agent_core::state::JobRecord) -> String {
     line
 }
 
-/// Print exactly what an inventory upload would send, and send nothing.
+/// Prints what an inventory upload would send, and sends nothing.
 ///
-/// **The point is that this is the same value.** It builds the very
-/// `InventoryUpload` the agent would PUT and prints that, rather than describing
-/// it — an answer to "what does Updawg collect about my servers?" is only worth
-/// something if it cannot drift from what is actually collected.
-///
-/// It deliberately shows the **full** inventory rather than the delta that would
-/// really go out, because the question is what Updawg knows, not what changed
-/// since Tuesday.
+/// Builds the same `InventoryUpload` the agent would PUT, so the output can't
+/// drift from what is actually collected. Always the full inventory rather
+/// than a delta.
 async fn print_inventory(config_path: &str, json: bool) -> Result<()> {
     let backend = updawg_backends::detect().context("finding a package manager on this host")?;
     let facts = Arc::new(PlatformFacts::new(Root::default()));
 
-    // Collection only — no transport, so this works on a host that has never
-    // enrolled. Someone evaluating Updawg should be able to see what it would
-    // collect before letting it talk to anything.
+    // no transport, so this works on a host that has never enrolled
     let collected = Collected::from_host(backend.as_ref(), facts.as_ref())
         .await
         .context("asking this host what it has")?;
     let upload = collected.upload(None);
 
     if json {
-        // The very bytes the agent sends, not a pretty-printed copy of them
-        // (DAWG-37): pipe to `jq` to read it.
+        // the exact bytes the agent sends, not pretty-printed
         let body = updawg_agent_core::transport::inventory_body(&upload)?;
         return emit(&format!("{}\n", String::from_utf8(body)?));
     }
@@ -679,10 +637,6 @@ async fn print_inventory(config_path: &str, json: bool) -> Result<()> {
 }
 
 /// `1 package held`, `2 packages held`, `0 packages held`.
-///
-/// English, because this output is for a person. "1 packages held" in a tool
-/// somebody is reading to decide whether to trust it with their servers is a
-/// small thing that reads as carelessness.
 fn plural(n: usize, noun: &str, verb: &str) -> String {
     if n == 1 {
         format!("{n} {noun} {verb}")
@@ -693,18 +647,6 @@ fn plural(n: usize, noun: &str, verb: &str) -> String {
     }
 }
 
-/// Write to stdout, and stop quietly if whoever was reading has stopped.
-///
-/// Rust sets `SIGPIPE` to ignore, so `println!` into a closed pipe **panics** —
-/// and `updawgctl print-inventory --json | head` is exactly how somebody will
-/// read this. A backtrace where `head` should simply have ended is alarming
-/// about nothing.
-///
-/// The usual fix is to restore the default `SIGPIPE` disposition, which needs
-/// `unsafe`. This workspace forbids `unsafe`, and that is worth more than the
-/// tidiness — this is the binary a customer audits. So the output is built up
-/// and written once, and a broken pipe ends the process the way the signal would
-/// have.
 /// The checks a `run_preflight` job would report, run here and printed.
 async fn preflight(config_path: &str, release: Option<String>) -> Result<()> {
     let backend = updawg_backends::detect().ok();
@@ -714,8 +656,7 @@ async fn preflight(config_path: &str, release: Option<String>) -> Result<()> {
     let snapshots = updawg_snapshots::detect(wanted)
         .await
         .map(|p| p.provider().name().to_owned());
-    // Debian and Ubuntu say so in a file; elsewhere this cannot tell, and says
-    // that rather than guessing.
+    // only Debian and Ubuntu have a file for this
     let reboot_now = if std::path::Path::new("/run/reboot-required").exists() {
         updawg_protocol::RebootRequired::Yes
     } else {
@@ -742,6 +683,12 @@ async fn preflight(config_path: &str, release: Option<String>) -> Result<()> {
     emit(&out)
 }
 
+/// Writes to stdout, exiting quietly on a broken pipe.
+///
+/// Rust ignores `SIGPIPE`, so `println!` into a closed pipe panics (think
+/// `print-inventory --json | head`). Restoring the default disposition needs
+/// `unsafe`, which the workspace forbids, so output is buffered and written
+/// once here instead.
 fn emit(text: &str) -> Result<()> {
     use std::io::Write as _;
     match std::io::stdout().write_all(text.as_bytes()) {
@@ -798,8 +745,6 @@ mod tests {
 
     #[test]
     fn counts_read_as_english() {
-        // This output exists to be read by somebody deciding whether to trust
-        // Updawg with their servers. "1 packages held" reads as carelessness.
         assert_eq!(plural(1, "package", "held"), "1 package held");
         assert_eq!(plural(2, "package", "held"), "2 packages held");
         assert_eq!(plural(0, "package", "held"), "0 packages held");

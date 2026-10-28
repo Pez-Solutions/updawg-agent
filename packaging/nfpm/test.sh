@@ -1,13 +1,11 @@
 #!/bin/sh
-# The packages' whole life on one distribution, in a container of it, as root:
-# install, a local edit to agent.toml, an upgrade, a removal and (deb) a purge.
+# Package lifecycle test, run as root in a container: install, edit
+# agent.toml, upgrade, remove, and purge (deb).
 #
 #   docker run --rm -v "$PWD:/w" -w /w debian:13 \
 #     sh packaging/nfpm/test.sh out/updawg-agent_*_amd64.deb next/updawg-agent_*_amd64.deb
 #
-# There is no systemd in a container, so the scripts' systemd half is not
-# run here; the rest of them is: what they do on each argument dpkg and rpm
-# pass them, and that they do not fail an install, an upgrade or a removal.
+# The systemd parts of the scripts are skipped (no systemd in containers).
 set -eu
 
 old=$1

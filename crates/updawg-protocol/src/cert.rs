@@ -1,9 +1,8 @@
 //! Certificate renewal: `POST /agent/v1/cert/renew`.
 //!
-//! Client certificates are short-lived. An agent renews well before expiry;
-//! one that fails to renew falls out of the fleet and shows up as stale, which
-//! is the intended failure mode — a host Updawg cannot authenticate is a host
-//! Updawg should not claim to know the state of.
+//! Client certificates are short-lived and the agent renews well before
+//! expiry. An agent that fails to renew shows up as stale, since the server
+//! can't vouch for the state of a host it can't authenticate.
 
 use serde::{Deserialize, Serialize};
 

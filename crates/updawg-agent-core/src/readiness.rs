@@ -1,60 +1,49 @@
-//! Third-party repository readiness for a release upgrade (DAWG-149).
+//! Third-party repository readiness for a release upgrade.
 //!
-//! The failure this catches is the quiet one: a repository the host uses
-//! publishes nothing for the release it is moving to, so the upgrade either
-//! stops on a missing `Release` file or carries on and leaves that
-//! repository's packages behind — old, unmaintained, sometimes removed by the
-//! new release's dependencies.
+//! If a repository publishes nothing for the target release, the upgrade
+//! either stops on a missing `Release` file or leaves that repository's
+//! packages behind, where the new release's dependencies may remove them.
 //!
-//! For each third-party repository ([`updawg_backends::RepoSource`]), the
-//! suite is renamed from this release's codename to the target's —
-//! `cloud-sdk-trixie` becomes `cloud-sdk-forky` — and the repository is asked
-//! for `dists/<suite>/InRelease`, then `Release`. A suite that does not name a
-//! release (`stable`) carries over as it is. Reading a file over HTTP is the
-//! only thing this does: it changes nothing on the host, as a preflight must
-//! not.
+//! For each third-party repository ([`updawg_backends::RepoSource`]) the suite
+//! is renamed from the current codename to the target's (`cloud-sdk-trixie`
+//! to `cloud-sdk-forky`) and we fetch `dists/<suite>/InRelease`, then
+//! `Release`. Suites that don't name a release (`stable`) are kept as is.
+//! This only reads over HTTP and changes nothing on the host.
 //!
-//! Distribution repositories are left to the upgrade itself, which rewrites
-//! them; only third-party ones are asked.
+//! Distribution repositories are skipped; the upgrade rewrites those itself.
 
 use std::time::Duration;
 use updawg_protocol::{CheckStatus, PreflightCheck};
 
-/// How long one repository gets to answer. A preflight asks every
-/// third-party repository in turn, and a slow mirror must not hold it for
-/// minutes.
+/// Per-repository timeout. Repositories are probed in turn, so one slow
+/// mirror shouldn't stall the preflight.
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How many packages to name per repository before saying how many more.
 const NAMED: usize = 8;
 
-/// One third-party repository, asked about the target release.
+/// A third-party repository and whether it publishes the target release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repo {
     pub uri: String,
     pub suite: String,
-    /// The suite it would be for the target, when the suite names a release.
+    /// `None` when the suite doesn't name a release.
     pub target_suite: Option<String>,
     pub answer: Answer,
-    /// Installed packages that came from it.
+    /// Installed packages from this repository.
     pub packages: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
-    /// The target's suite exists.
     Published,
-    /// It does not: 404 for both `InRelease` and `Release`.
+    /// 404 for both `InRelease` and `Release`.
     Missing,
-    /// The suite names no release, so it is used as it is.
     NotReleaseSpecific,
-    /// Could not find out, and why.
     Unknown(String),
 }
 
 pub use updawg_backends::release::{codename_for, target_suite};
 
-/// This host's release codename, from `/etc/os-release`.
 fn current_codename(os_release: &str) -> Option<String> {
     let value = |key: &str| {
         os_release.lines().find_map(|l| {
@@ -67,11 +56,11 @@ fn current_codename(os_release: &str) -> Option<String> {
     value("VERSION_CODENAME").or_else(|| value("UBUNTU_CODENAME"))
 }
 
-/// Ask every third-party repository about `target`.
+/// Probes every third-party repository for `target`.
 ///
 /// # Errors
-/// Why no repository could be asked: the package manager could not list
-/// them, or either release's codename is unknown.
+/// If the package manager can't list the repositories, or either release's
+/// codename is unknown.
 pub async fn gather(
     backend: Option<&dyn updawg_backends::PackageBackend>,
     target: &str,
@@ -108,8 +97,6 @@ pub async fn gather(
     Ok(repos)
 }
 
-/// Whether `uri` publishes `suite`: its signed index, or failing that its
-/// unsigned one.
 async fn probe(client: &reqwest::Client, uri: &str, suite: &str) -> Answer {
     if !(uri.starts_with("https://") || uri.starts_with("http://")) {
         return Answer::Unknown(format!("{uri} is not an HTTP repository"));
@@ -118,7 +105,6 @@ async fn probe(client: &reqwest::Client, uri: &str, suite: &str) -> Answer {
         let url = format!("{}/dists/{suite}/{file}", uri.trim_end_matches('/'));
         match client.get(&url).send().await {
             Ok(r) if r.status().is_success() => return Answer::Published,
-            // Not this file; the other may be there.
             Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {}
             Ok(r) => return Answer::Unknown(format!("{url} answered {}", r.status())),
             Err(e) => return Answer::Unknown(format!("{url}: {e}")),
@@ -127,7 +113,7 @@ async fn probe(client: &reqwest::Client, uri: &str, suite: &str) -> Answer {
     Answer::Missing
 }
 
-/// The `third_party_repos` check, from what [`gather`] found.
+/// Builds the `third_party_repos` check from the result of [`gather`].
 #[must_use]
 pub fn check(target: &str, found: &Result<Vec<Repo>, String>) -> PreflightCheck {
     let repos = match found {
@@ -188,7 +174,7 @@ pub fn check(target: &str, found: &Result<Vec<Repo>, String>) -> PreflightCheck 
     }
 }
 
-/// One line per repository, the ones in the way first.
+/// One line per repository, problems first.
 fn items(repos: &[Repo]) -> Vec<String> {
     let mut items = Vec::new();
     let missing = repos.iter().filter(|r| r.answer == Answer::Missing);
@@ -205,7 +191,7 @@ fn items(repos: &[Repo]) -> Vec<String> {
             if from.is_empty() {
                 String::new()
             } else {
-                format!(" — installed from it: {from}")
+                format!("; installed from it: {from}")
             }
         ));
     }
@@ -232,7 +218,6 @@ fn items(repos: &[Repo]) -> Vec<String> {
     items
 }
 
-/// Some of the packages, sorted, and how many more.
 fn named(packages: &[String]) -> String {
     let mut packages = packages.to_vec();
     packages.sort();
@@ -283,7 +268,6 @@ mod tests {
             Some("forky")
         );
         assert_eq!(target_suite("stable", "trixie", "forky"), None);
-        // A word that only contains the codename is not it.
         assert_eq!(target_suite("trixiefied", "trixie", "forky"), None);
     }
 
@@ -326,7 +310,7 @@ mod tests {
         );
         assert_eq!(
             c.items[0],
-            "https://packages.cloud.google.com/apt cloud-sdk-trixie: no cloud-sdk-forky yet — installed from it: google-cloud-cli"
+            "https://packages.cloud.google.com/apt cloud-sdk-trixie: no cloud-sdk-forky yet; installed from it: google-cloud-cli"
         );
         assert!(c.items[1].contains("not named after a release"));
     }

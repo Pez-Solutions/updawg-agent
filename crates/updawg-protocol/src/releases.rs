@@ -1,21 +1,18 @@
-//! Agent releases (DAWG-46): one manifest per channel, saying which build the
-//! channel holds and where its binaries are.
+//! Agent releases: one manifest per channel, saying which build the channel
+//! holds and where its binaries are.
 //!
-//! Served from `https://pkg.updawg.net/bin/<channel>.json`, beside the apt
-//! and dnf repositories it describes the same builds as.
+//! Served from `https://pkg.updawg.net/bin/<channel>.json`, next to the apt
+//! and dnf repositories for the same builds.
 //!
 //! # Trust
 //!
-//! The manifest is signed independently of how it travels, by the **release
-//! key**: the Cloud KMS key that already signs pkg.updawg.net's repositories
-//! (`RSA_SIGN_PKCS1_4096_SHA512`, DAWG-45). An agent verifies the signature
-//! with the public key compiled into it before acting on anything the
-//! manifest says, so neither a compromised gateway nor a compromised bucket is
-//! enough to ship an agent build — it would also need the key, which never
-//! leaves KMS.
+//! The manifest is signed by the release key, the same KMS-held
+//! `RSA_SIGN_PKCS1_4096_SHA512` key that signs the package repositories. The
+//! agent checks it against a public key compiled into the binary, so a
+//! compromised gateway or bucket can't ship an agent build on its own.
 //!
-//! A self-update job (signed by the organization key) names the version; the
-//! manifest (signed by the release key) says what that version's binaries
+//! A self-update job (signed by the organization key) names the version, and
+//! the manifest (signed by the release key) says what that version's binaries
 //! are. Both have to agree.
 
 use chrono::{DateTime, Utc};
@@ -30,8 +27,6 @@ pub enum ReleaseChannel {
 }
 
 impl ReleaseChannel {
-    /// `stable`, `beta`: as the manifest's file name and the repositories
-    /// spell it.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -44,7 +39,7 @@ impl ReleaseChannel {
 /// One binary of one build, for one target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseArtifact {
-    /// e.g. `x86_64-unknown-linux-musl`.
+    /// For example `x86_64-unknown-linux-musl`.
     pub target: String,
     /// `updawgd` or `updawgctl`.
     pub name: String,
@@ -57,7 +52,7 @@ pub struct ReleaseArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseManifest {
     pub channel: ReleaseChannel,
-    /// The build, exactly as its packages and the agent itself name it:
+    /// Full build version, as the packages and the agent report it:
     /// `0.1.0-20260930183310.g8c53d52`.
     pub version: String,
     pub released_at: DateTime<Utc>,
@@ -72,14 +67,13 @@ pub struct ReleaseManifest {
 }
 
 impl ReleaseManifest {
-    /// What the release key signs a manifest for, so that a signature made
-    /// over a manifest cannot be presented as one over anything else the key
-    /// signs, or the other way round. The same shape as
-    /// [`crate::SignaturePurpose`]: `label || 0x00 || message`.
+    /// Domain separation label, so a manifest signature can't be reused for
+    /// anything else the release key signs. Same `label || 0x00 || message`
+    /// shape as [`crate::SignaturePurpose`].
     pub const LABEL: &'static str = "updawg-release-manifest-v1";
 
-    /// The manifest without its signature: canonical JSON, keys in
-    /// `serde_json`'s deterministic order, as [`crate::Job::document`] is.
+    /// The manifest without its signature, as canonical JSON (same rules as
+    /// [`crate::Job::document`]).
     pub fn document(&self) -> Result<Vec<u8>, serde_json::Error> {
         let mut value = serde_json::to_value(self)?;
         if let Some(obj) = value.as_object_mut() {
@@ -88,8 +82,7 @@ impl ReleaseManifest {
         serde_json::to_vec(&value)
     }
 
-    /// The exact bytes the signature covers. Signing and verifying both go
-    /// through here.
+    /// The exact bytes the signature covers.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
         let mut out = Self::LABEL.as_bytes().to_vec();
         out.push(0);

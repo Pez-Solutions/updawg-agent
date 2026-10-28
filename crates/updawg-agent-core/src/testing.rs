@@ -1,15 +1,12 @@
-//! Shared test scaffolding: a real CA, a real enrolled host, and a real TLS
-//! gateway that demands a client certificate.
+//! Test helpers shared by the transport and check-in tests: a real CA, an
+//! enrolled host, and a TLS gateway that requires a client certificate.
 //!
-//! This lives outside the test modules that use it because both the transport
-//! and the check-in loop need the same thing, and the point of it is that
-//! nothing is mocked: an agent that connects fine and quietly presents no
-//! certificate would pass any test that stopped at the HTTP layer.
+//! Nothing is mocked, because an agent that connected but sent no client
+//! certificate would pass any test that only looked at the HTTP layer.
 //!
-//! The gateway speaks just enough HTTP/1.1 to satisfy `reqwest`. Bringing in a
-//! real HTTP server crate would add a dependency to prove something this proves
-//! directly — and, more to the point, would not let a test hang up mid-response
-//! the way a corporate proxy does.
+//! The gateway implements just enough HTTP/1.1 for `reqwest`. A real server
+//! crate would be another dependency and wouldn't let a test hang up
+//! mid-response like a proxy does.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -36,7 +33,6 @@ use updawg_protocol::{CheckinRequest, HostId, HostMetrics, HostStateReport};
 
 pub(crate) static NEXT: AtomicU64 = AtomicU64::new(0);
 
-/// A throwaway certificate authority, so the tests exercise a real chain.
 pub(crate) struct TestCa {
     issuer: Issuer<'static, KeyPair>,
     pub(crate) pem: String,
@@ -64,8 +60,7 @@ impl TestCa {
         }
     }
 
-    /// Issue an end-entity certificate for a fresh Ed25519 key, as the gateway
-    /// would for an agent.
+    /// Client certificate for a fresh Ed25519 key, like the gateway issues.
     pub(crate) fn issue(&self, common_name: &str, valid_for: Duration) -> (String, KeyPair) {
         let key = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let pem = self.issue_for_eku(
@@ -79,10 +74,9 @@ impl TestCa {
         (pem, key)
     }
 
-    /// The server's own certificate. ECDSA, because the platform verifier
-    /// applies the operating system's algorithm policy to extra roots as well
-    /// as built-in ones, and macOS will not accept Ed25519 for server
-    /// authentication. A real gateway's certificate is ECDSA or RSA too.
+    /// Server certificate. ECDSA because the platform verifier applies the
+    /// OS algorithm policy to extra roots too, and macOS rejects Ed25519 for
+    /// server auth.
     pub(crate) fn issue_server(&self) -> (String, KeyPair) {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let pem = self.issue_for_eku(
@@ -96,7 +90,7 @@ impl TestCa {
         (pem, key)
     }
 
-    /// `aged` backdates `not_before`, so a certificate can start life already
+    /// `aged` backdates `not_before`, so a certificate can start out already
     /// inside its renewal window.
     pub(crate) fn issue_for(
         &self,
@@ -126,11 +120,10 @@ impl TestCa {
         eku: ExtendedKeyUsagePurpose,
     ) -> String {
         let mut params = CertificateParams::new(sans).unwrap();
-        // Without an extended key usage the verifier refuses the chain, which
-        // is the same rule a real gateway's certificate has to satisfy.
+        // the verifier rejects certificates without an EKU
         params.extended_key_usages = vec![eku];
-        // rcgen derives a default serial from the key, so a renewal for the
-        // same key would otherwise be indistinguishable from the original.
+        // rcgen derives the default serial from the key, which would make a
+        // renewal for the same key look identical to the original
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         params.serial_number = Some(rcgen::SerialNumber::from_slice(&n.to_be_bytes()));
         let mut dn = DistinguishedName::new();
@@ -144,7 +137,6 @@ impl TestCa {
     }
 }
 
-/// An enrolled host on disk: state directory, key file, identity file.
 pub(crate) struct EnrolledHost {
     dir: PathBuf,
     pub(crate) state: LocalState,
@@ -155,15 +147,12 @@ impl EnrolledHost {
         Self::aged(ca, Duration::ZERO, valid_for)
     }
 
-    /// An enrolled host whose certificate was issued `aged` ago.
     pub(crate) fn aged(ca: &TestCa, aged: Duration, valid_for: Duration) -> Self {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("updawg-tp-{}-{n}", std::process::id()));
         let state = LocalState::new(dir.join("state"));
         state.ensure().unwrap();
 
-        // The host's own key, then a certificate issued for exactly that key —
-        // the same relationship a real enrollment produces.
         let key = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         fs::write(state.root().join(KEY_FILE), key.serialize_pem()).unwrap();
         let cert = ca.issue_for("hst_01J9ZC6Q", vec![], aged, valid_for, &key);
@@ -192,18 +181,14 @@ impl Drop for EnrolledHost {
     }
 }
 
-/// What one request looked like from the server's side.
 #[derive(Debug, Clone)]
 pub(crate) struct Seen {
     pub(crate) path: String,
     pub(crate) method: String,
     pub(crate) body: String,
-    /// The body before any lossy conversion.
-    ///
-    /// An inventory upload is zstd, so `body` is meaningless for it — a lossy
-    /// UTF-8 conversion of compressed bytes is not the bytes.
+    /// Raw body. Needed for inventory uploads, which are zstd.
     pub(crate) body_bytes: Vec<u8>,
-    /// Lowercased header names to values, for the handful a test cares about.
+    /// Header names are lowercased.
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) client_subject: Option<String>,
 }
@@ -217,27 +202,19 @@ impl Seen {
     }
 }
 
-/// A TLS server that demands a client certificate and answers canned JSON.
-///
-/// Speaks just enough HTTP/1.1 to satisfy `reqwest`. Using a real HTTP server
-/// crate would add a dependency to prove something this proves directly.
+/// TLS server that requires a client certificate and returns canned JSON.
 pub(crate) struct TestGateway {
     addr: std::net::SocketAddr,
     pub(crate) seen: Arc<std::sync::Mutex<Vec<Seen>>>,
 }
 
-/// What the gateway does with one request.
 #[derive(Debug, Clone)]
 pub(crate) enum Reply {
-    /// Answer immediately.
     Now(u16, String),
-    /// Hold the request open, then answer — a long poll with a job waiting at
-    /// the end of it.
+    /// Delayed answer, like a long poll that ends with a job.
     After(Duration, u16, String),
-    /// Hold the request open and then hang up without answering. This is what
-    /// a proxy trimming an idle connection looks like from the agent's side,
-    /// and it is indistinguishable from an outage unless you look at how long
-    /// it took.
+    /// Wait, then close without answering, like a proxy dropping an idle
+    /// connection.
     HangUpAfter(Duration),
 }
 
@@ -251,7 +228,6 @@ impl TestGateway {
         .await
     }
 
-    /// As [`Self::start`], but each request gets a [`Reply`].
     pub(crate) async fn scripted(ca: &TestCa, replies: Vec<Reply>) -> Self {
         use tokio_rustls::rustls::{
             RootCertStore, ServerConfig,
@@ -271,8 +247,8 @@ impl TestGateway {
         for cert in CertificateDer::pem_slice_iter(ca.pem.as_bytes()) {
             roots.add(cert.unwrap()).unwrap();
         }
-        // Client authentication is mandatory. That is the whole point: a client
-        // presenting nothing gets refused at the handshake.
+        // client auth is mandatory, so a client without a cert fails the
+        // handshake
         let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
             .build()
             .unwrap();
@@ -329,9 +305,6 @@ impl TestGateway {
                             tokio::time::sleep(delay).await;
                             (s, j)
                         }
-                        // Drop the connection without writing anything. The
-                        // agent sees a transport error, exactly as it would
-                        // behind a proxy with an idle timeout.
                         Reply::HangUpAfter(delay) => {
                             tokio::time::sleep(delay).await;
                             drop(tls);
@@ -391,13 +364,10 @@ pub(crate) fn checkin_request() -> CheckinRequest {
     }
 }
 
-/// Read one HTTP/1.1 request: method, path, headers, body.
+/// Reads one HTTP/1.1 request: method, path, headers, body.
 ///
-/// Reads until the headers are complete, then until `Content-Length` is
-/// satisfied. A single `read` was enough while every body was small JSON; a
-/// compressed inventory arrives in more than one TCP segment, and a harness that
-/// read once would fail or pass depending on how the kernel happened to split it
-/// — which is the kind of test failure nobody can reproduce.
+/// Keeps reading until `Content-Length` is satisfied. A compressed inventory
+/// can span several TCP segments, and a single `read` made the tests flaky.
 async fn read_request<S>(tls: &mut S) -> (String, String, Vec<(String, String)>, Vec<u8>)
 where
     S: tokio::io::AsyncRead + Unpin,

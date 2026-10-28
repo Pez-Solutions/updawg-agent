@@ -1,25 +1,24 @@
 #!/bin/sh
-# Make get.updawg.net what stable holds (DAWG-44, DAWG-46).
+# Update get.updawg.net to the current stable build.
 #
 #   publish-get.sh VERSION DIR
 #
 # DIR holds <target>/updawgd and <target>/updawgctl for both targets: the
-# promoted build's binaries, from bin/pool/. Served by Caddy from the packages
-# bucket's get/ (updawg-infra), with / as install.sh:
+# promoted build's binaries, from bin/pool/. Bucket layout (/ serves
+# install.sh):
 #
 #   get/install.sh                    curl -fsSL https://get.updawg.net | sh
 #   get/agent/latest/updawgd          x86_64, at the top, where older
 #   get/agent/latest/updawgctl        installers look
-#   get/agent/latest/aarch64/…        aarch64 (DAWG-41)
+#   get/agent/latest/aarch64/...       aarch64
 #   get/agent/latest/updawgd.service  the unit for a manual install
 #   get/agent/latest/install.sh       the same installer, beside its files
 #   get/agent/latest/SHA256SUMS       over all of the above, relative paths
 #   get/agent/latest/REVISION         the commit
 #
-# The installer and the unit come from the commit checked out (main, which
-# Promote runs from); the binaries from the build being promoted. Files
-# first, SHA256SUMS next, the installer at the root last: a host that fetches
-# mid-publish never gets a script whose files are not there yet.
+# The installer and unit come from the checked-out commit, the binaries from
+# the promoted build. Uploaded files first, then SHA256SUMS, then the root
+# installer, so a fetch mid-publish never sees missing files.
 #
 # Needs: BUCKET, gcloud with release-signer's credential.
 set -eu
@@ -38,7 +37,7 @@ cp "$dir/x86_64-unknown-linux-musl/updawgd" "$dir/x86_64-unknown-linux-musl/upda
 cp "$dir/aarch64-unknown-linux-musl/updawgd" "$dir/aarch64-unknown-linux-musl/updawgctl" "$work/latest/aarch64/"
 cp packaging/systemd/updawgd.service packaging/install.sh "$work/latest/"
 chmod 0755 "$work/latest/updawgd" "$work/latest/updawgctl" "$work/latest/aarch64/updawgd" "$work/latest/aarch64/updawgctl"
-# The commit the build is from: what follows `.g` in its version.
+# Commit hash, from the `.g` part of the version.
 echo "$version" | sed -n 's/.*\.g\([0-9a-f]*\)$/\1/p' > "$work/latest/REVISION"
 (
   cd "$work/latest"

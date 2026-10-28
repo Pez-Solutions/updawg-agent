@@ -1,25 +1,25 @@
 # updawg-protocol
 
-Wire types for the [Updawg](https://updawg.net) agent API — the contract between
+Wire types for the [Updawg](https://updawg.net) agent API: the contract between
 the Updawg agent (`updawgd`) and its gateway.
 
-Updawg is "Renovate for your servers": an agent on each Linux host reports its
-packages, pending updates and release status, and the service turns that into
-reviewable update proposals applied under policy with staged rollouts.
+Updawg runs an agent on each Linux host that reports its packages, pending
+updates and release status. The service turns that into update proposals that
+get reviewed and then applied under policy, with staged rollouts.
 
-This crate is published so that both sides of that contract — the open-source
-agent and the server — depend on one definition rather than two that drift.
+Both the open-source agent and the server depend on this crate, so there is
+one definition of the format.
 
 ```toml
 [dependencies]
-updawg-protocol = "0.8"
+updawg-protocol = "0.12"
 ```
 
-## The property this crate exists to preserve
+## Jobs are a closed set
 
-`JobKind` and `JobSpec` are **closed enums**. There is no variant carrying a
-script, a command line, or a free-form string for the agent to execute. Every
-job names *what* should happen, with explicit parameters, never *how*:
+`JobKind` and `JobSpec` are closed enums. No variant carries a script, a
+command line or a free-form string for the agent to execute. Every job says
+what should happen, with explicit parameters:
 
 ```rust
 use updawg_protocol::{JobSpec, ApplyUpdates, PackagePin, SnapshotPolicy, RebootPolicy};
@@ -37,23 +37,22 @@ let spec = JobSpec::ApplyUpdates(ApplyUpdates {
 });
 ```
 
-That is what makes "even full control of the control plane cannot run arbitrary
-commands on a customer's host" a property of the type system rather than a
-promise in a document. Versions are pinned exactly, so if a host's candidate has
-moved on since a change was approved, the agent refuses the job rather than
-installing something nobody reviewed.
+So even full control of the control plane can't run arbitrary commands on a
+host. Versions are pinned exactly: if a host's candidate has moved on since a
+change was approved, the agent refuses the job instead of installing something
+nobody reviewed.
 
-Adding a variant to either enum is a security decision, not a routine change.
+Adding a variant to either enum is a security decision.
 
 ## Signing
 
 Jobs are signed with the organization's Ed25519 key and verified by the agent
 against a key pinned at enrollment. `Job::document` produces the canonical
-document — this job's JSON with `signature` removed — and `Job::signing_bytes`
-produces the exact bytes a signature covers, so the signer and the agent cannot
-disagree about what was signed.
+document (the job's JSON without `signature`), and `Job::signing_bytes` the
+exact bytes a signature covers. The signer and the agent both use these.
 
-An organization key signs two different things, so every signature says which:
+An organization key signs two kinds of message, so every signature is
+prefixed with a label:
 
 ```text
 label || 0x00 || message
@@ -62,40 +61,21 @@ updawg-job-v1
 updawg-endorsement-v1
 ```
 
-The labels are ASCII and contain no NUL, which is what makes the prefix
-unambiguous rather than merely present — no message under one label can be read
-as a message under another, whatever either encoding becomes later. Before 0.3
-the two were told apart only by a job document happening to start with `{`.
+Labels are ASCII with no NUL, so a message under one label can never be read
+as a message under the other. Before 0.3 the only difference was that a job
+document starts with `{`.
 
 ## Key rotation
 
-Rotating an organization's key changes the material every agent in the fleet has
-pinned, and the design's claim is that **an agent never has to take the server's
-word for a new key**. The outgoing key signs an `EndorsementStatement` naming the
-organization, the two keys by material as well as by id, and when it was issued;
-the agent follows the chain from a key it already holds.
+An agent never has to take the server's word for a new key. The outgoing key
+signs an `EndorsementStatement` naming the organization, both keys (by
+material and id) and when it was issued, and the agent follows the chain from
+a key it already holds.
 
-The statement travels as the exact string that was signed, beside the signature,
-rather than being rebuilt at the far end — an agent cannot derive `issued_at`,
-and a rebuilt document is not a byte-identical document.
-
-⚠️ **0.3 is a breaking change to what is signed.** A 0.2 signature over a job
-does not verify under 0.3, and `OrgSigningKey::endorsement` is now an
-`Endorsement` rather than a bare, unverifiable signature string. Both halves
-fail loudly at a mismatched peer rather than quietly. See
-[ADR 0002](https://github.com/Pez-Solutions/updawg-docs/blob/main/decisions/0002-signing-key-rotation-endorsements.md).
-
-⚠️ **0.4 widens `HostStateReport::reboot_required`** from a `bool` to
-`RebootRequired` (`yes`, `no`, `unknown`), so a host that cannot tell is no
-longer reported as one that does not need a reboot. A 0.4 reader still takes
-the old `true`/`false`; a 0.3 reader does not take the words, so **the gateway
-moves to 0.4 before any agent does.** 0.4 also adds `CheckinRequest::snapshots`
-and `InstalledPackage::source`, both optional.
-
-0.5 adds `JobComplete::preflight`, 0.6 `Repository::url` (third-party
-repositories only, credentials stripped), 0.7 `AvailableUpdate::source`,
-the candidate's own source package, and 0.8 `InventoryUpload::frozen`, what
-pins a host's package sources in time. All optional in both directions.
+The statement travels as the exact string that was signed, next to the
+signature. The agent can't rebuild it, since it has no way to know
+`issued_at`, and a re-serialised document isn't guaranteed to be
+byte-identical.
 
 ## Transport
 
@@ -121,66 +101,97 @@ port, so it works behind NAT and strict egress firewalls.
 | `GET /config` | `ServerConfig` |
 | `GET /releases/{channel}` | `ReleaseManifest` |
 
-## What local configuration permits
+## Local configuration
 
-`/etc/updawg/agent.toml` is the ceiling on what an agent will do, and the server
-may only ever narrow it. `CheckinRequest::local_policy` is how the server finds
-out where that ceiling is — a mode and the job kinds the file permits, reported
-on every check-in rather than at enrollment, because the file changes without
-one. An agent too old to report it sends nothing, and nothing means *unknown*
-rather than *nothing permitted*.
+`/etc/updawg/agent.toml` sets the most an agent will do, and the server can
+only narrow it. `CheckinRequest::local_policy` reports the mode and the job
+kinds the file permits on every check-in, since the file can change at any
+time. An agent too old to report it sends nothing, which means unknown, not
+"nothing permitted".
 
-## Advisory hints, and what they are not
+## Advisory hints
 
-`AvailableUpdate::advisories` carries what the host's own package manager said
-about an update: the vendor's advisory id, its severity word unnormalised, and
-the type. It exists because the RHEL family has no security pocket — a fix and a
-routine rebuild are both published to `baseos` — so on those hosts it is the
-only local signal there is.
+`AvailableUpdate::advisories` carries what the host's own package manager says
+about an update: the vendor's advisory id, its severity word as given, and the
+type. On the RHEL family, fixes and routine rebuilds both go to `baseos`, so
+this is the only local signal for security updates.
 
-It is a **hint**. The authoritative classification is the server's, against
-advisory feeds, because a host's own metadata is exactly as incomplete as its
-vendor chose to make it.
+It's only a hint. The server classifies updates against advisory feeds,
+because local metadata is only as complete as the vendor made it.
 
 ## Stability
 
-Pre-1.0. The wire format is versioned independently of this crate through the
-`Updawg-Protocol` header (currently `1`), and the gateway accepts the current
-and previous protocol version. Adding an optional field does not move that
-header: `0.2.0` added four, and a `0.1` peer and a `0.2` peer understand each
-other exactly as well as two `0.1` peers did.
+Pre-1.0. The wire format is versioned separately through the `Updawg-Protocol`
+header (currently `1`), and the gateway accepts the current and previous
+protocol version. Adding an optional field doesn't change the header: new
+fields are optional in both directions, so older peers keep working.
 
 ## Changes
 
+### 0.9 to 0.12
+
+- 0.9: `CheckinRequest::install` (`AgentInstall`, `InstallMethod`): how the
+  agent was installed and which channel it follows.
+- 0.10: `InstalledPackage::module` and `InventoryUpload::modules_reported`,
+  for RHEL-family module streams.
+- 0.11: `CheckinRequest::pinned_keys`, the signing keys the agent holds.
+- 0.12: `CheckinResponse::renew_certificate`, asking the agent to renew early
+  so it picks up a new signing key.
+
+### 0.5 to 0.8
+
+- 0.5: `JobComplete::preflight`.
+- 0.6: `Repository::url`, for third-party repositories only, with credentials
+  stripped.
+- 0.7: `AvailableUpdate::source`, the candidate's own source package.
+- 0.8: `InventoryUpload::frozen`, what pins a host's package sources in time.
+
+All optional in both directions.
+
+### 0.4.0
+
+Breaking: `HostStateReport::reboot_required` is now `RebootRequired` (`yes`,
+`no`, `unknown`) instead of a `bool`, so a host that can't tell is no longer
+reported as not needing a reboot. A 0.4 reader still accepts `true`/`false`,
+but a 0.3 reader doesn't accept the words, so upgrade the gateway before the
+agents. Also adds `CheckinRequest::snapshots` and `InstalledPackage::source`,
+both optional.
+
+### 0.3.0
+
+Breaking, to what is signed. A 0.2 signature over a job doesn't verify under
+0.3, and `OrgSigningKey::endorsement` is now an `Endorsement` instead of a bare
+signature string that couldn't be verified. A mismatched peer fails at the
+first signature or enrollment.
+
 ### 0.2.0
 
-- `CheckinRequest::max_hold_s` — the check-in hold the agent would like, clamped
-  and honoured by the gateway through `CheckinRequest::hold_seconds`, for
-  networks that trim idle connections before a long poll completes.
-- `CheckinRequest::local_policy` — `LocalPolicy` and `AgentMode`: what
+- `CheckinRequest::max_hold_s`: the check-in hold the agent would like, for
+  networks that cut idle connections before a long poll completes. The gateway
+  clamps it via `CheckinRequest::hold_seconds`.
+- `CheckinRequest::local_policy`: `LocalPolicy` and `AgentMode`, what
   `/etc/updawg/agent.toml` permits.
-- `AvailableUpdate::advisories` — `AdvisoryHint`: what the host's package
+- `AvailableUpdate::advisories`: `AdvisoryHint`, what the host's package
   manager says an update fixes.
-- `InventoryUpload::removals` — `PendingRemoval` and `Replacement`: packages an
-  upgrade would remove rather than upgrade.
-- `JobKind::ALL`, for callers that have to enumerate the kinds.
+- `InventoryUpload::removals`: `PendingRemoval` and `Replacement`, packages an
+  upgrade would remove.
+- `JobKind::ALL`.
 
-Every field is optional in both directions, so nothing older breaks.
+Every field is optional in both directions.
 
 ### 0.1.2
 
-The crate's own MSRV, rather than the agent workspace's. `0.1.1` inherited
-`rust-version = 1.88` and could not be resolved by consumers on 1.85.
+Sets the crate's own MSRV (1.85). `0.1.1` inherited the agent workspace's
+`rust-version = 1.88`, which consumers on 1.85 couldn't resolve.
 
 ### 0.1.1
 
-The wire structs stopped being `#[non_exhaustive]`, which had made them
-unconstructable outside this crate — and both ends of a wire format are outside
-this crate. Superseded by `0.1.2`; use that.
+The wire structs are no longer `#[non_exhaustive]`, which had made them
+impossible to construct outside this crate. Superseded by `0.1.2`.
 
 ### 0.1.0
 
-First release. Unusable, for the reason above.
+First release. Unusable because of the `#[non_exhaustive]` structs.
 
 ## License
 

@@ -1,8 +1,7 @@
-//! Run a release upgrade by hand, as a `dist_upgrade` job would, printing
-//! the job log: `dist_upgrade 13`. For rehearsing on a throwaway VM
-//! (DAWG-150, DAWG-151, DAWG-154); it changes the host exactly as the job
-//! does. `dist_upgrade --check 24.04` changes nothing and prints what a
-//! preflight's `release_upgrade` check would.
+//! Runs a release upgrade by hand the way a `dist_upgrade` job would and
+//! prints the job log: `dist_upgrade 13`. Use a throwaway VM; it changes the
+//! host just like the job does. `dist_upgrade --check 24.04` changes nothing
+//! and prints what a preflight's `release_upgrade` check would report.
 
 use updawg_backends::LogSink;
 

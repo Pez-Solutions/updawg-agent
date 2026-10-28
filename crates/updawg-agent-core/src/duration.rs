@@ -1,7 +1,7 @@
 //! Human-written durations.
 //!
-//! `agent.toml` says `"6h"`, not `21600`. Operators edit this file by hand, and
-//! a number of seconds is a thing you have to decode before you can review it.
+//! `agent.toml` is edited by hand, so intervals are written as `"6h"` rather
+//! than a number of seconds.
 
 use std::{fmt, time::Duration};
 
@@ -9,9 +9,9 @@ use std::{fmt, time::Duration};
 pub enum ParseDurationError {
     #[error("empty duration")]
     Empty,
-    #[error("`{0}` has no unit — write 30s, 5m, 6h or 2d")]
+    #[error("`{0}` has no unit; write 30s, 5m, 6h or 2d")]
     MissingUnit(String),
-    #[error("`{unit}` is not a known unit in `{input}` — use s, m, h or d")]
+    #[error("`{unit}` is not a known unit in `{input}`; use s, m, h or d")]
     UnknownUnit { input: String, unit: String },
     #[error("`{0}` is not a number")]
     NotANumber(String),
@@ -19,9 +19,8 @@ pub enum ParseDurationError {
 
 /// Parse `30s`, `5m`, `6h`, `2d`.
 ///
-/// Deliberately strict: a bare number is rejected rather than guessed at. The
-/// difference between `30` meaning seconds and meaning minutes is the
-/// difference between a polite agent and one hammering the gateway.
+/// A bare number is rejected. Guessing seconds vs minutes wrong could have the
+/// agent polling the gateway 60 times too often.
 pub fn parse(input: &str) -> Result<Duration, ParseDurationError> {
     let s = input.trim();
     if s.is_empty() {

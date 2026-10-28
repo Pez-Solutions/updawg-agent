@@ -1,10 +1,7 @@
-# unwrap and expect are forbidden in the agent itself — it runs as root on other
-# people's servers and a panic there is an outage. In tests they are the clearest
-# way to assert, so they are allowed only there.
+# unwrap/expect/panic are linted in the agent but fine in tests.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 
-# Distribution and project names that are words, not code. `..` keeps
-# clippy's own list.
+# Names that aren't code. `..` keeps clippy's defaults.
 doc-valid-idents = ["AlmaLinux", "ELevate", "CentOS", "SELinux", "OpenPGP", "InRelease", ".."]

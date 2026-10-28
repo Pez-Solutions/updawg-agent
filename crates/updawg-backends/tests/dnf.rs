@@ -1,37 +1,22 @@
-//! The dnf parsers, against output captured from real distributions (DAWG-35).
+//! The dnf parsers, against output captured from real distributions.
 //!
-//! Every fixture in `tests/fixtures/dnf/` is the literal output of running `rpm
-//! -qa`, `dnf repoquery --upgrades`, `dnf check-update`, `dnf updateinfo list`,
-//! `dnf repolist -v` and `dnf versionlock list` inside that distribution's
-//! official container image. Nothing here is hand-written, because hand-written
-//! fixtures test what I believed dnf prints rather than what it prints.
+//! Each fixture in `tests/fixtures/dnf/` is the unedited output of `rpm -qa`,
+//! `dnf repoquery --upgrades`, `dnf check-update`, `dnf updateinfo list`,
+//! `dnf repolist -v` and `dnf versionlock list` in that distribution's
+//! official container image: Rocky 8 (dnf 4.7), Rocky 9 (dnf 4.14) and Amazon
+//! Linux 2023 (dnf 4.14). `tests/dnf_live.rs` re-captures them from live
+//! containers.
 //!
-//! The distributions are the ones DAWG-35 names: Rocky 8 (dnf 4.7), Rocky 9 (dnf
-//! 4.14) and Amazon Linux 2023 (dnf 4.14). `tests/dnf_live.rs` re-captures them
-//! from live containers and is the canary for the format drifting.
+//! Amazon Linux 2023 pins `$releasever` to a dated snapshot, so
+//! `dnf check-update` on the stock image (`amazonlinux2023`) reports nothing.
+//! `amazonlinux2023-latest` is the same image after `--releasever=latest`; the
+//! ALAS advisories and the wrapped `check-update` line come from that one.
 //!
-//! # Why Amazon Linux is here twice
-//!
-//! Amazon Linux 2023 does **deterministic upgrades**: `$releasever` is pinned to
-//! a dated snapshot and `dnf check-update` reports nothing at all until somebody
-//! moves it. `amazonlinux2023` is a stock image and has *zero* updates — which is
-//! the truth about that host, and a state a fleet dashboard will show as fully
-//! patched. `amazonlinux2023-latest` is the same distribution after
-//! `--releasever=latest`, which is how such a host actually moves, and is where
-//! the ALAS advisories and the wrapped `check-update` line come from.
-//!
-//! # And why there is a fifth fixture
-//!
-//! `rocky9-obsoletes` is a Rocky 9 container with three obsoleting packages
-//! built with `rpmbuild` into a local repository, because **no stock image has
-//! an obsoletion in it** — I checked Rocky 8, Rocky 9 and Amazon Linux 2023 and
-//! none of them do. The packages are synthetic; the `dnf` output is not, and it
-//! is the only way to have captured output for a state that matters (DAWG-232)
-//! and that no official image reaches. `tests/dnf_live.rs` rebuilds it.
+//! `rocky9-obsoletes` uses three local packages built with `rpmbuild`, since
+//! none of the stock images have an obsoletion in them. The dnf output is
+//! real.
 
-// clippy.toml allows unwrap and expect in `#[cfg(test)]` modules, but that does
-// not reach an integration test in `tests/` — the whole file is the test. In here
-// a panic *is* the assertion.
+// clippy.toml's test allowances don't apply to integration tests.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -46,8 +31,7 @@ use updawg_backends::dnf::{
     parse_repositories, parse_updateinfo, parse_upgrades, repo_is_distro, security_packages,
 };
 
-/// The four fixtures, the `NAME` each one's `/etc/os-release` carries, and
-/// whether it should have any updates at all.
+/// Fixture, `NAME` from its `/etc/os-release`, and whether it has updates.
 const DISTROS: &[(&str, &str, bool)] = &[
     ("rocky8", "Rocky Linux", true),
     ("rocky9", "Rocky Linux", true),
@@ -63,7 +47,6 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
-/// One `===SECTION===` out of a fixture.
 fn section(fixture: &str, name: &str) -> String {
     let start = format!("==={name}===");
     let mut out = String::new();
@@ -89,9 +72,8 @@ fn every_distribution_reports_its_installed_packages() {
         let f = fixture(distro);
         let packages = parse_installed(&section(&f, "RPM_QA"));
 
-        // A base image has 100-200 packages. An empty list would mean the format
-        // string changed and the agent now reports a host with nothing installed
-        // — which reads as a host with nothing to patch.
+        // A base image has 100-200 packages. Fewer means the format string
+        // changed.
         assert!(
             packages.len() > 50,
             "{distro}: only {} packages parsed",
@@ -120,10 +102,9 @@ fn every_distribution_reports_its_installed_packages() {
 
 #[test]
 fn a_modular_package_says_its_stream_and_nothing_else_does() {
-    // DAWG-236. rpm prints `(none)` for a package with no label, and the
-    // label's build version and context are dropped: an advisory is about a
-    // stream, never a build of it. A line from a format without the column at
-    // all (an older fixture) is not modular either.
+    // rpm prints `(none)` when there's no label. The build version and context
+    // are dropped since advisories refer to a stream. Older fixtures don't have
+    // the column at all.
     let raw = "nodejs\t1:18.20.4-1.module_el9+123+abc\tx86_64\tnodejs:18:9040020240807145403:rhel9\n\
                npm\t1:10.7.0-1.18.20.4.1.module_el9+123+abc\tx86_64\tnodejs:18:9040020240807145403:rhel9\n\
                bash\t5.1.8-9.el9\tx86_64\t(none)\n\
@@ -144,14 +125,9 @@ fn a_modular_package_says_its_stream_and_nothing_else_does() {
 
 #[test]
 fn an_imported_signing_key_is_not_an_installed_package() {
-    // rpm keeps imported GPG keys in the package database and `rpm -qa` lists
-    // them, with `(none)` for the architecture. Reported as packages, the server
-    // would match advisories against a key fingerprint and offer to upgrade one.
+    // `rpm -qa` lists imported GPG keys as packages with arch `(none)`.
     //
-    // Three of the four fixtures carry one. Rocky 8's does not — its image has
-    // never installed a signed package, so no key has been imported — which is
-    // why this counts the fixtures that prove something rather than requiring all
-    // of them to.
+    // Rocky 8's image has never imported a key, so not every fixture has one.
     let mut proven = 0;
     for (distro, _, _) in DISTROS {
         let f = fixture(distro);
@@ -173,9 +149,7 @@ fn an_imported_signing_key_is_not_an_installed_package() {
 
 #[test]
 fn an_epoch_survives_into_the_version() {
-    // The server's rpm comparison parses `[epoch:]version[-release]`, and an
-    // epoch dropped here makes `2:1.34-13` look older than `1.35`, which reverses
-    // the only thing an epoch exists to do.
+    // Without the epoch, `2:1.34-13` would compare older than `1.35`.
     let packages = parse_installed(&section(&fixture("rocky9"), "RPM_QA"));
     let tar = packages
         .iter()
@@ -187,8 +161,7 @@ fn an_epoch_survives_into_the_version() {
         tar.version
     );
 
-    // And a package without one does not acquire `0:`, because the two spellings
-    // compare equal but only one of them is what rpm prints.
+    // no epoch: don't add `0:`, keep what rpm prints
     let zlib = packages
         .iter()
         .find(|p| p.name == "zlib")
@@ -244,10 +217,8 @@ fn every_distribution_reports_its_available_updates() {
 
 #[test]
 fn one_package_gets_one_candidate() {
-    // `repoquery --upgrades` without `--latest-limit=1` returns every newer
-    // version in the repositories — 77 records for 38 upgradable packages on a
-    // stock Rocky 9, three of them glib2. The captured fixture has the flag, and
-    // this is what would notice if it were ever dropped.
+    // Without `--latest-limit=1`, `repoquery --upgrades` returns every newer
+    // version: 77 records for 38 packages on a stock Rocky 9.
     for (distro, _, _) in DISTROS {
         let f = fixture(distro);
         let installed = parse_installed(&section(&f, "RPM_QA"));
@@ -267,9 +238,8 @@ fn one_package_gets_one_candidate() {
 
 #[test]
 fn the_machine_readable_query_agrees_with_the_table_dnf_prints() {
-    // The two are different commands answering the same question, and the whole
-    // reason for preferring `repoquery` is that `check-update` is a padded table
-    // that wraps. If they ever stop agreeing, the flag or the query has moved.
+    // Same question, two commands. `repoquery` is used because `check-update`
+    // is a padded table that wraps.
     for (distro, _, _) in DISTROS {
         let f = fixture(distro);
         let installed = parse_installed(&section(&f, "RPM_QA"));
@@ -286,9 +256,8 @@ fn the_machine_readable_query_agrees_with_the_table_dnf_prints() {
 
 #[test]
 fn a_package_whose_name_overflows_the_column_is_not_lost() {
-    // The reason `check-update` is not what the backend parses. `scrape` here is
-    // the crude version a production parser would be, minus the wrap handling,
-    // and this asserts the fixture really does contain the case that breaks it.
+    // Why the backend doesn't parse `check-update`: long names wrap. Make sure
+    // the fixture still has such a line.
     let table = section(&fixture("amazonlinux2023-latest"), "CHECK_UPDATE");
     assert!(
         table
@@ -312,25 +281,22 @@ fn a_package_whose_name_overflows_the_column_is_not_lost() {
     );
 }
 
-/// `name.arch` for every row of a `check-update` table, test-side.
+/// `name.arch` for every row of a `check-update` table.
 ///
-/// Deliberately not production code: nothing in the backend parses this table,
-/// precisely because getting it right means knowing that **a row whose
-/// `name.arch` overflows the first column is printed alone and its version and
-/// repository follow on the next line, indented**. Taking the first field of
-/// every line that does not start with whitespace handles both shapes.
+/// When `name.arch` overflows the first column, dnf prints it alone and puts
+/// the version and repository on the next line, indented. Taking the first
+/// field of every unindented line handles both cases.
 fn check_update_names(table: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for line in table.lines() {
-        // A continuation, or the indented half of an obsoletes pair.
+        // continuation, or the indented half of an obsoletes pair
         if line.starts_with(char::is_whitespace) {
             continue;
         }
         let Some(first) = line.split_whitespace().next() else {
             continue;
         };
-        // `Obsoleting Packages`, and anything else dnf says in prose. Every real
-        // row's first field is `name.arch`.
+        // headings like `Obsoleting Packages`
         if !first.contains('.') {
             continue;
         }
@@ -372,8 +338,6 @@ fn a_security_advisory_carries_a_severity_and_a_bugfix_does_not() {
                     "{distro}: security advisory {} has no severity",
                     h.advisory
                 ),
-                // Inventing a severity for a routine rebuild would put it on the
-                // same scale as a remote code execution.
                 _ => assert!(
                     h.severity.is_none(),
                     "{distro}: {:?} advisory {} acquired a severity",
@@ -387,9 +351,8 @@ fn a_security_advisory_carries_a_severity_and_a_bugfix_does_not() {
 
 #[test]
 fn the_vendors_own_words_are_reported_rather_than_normalised() {
-    // Red Hat's rebuilds say `Moderate`; Amazon says `Medium` for the same band.
-    // Mapping one onto the other is the server's job (DAWG-65) — the agent would
-    // be guessing, and a guess made here cannot be corrected later.
+    // Rocky says `Moderate` and Amazon says `Medium` for the same thing. The
+    // server maps them; the agent passes them through.
     let rocky: BTreeSet<String> = parse_updateinfo(&section(&fixture("rocky9"), "UPDATEINFO"))
         .into_iter()
         .filter_map(|h| h.severity)
@@ -410,9 +373,8 @@ fn the_vendors_own_words_are_reported_rather_than_normalised() {
 
 #[test]
 fn a_package_with_several_advisories_is_one_security_update() {
-    // dnf lists an advisory per version, including versions between the installed
-    // one and the candidate: glibc on a stock Rocky 9 has three. The heartbeat
-    // counts updates, not advisories.
+    // dnf lists an advisory per version between installed and candidate (three
+    // for glibc on Rocky 9). We count packages.
     let f = fixture("rocky9");
     let hints = parse_updateinfo(&section(&f, "UPDATEINFO"));
     let glibc = hints.iter().filter(|h| h.package == "glibc").count();
@@ -431,9 +393,8 @@ fn a_package_with_several_advisories_is_one_security_update() {
 
 #[test]
 fn a_hyphenated_package_name_survives_the_nevra() {
-    // `elfutils-default-yama-scope-0.188-3.amzn2023.0.3.noarch` is one package.
-    // Splitting on the first hyphen makes it `elfutils`, which exists, so the
-    // mistake looks like a correct answer.
+    // Splitting `elfutils-default-yama-scope-0.188-3.amzn2023.0.3.noarch` on
+    // the first hyphen gives `elfutils`, which also exists.
     let hints = parse_updateinfo(&section(&fixture("amazonlinux2023-latest"), "UPDATEINFO"));
     let long = hints
         .iter()
@@ -455,9 +416,8 @@ fn a_hyphenated_package_name_survives_the_nevra() {
 
 #[test]
 fn only_updates_that_are_actually_available_count_as_security() {
-    // What `DnfBackend::security_updates` does with the two lists. An advisory
-    // naming a package that is not upgradable — because it is held, or because
-    // the advisory is for a version already installed — must not be counted.
+    // Same as `DnfBackend::security_updates`. Advisories for packages that
+    // aren't upgradable (held, or already fixed) don't count.
     let f = fixture("rocky9");
     let installed = parse_installed(&section(&f, "RPM_QA"));
     let updates = parse_upgrades(&section(&f, "UPGRADES"), &installed);
@@ -488,7 +448,7 @@ fn every_distribution_reports_its_repositories() {
 
         assert!(
             !repos.is_empty(),
-            "{distro}: no repositories — dnf repolist -v has moved"
+            "{distro}: no repositories; dnf repolist -v has moved"
         );
         assert!(
             repos.iter().any(|r| r.enabled),
@@ -496,7 +456,7 @@ fn every_distribution_reports_its_repositories() {
         );
         assert!(
             repos.iter().any(|r| !r.enabled),
-            "{distro}: every repository parsed as enabled — the source and debuginfo ones are not"
+            "{distro}: every repository parsed as enabled; the source and debuginfo ones are not"
         );
         for r in &repos {
             assert!(!r.id.is_empty(), "{distro}: a repository with no id");
@@ -518,10 +478,8 @@ fn every_distribution_reports_its_repositories() {
 
 #[test]
 fn a_repository_name_too_wide_for_the_terminal_is_read_in_full() {
-    // Why `-v`. The plain table truncates to the terminal width and turns
-    // `Rocky Linux 9 - Devel WARNING! FOR BUILDROOT ONLY DO NOT LEAVE ENABLED`
-    // into something ending mid-word — and a name cut off mid-word matches
-    // nothing.
+    // Without `-v` the table truncates names to the terminal width, e.g.
+    // `Rocky Linux 9 - Devel WARNING! FOR BUILDROOT ONLY DO NOT LEAVE ENABLED`.
     let raw = section(&fixture("rocky9"), "REPOLIST");
     assert!(
         raw.contains("DO NOT LEAVE ENABLED"),
@@ -546,8 +504,7 @@ fn a_repository_the_distribution_does_not_publish_is_third_party() {
             "Red Hat Enterprise Linux",
         ),
         ("CentOS Stream 9 - BaseOS", "CentOS Stream"),
-        // Oracle names its repositories after the distribution and its
-        // `/etc/os-release` after the product, so only the first word agrees.
+        // Oracle's repo names and `/etc/os-release` only share the first word.
         (
             "Oracle Linux 9 BaseOS Latest (aarch64)",
             "Oracle Linux Server",
@@ -575,9 +532,8 @@ fn a_repository_the_distribution_does_not_publish_is_third_party() {
 
 #[test]
 fn a_host_that_will_not_say_what_it_is_has_no_repositories_of_its_own() {
-    // The safe direction: an unsigned or hand-rolled repository often has a name
-    // nobody would recognise, and those are the ones that break a release
-    // upgrade.
+    // Unrecognised names are third-party. Those are the repos that break
+    // release upgrades.
     let repos = parse_repositories(&section(&fixture("rocky9"), "REPOLIST"), None);
     assert!(!repos.is_empty());
     assert!(repos.iter().all(|r| r.third_party));
@@ -613,8 +569,8 @@ fn every_distribution_reports_what_it_has_locked() {
 
 #[test]
 fn a_package_locked_at_several_versions_is_held_once() {
-    // `dnf versionlock add tar` writes one entry per version it knows about —
-    // three on Amazon Linux. Three entries is still one held package.
+    // `dnf versionlock add tar` writes one entry per known version (three on
+    // Amazon Linux).
     let raw = section(&fixture("amazonlinux2023"), "HOLDS");
     assert!(
         raw.lines().filter(|l| l.starts_with("tar-")).count() > 1,
@@ -625,21 +581,17 @@ fn a_package_locked_at_several_versions_is_held_once() {
 
 #[test]
 fn nothing_in_the_lock_file_that_is_not_a_lock_becomes_one() {
-    // The list is a plain file a person can edit, and dnf writes a dated comment
-    // above each entry when it adds one.
+    // dnf writes a dated comment above each entry, and people edit the file.
     let holds = parse_holds(
         "\n# Added lock on Mon Sep 21 19:05:31 2026\nzlib-0:1.2.11-40.el9.*\n\nkernel*\n",
     );
     assert_eq!(holds, vec!["zlib".to_string(), "kernel".to_string()]);
 }
 
-/* ------------------------------ obsoletions and hints (DAWG-231, DAWG-232) */
+/* ------------------------------------------------- obsoletions and hints */
 
 #[test]
 fn a_stock_host_has_no_obsoletions() {
-    // The normal answer, and worth asserting: `parse_obsoletes` reads a table
-    // that on most hosts does not contain the section it is looking for, and
-    // "found nothing" must not be reachable by finding the wrong thing.
     for (distro, _, _) in DISTROS {
         let f = fixture(distro);
         let installed = parse_installed(&section(&f, "RPM_QA"));
@@ -687,9 +639,7 @@ fn an_obsoleted_package_is_reported_with_what_replaces_it() {
 
 #[test]
 fn an_obsoleter_that_is_also_an_upgrade_appears_on_both_lists() {
-    // `keeper` 2.0 upgrades `keeper` 1.0 *and* obsoletes `gonepkg`. Both are
-    // true and they are different statements: one moves a version, the other
-    // takes a package away.
+    // `keeper` 2.0 upgrades `keeper` 1.0 and also obsoletes `gonepkg`.
     let f = fixture("rocky9-obsoletes");
     let installed = parse_installed(&section(&f, "RPM_QA"));
     let updates = parse_upgrades(&section(&f, "UPGRADES"), &installed);
@@ -697,18 +647,15 @@ fn an_obsoleter_that_is_also_an_upgrade_appears_on_both_lists() {
 
     assert!(updates.iter().any(|u| u.name == "keeper"));
     assert!(removals.iter().any(|r| r.name == "gonepkg"));
-    // And the package that only obsoletes is on neither list as an update:
-    // `repoquery --upgrades` does not report it, which is the whole reason
-    // `check-update` is read at all.
+    // `repoquery --upgrades` doesn't report a package that only obsoletes,
+    // which is why `check-update` is read.
     assert!(!updates.iter().any(|u| u.name == "newthing"));
 }
 
 #[test]
 fn a_wrapped_obsoleting_table_is_read_the_same_way() {
-    // The same entries as the fixture, re-flowed the way `check-update` wraps a
-    // name too wide for its column — the `CHECK_UPDATE` section of
-    // `amazonlinux2023-latest.txt` is the real thing. Reading this as lines
-    // loses entries; reading it as a token stream cannot.
+    // The fixture's entries, wrapped the way `check-update` wraps long names
+    // (see the `CHECK_UPDATE` section of `amazonlinux2023-latest.txt`).
     let wrapped = "Obsoleting Packages
 keeper.noarch
                                   2.0-1.el9      local
@@ -741,9 +688,8 @@ updawg-replacement-with-a-very-long-package-name.noarch
 
 #[test]
 fn a_table_that_stops_making_sense_ends_the_section_rather_than_shifting() {
-    // A field lost mid-table would put every following entry one column out and
-    // produce a list of confident nonsense. Stopping under-reports, which is the
-    // direction somebody can notice.
+    // A missing field would shift every later entry by a column. Better to
+    // stop and under-report.
     let f = fixture("rocky9-obsoletes");
     let installed = parse_installed(&section(&f, "RPM_QA"));
     let truncated = "Obsoleting Packages
@@ -788,8 +734,7 @@ fn an_update_carries_the_advisory_its_package_manager_named() {
 
 #[test]
 fn a_severity_word_reaches_the_wire_exactly_as_the_vendor_wrote_it() {
-    // Rocky says `Moderate` where Amazon Linux says `Medium` for the same band.
-    // Both survive the trip; deciding they are the same is the server's job.
+    // Rocky's `Moderate` and Amazon's `Medium` both pass through unchanged.
     let mut words = BTreeSet::new();
     for distro in ["rocky9", "amazonlinux2023-latest"] {
         let f = fixture(distro);
@@ -841,8 +786,8 @@ fn every_attached_advisory_is_about_a_package_that_has_an_update() {
     attach_advisories(&mut updates, &parse_updateinfo(&section(&f, "UPDATEINFO")));
 
     let upgradable: BTreeSet<&str> = updates.iter().map(|u| u.name.as_str()).collect();
-    // And the reverse: every security row about something upgradable found a
-    // home, so the count on the heartbeat and the list on the upload agree.
+    // Every security row for an upgradable package gets attached, so the
+    // heartbeat count matches the upload.
     let security: BTreeSet<String> = security_packages(&section(&f, "UPDATEINFO"))
         .into_iter()
         .filter(|p| upgradable.contains(p.as_str()))
@@ -858,8 +803,6 @@ fn every_attached_advisory_is_about_a_package_that_has_an_update() {
 
 #[test]
 fn attaching_advisories_twice_changes_nothing() {
-    // A join that appended would grow the list on every pass and change the
-    // upload every time without anything on the host changing.
     let f = fixture("rocky9");
     let installed = parse_installed(&section(&f, "RPM_QA"));
     let mut once = parse_upgrades(&section(&f, "UPGRADES"), &installed);
@@ -885,9 +828,9 @@ fn the_kind_of_an_advisory_is_lowercase_and_verbatim() {
 
 /* ----------------------------------------- applying: the transaction check */
 
-// `dnf install --assumeno <exact nevras>`, captured from rockylinux:9,
-// rockylinux:8 and amazonlinux:2023 on 2026-09-27 with LC_ALL=C and stdout
-// piped, which is how the agent runs it. `--assumeno` exits 1 every time.
+// `dnf install --assumeno <exact nevras>` from rockylinux:9, rockylinux:8 and
+// amazonlinux:2023, with LC_ALL=C and stdout piped as the agent runs it.
+// `--assumeno` always exits 1.
 
 fn transaction(name: &str) -> &'static str {
     match name {
@@ -950,8 +893,8 @@ fn a_transaction_that_is_exactly_the_pins_passes() {
 
 #[test]
 fn asking_for_one_package_and_getting_three_is_refused() {
-    // The real Rocky 9 behaviour: openssl-libs at this version needs openssl
-    // and openssl-fips-provider at it too. Nobody approved those.
+    // On Rocky 9, openssl-libs at this version pulls openssl and
+    // openssl-fips-provider along, which weren't approved.
     let pins = [openssl("openssl-libs")];
     let todo: Vec<&updawg_backends::Pin> = pins.iter().collect();
     let why = refusal(dnf::check_transaction(
@@ -1044,7 +987,6 @@ fn every_section_and_row_is_read_including_long_names() {
             ("Installing dependencies", "ipcalc", "1.0.0-5.el9"),
         ]
     );
-    // Rocky 8's three sections, one row each.
     let sections: Vec<String> = dnf::parse_transaction(transaction("rocky8-weak-deps"))
         .into_iter()
         .map(|r| r.section)
@@ -1070,18 +1012,16 @@ fn installed_versions_keep_every_install_of_an_install_only_package() {
     assert!(!versions.contains_key("jq.x86_64"));
 }
 
-/// `dnf check-release-update` in `amazonlinux:2023.5.20240805.0`, captured
-/// 2026-09-30 (DAWG-233), after installing the plugin that provides it — the
-/// container image leaves it out, where AWS's machine images have it. It
-/// offers releases up to 2023.10.20260330 while the newest image is 2023.12:
-/// what it offers is "newer than this", not always "the newest".
+/// `dnf check-release-update` in `amazonlinux:2023.5.20240805.0`, after
+/// installing the plugin (AMIs have it, the container image doesn't). It
+/// offers up to 2023.10.20260330 even though 2023.12 exists.
 #[test]
 fn the_newest_release_amazon_linux_offers_is_read_from_check_release_update() {
     let out = include_str!("fixtures/dnf/check-release-update/amazonlinux2023.5.20240805.txt");
     assert_eq!(dnf::newest_release(out), Some("2023.10.20260330"));
-    // A current host: the command prints nothing.
+    // up to date: prints nothing
     assert_eq!(dnf::newest_release(""), None);
-    // Ordered by number, not by text: 2023.10 is newer than 2023.9.
+    // numeric order: 2023.10 is newer than 2023.9
     assert_eq!(
         dnf::newest_release("  Version 2023.9.20250101:\n  Version 2023.10.20250101:\n"),
         Some("2023.10.20250101")

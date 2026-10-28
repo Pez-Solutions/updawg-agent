@@ -1,29 +1,20 @@
-//! Enrollment: the moment this host decides what it will trust.
+//! Enrollment.
 //!
-//! The sequence is short and the order matters:
-//!
-//! 1. Generate a key pair. The private half is written to disk and never sent.
+//! 1. Generate a key pair. The private half stays on disk.
 //! 2. Build a CSR naming the machine id, so the server can recognise a host it
 //!    has seen before.
 //! 3. `POST /agent/v1/enroll` with the enrollment token and the CSR.
-//! 4. **Validate the response before believing any of it**, then write the key
-//!    and the identity.
+//! 4. Validate the response, then write the key and the identity.
 //!
-//! Step 4 is the whole point of this module. The organization signing keys that
-//! arrive in that response decide which jobs this host will execute for the
-//! rest of its life, and a host that pins a malformed or unusable key discovers
-//! the problem at the worst possible moment — when a job it cannot verify
-//! arrives. So the response is parsed, checked and rejected here, before
-//! anything is written.
+//! The organization signing keys in the response decide which jobs this host
+//! will run from then on. A malformed or unusable key would only show up later,
+//! when a job arrives that can't be verified, so the response is checked here
+//! and nothing is written until it passes. As a result a failed enrollment
+//! leaves an existing identity intact.
 //!
-//! Two properties that fall out of writing nothing until the end:
-//!
-//! - **A failed enrollment leaves an existing identity intact.** An agent that
-//!   is working keeps working, whatever the server said.
-//! - **Re-enrolling is not automatic.** An already-enrolled host refuses a
-//!   second enrollment unless told to replace itself, and refuses again if the
-//!   organization key it would pin is not the one it pinned before. Silently
-//!   following a key change is exactly the attack pinning exists to stop.
+//! An enrolled host refuses to enroll again unless forced, and even then
+//! refuses if the organization key it would pin differs from the one it has.
+//! Following a key change silently is what pinning is meant to prevent.
 
 use crate::state::{Identity, LocalState};
 use async_trait::async_trait;
@@ -41,11 +32,8 @@ use updawg_protocol::{
 /// Filename of the host's private key inside the state directory.
 pub const KEY_FILE: &str = "agent.key";
 
-/// How long to wait for the enrollment exchange.
-///
-/// Generous, because this happens once and often over a link that is being
-/// configured at the same time. The check-in loop's timeouts are the ones that
-/// need to be tight.
+/// Generous: enrollment happens once, often while the network is still being
+/// set up.
 const ENROLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
@@ -70,7 +58,7 @@ pub enum EnrollError {
         "the server offered an organization signing key this host cannot follow: {detail}\n\
          A key this host has not pinned has to be endorsed by one it already trusts, which is \
          what makes a rotation something other than the server saying `use this key now`. If \
-         the chain really is broken — a signer rebuilt from nothing, say — re-enroll with \
+         the chain really is broken (say, a signer rebuilt from scratch), re-enroll with \
          --accept-new-org-key, which pins this set on your word instead."
     )]
     OrgKeyNotEndorsed { detail: String },
@@ -86,7 +74,7 @@ pub enum EnrollError {
 
     #[error(
         "the enrollment token was rejected. Tokens expire, have a limited number of uses, and \
-         are shown only once — generate a fresh one in the portal."
+         are shown only once; generate a fresh one in the portal."
     )]
     TokenRejected,
 
@@ -115,11 +103,8 @@ pub enum EnrollError {
 
 pub type Result<T> = std::result::Result<T, EnrollError>;
 
-/// The exchange with the gateway, behind a trait.
-///
-/// Enrollment is the one request that carries a secret and establishes trust,
-/// so the logic around it is worth testing without a network. The HTTPS
-/// implementation is below; the tests drive the same flow through a fake.
+/// The exchange with the gateway, behind a trait so the enrollment logic can be
+/// tested without a network.
 #[async_trait]
 pub trait EnrollExchange: Send + Sync + fmt::Debug {
     async fn post_enroll(&self, request: &EnrollRequest) -> Result<EnrollResponse>;
@@ -154,7 +139,6 @@ impl Enrolled {
     }
 }
 
-/// Caller's intent, kept explicit so neither choice can be made by accident.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EnrollOptions {
     /// Replace an existing identity rather than refusing.
@@ -163,7 +147,6 @@ pub struct EnrollOptions {
     pub accept_new_org_key: bool,
 }
 
-/// Runs the enrollment sequence.
 #[derive(Debug)]
 pub struct Enroller<'a> {
     state: &'a LocalState,
@@ -185,8 +168,8 @@ impl<'a> Enroller<'a> {
         }
     }
 
-    /// Pin only keys that lead back to this one: `trusted_org_key` from
-    /// `agent.toml` (DAWG-157). See [`PinnedKeys::anchored`].
+    /// Pin only keys that lead back to this one (`trusted_org_key` from
+    /// `agent.toml`). See [`PinnedKeys::anchored`].
     #[must_use]
     pub fn with_trusted_org_key(mut self, key: Option<updawg_crypto::OrgPublicKey>) -> Self {
         self.trusted_org_key = key;
@@ -205,8 +188,6 @@ impl<'a> Enroller<'a> {
         self.state.root().join(KEY_FILE)
     }
 
-    /// Exchange a token for an identity.
-    ///
     /// # Errors
     /// See [`EnrollError`]. Every failure leaves whatever identity the host
     /// already had untouched.
@@ -222,11 +203,8 @@ impl<'a> Enroller<'a> {
 
         let facts = self.facts.gather()?;
 
-        // A fresh key every time, including on re-enrollment: the old
-        // certificate is being abandoned, and reusing the key it was issued for
-        // means one compromise covers both identities. The key is held in
-        // memory until the server has answered, so a failed enrollment does not
-        // overwrite a working one.
+        // Fresh key on re-enrollment too, so one compromise doesn't cover both
+        // identities. It stays in memory until the server has answered.
         let key = AgentKey::generate()?;
         let csr = key.certificate_request(&facts.machine_id)?;
 
@@ -235,10 +213,9 @@ impl<'a> Enroller<'a> {
 
         let pinned = validate(&response)?;
 
-        // Before the re-enrollment checks, and not subject to
-        // --accept-new-org-key: that flag is the operator overriding the
-        // chain from what this host pinned before, and the anchor is the
-        // operator having already said which key to trust.
+        // --accept-new-org-key doesn't apply here. That flag overrides the
+        // chain from previously pinned keys; the anchor is the operator's own
+        // statement of which key to trust.
         if let Some(anchor) = &self.trusted_org_key {
             PinnedKeys::anchored(anchor, &response.org_signing_keys).map_err(|e| {
                 EnrollError::NotTheTrustedKey {
@@ -252,10 +229,9 @@ impl<'a> Enroller<'a> {
             check_key_endorsements(current, &response.org_signing_keys, options)?;
         }
 
-        // Written in this order on purpose: without the key the identity is
-        // useless, and an identity file is what `is_enrolled` looks at. Key
-        // first means there is no moment where the host looks enrolled but
-        // cannot authenticate.
+        // Key first. `is_enrolled` looks at the identity file, so writing it
+        // first would leave a window where the host looks enrolled but has no
+        // key to authenticate with.
         key.save(self.key_path())?;
         self.state.save_identity(&Identity {
             host_id: response.host_id.clone(),
@@ -280,13 +256,10 @@ impl<'a> Enroller<'a> {
     }
 }
 
-/// Refuse a re-enrollment that would quietly change what this host trusts.
-///
-/// The check is deliberately one-directional: the offered set must still
-/// contain every key this host has pinned and not retired. Gaining a key is a
-/// rotation, which is normal. *Losing* the key that has been signing this
-/// host's jobs is either a revocation the operator should know about or a
-/// server that is not the one we enrolled with.
+/// The offered set must still contain every pinned key that isn't retired.
+/// Gaining a key is a normal rotation (checked separately). Losing the key
+/// that has been signing this host's jobs means either a revocation the
+/// operator should know about or a different server.
 fn check_key_continuity(
     current: &Identity,
     offered: &PinnedKeys,
@@ -317,17 +290,9 @@ fn check_key_continuity(
     })
 }
 
-/// Refuse a re-enrollment that adds a key nothing this host trusts vouched for.
-///
-/// The opposite half of [`check_key_continuity`], and the half that was missing
-/// until DAWG-99: that one stops a key being taken *away*, this one stops one
-/// being *added* on the server's say-so. Without it, "an agent never has to
-/// take the server's word for a new key" was a sentence in the design and
-/// nothing in the code.
-///
-/// The rules live in [`PinnedKeys::adopt`]; this is where the operator's
-/// override is applied, and it is loud, because the override is somebody
-/// asserting by hand the thing the mechanism exists to establish.
+/// Refuses new keys that no pinned key has endorsed. The counterpart of
+/// [`check_key_continuity`], which handles keys being removed. The rules are in
+/// [`PinnedKeys::adopt`]; this applies the operator override, with a warning.
 fn check_key_endorsements(
     current: &Identity,
     offered: &[updawg_protocol::OrgSigningKey],
@@ -366,11 +331,10 @@ fn build_request(
     }
 }
 
-/// Everything that has to be true before any of this is written down.
 fn validate(response: &EnrollResponse) -> Result<PinnedKeys> {
     if !response.host_id.is_well_formed() {
         return Err(EnrollError::BadResponse(format!(
-            "host id `{}` does not look like one ({}…)",
+            "host id `{}` does not look like one ({}...)",
             response.host_id,
             HostId::PREFIX
         )));
@@ -380,8 +344,7 @@ fn validate(response: &EnrollResponse) -> Result<PinnedKeys> {
             "the certificate is not PEM".into(),
         ));
     }
-    // An empty chain would mean trusting whatever the gateway presents later,
-    // which is the opposite of what mTLS is for.
+    // with no chain there'd be nothing to check the gateway's cert against
     if response.ca_chain.is_empty() {
         return Err(EnrollError::BadResponse(
             "no CA chain was returned; there would be nothing to verify the gateway against".into(),
@@ -397,11 +360,10 @@ fn validate(response: &EnrollResponse) -> Result<PinnedKeys> {
 
 /* ------------------------------------------------------------------ HTTPS */
 
-/// The real exchange: one `POST` to `{server}/agent/v1/enroll`.
+/// `POST {server}/agent/v1/enroll`.
 ///
-/// This is the only agent request that does not present a client certificate —
-/// there isn't one yet. It is also the only one that carries a bearer secret,
-/// which is why the scheme is checked rather than assumed.
+/// The only agent request without a client certificate (there isn't one yet)
+/// and the only one carrying a bearer secret, so https is enforced.
 #[derive(Debug)]
 pub struct HttpsEnrollExchange {
     url: String,
@@ -417,13 +379,9 @@ impl HttpsEnrollExchange {
     }
 
     /// As [`Self::new`], additionally trusting a PEM CA for the server side.
-    ///
-    /// The counterpart of [`crate::transport::MtlsTransport::with_extra_root`],
-    /// and it exists for the same reason: enrollment is the *first* request an
-    /// agent makes, so a transport that can be pointed at a gateway you control
-    /// is no use if the exchange that comes before it cannot.
-    ///
-    /// It adds to the platform trust store rather than replacing it.
+    /// Matches [`crate::transport::MtlsTransport::with_extra_root`], so a
+    /// self-hosted gateway works from the first request. The platform trust
+    /// store is still used.
     ///
     /// # Errors
     /// As [`Self::new`], plus [`EnrollError::Unreachable`] if the PEM does not
@@ -478,8 +436,7 @@ impl EnrollExchange for HttpsEnrollExchange {
 
         let status = response.status();
         if !status.is_success() {
-            // 401 and 403 both mean the token did not work. Saying so beats
-            // making an operator read an RFC 9457 body to learn it.
+            // 401/403: the token didn't work. Say that directly.
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(EnrollError::TokenRejected);
             }
@@ -500,18 +457,16 @@ impl EnrollExchange for HttpsEnrollExchange {
     }
 }
 
-/// Flatten an error and everything under it into one line.
+/// Flattens an error and its source chain into one line.
 ///
-/// reqwest's own `Display` is "error sending request for url (…)" and nothing
-/// else — the reason, a failed TLS handshake or a refused connection, is two or
-/// three levels down the source chain. An operator reading a failed enrollment
-/// needs the reason, not the URL they already typed.
+/// reqwest's `Display` is just "error sending request for url (...)"; the
+/// actual reason (TLS handshake, connection refused) is a few levels down.
 pub(crate) fn causes(error: &dyn std::error::Error) -> String {
     let mut parts = vec![error.to_string()];
     let mut source = error.source();
     while let Some(e) = source {
         let text = e.to_string();
-        // Each layer tends to quote the one below it; only add what is new.
+        // layers often repeat the one below; skip duplicates
         if !parts.iter().any(|p| p.contains(&text)) {
             parts.push(text);
         }
@@ -520,14 +475,11 @@ pub(crate) fn causes(error: &dyn std::error::Error) -> String {
     parts.join(": ")
 }
 
-/// Pull the human-readable part out of an error body.
+/// Pulls the human-readable part out of an error body.
 ///
-/// ⚠️ **The gateway's own shape first**: `updawg_protocol::ApiError`, whose text
-/// is `message`. This used to look only for RFC 9457's `detail` and `title`,
-/// which the gateway has never sent — so every refusal reached the operator as
-/// raw JSON cut at 200 characters, and the tests passed because they fed it
-/// problem documents instead of what the gateway answers. RFC 9457 stays as
-/// the fallback for anything in between (a proxy, a load balancer's own page).
+/// Tries the gateway's `updawg_protocol::ApiError` first, then RFC 9457
+/// `detail`/`title` for anything in between (a proxy, a load balancer), then
+/// the first 200 characters of the raw body.
 pub(crate) fn problem_detail(body: &str) -> String {
     if let Ok(error) = serde_json::from_str::<updawg_protocol::ApiError>(body) {
         return error.message;
@@ -605,8 +557,6 @@ mod tests {
         }
     }
 
-    /// A stand-in gateway. Records what it was asked and answers with whatever
-    /// the test wants it to.
     #[derive(Debug)]
     struct FakeGateway {
         reply: Mutex<Vec<Result<EnrollResponse>>>,
@@ -639,8 +589,7 @@ mod tests {
         }
     }
 
-    /// A throwaway organization key that keeps its private half, so a test can
-    /// endorse with it rather than asserting against a fixture.
+    /// Keeps the private half so tests can sign endorsements with it.
     struct TestOrgKey {
         pair: aws_lc_rs::signature::Ed25519KeyPair,
         wire: String,
@@ -770,8 +719,7 @@ mod tests {
         assert_eq!(req.agent_version, crate::VERSION);
     }
 
-    /// The private key is the one thing that must never be on the wire. Worth a
-    /// test rather than an assumption, since the request is built by hand.
+    // The request is built by hand, so check it.
     #[tokio::test]
     async fn the_private_key_is_never_part_of_the_request() {
         let fx = Fixture::new();
@@ -793,8 +741,7 @@ mod tests {
         }
     }
 
-    /// Running `updawgctl enroll` twice — by a person, or by a configuration
-    /// manager that runs the same play again — must not churn the identity.
+    // Config management tools will run `updawgctl enroll` repeatedly.
     #[tokio::test]
     async fn re_enrolling_without_force_is_a_no_op() {
         let fx = Fixture::new();
@@ -805,7 +752,7 @@ mod tests {
             .unwrap();
         let first = fs::read_to_string(fx.state.root().join(KEY_FILE)).unwrap();
 
-        // The same token again. The fake would panic on a second call.
+        // the fake panics if called a second time
         let outcome = fx
             .enroller(&gateway)
             .enroll("enr_7Kq", EnrollOptions::default())
@@ -856,8 +803,6 @@ mod tests {
         );
     }
 
-    /// The property pinning exists for. A server offering a different signing
-    /// key must not be followed just because it asked.
     #[tokio::test]
     async fn a_forced_re_enrollment_refuses_a_different_org_key() {
         let fx = Fixture::new();
@@ -938,8 +883,6 @@ mod tests {
         );
     }
 
-    /// Adding a key is a rotation, not a substitution: the key that has been
-    /// signing this host's jobs is still there, and it vouched for the new one.
     #[tokio::test]
     async fn gaining_an_endorsed_org_key_is_allowed() {
         let fx = Fixture::new();
@@ -982,10 +925,6 @@ mod tests {
         assert_eq!(identity.org_signing_keys.len(), 2);
     }
 
-    /// ⚠️ The half of pinning that did not exist until DAWG-99. Continuity
-    /// stopped a key being taken away; nothing stopped one being **added** on
-    /// the server's word, which is the rotation the design says an agent never
-    /// has to take on trust.
     #[tokio::test]
     async fn gaining_an_unendorsed_org_key_is_refused() {
         let fx = Fixture::new();
@@ -1035,8 +974,7 @@ mod tests {
         );
     }
 
-    /// The escape hatch means "I know the chain is broken, pin this anyway" —
-    /// a signer rebuilt from nothing is the case it exists for.
+    // e.g. a signer rebuilt from scratch
     #[tokio::test]
     async fn accept_new_org_key_pins_an_unendorsed_set_on_the_operators_word() {
         let fx = Fixture::new();
@@ -1088,8 +1026,6 @@ mod tests {
         );
     }
 
-    /// The failure mode that matters operationally: a host that is working must
-    /// not be broken by an enrollment attempt that fails.
     #[tokio::test]
     async fn a_failed_re_enrollment_leaves_the_working_identity_alone() {
         let fx = Fixture::new();
@@ -1196,8 +1132,7 @@ mod tests {
         }
     }
 
-    /// The request body from section 5.2 of the design document, as JSON.
-    /// If this stops matching, either the document or the wire format drifted.
+    // Field list matches the documented enrollment request.
     #[tokio::test]
     async fn the_request_matches_the_documented_shape() {
         let fx = Fixture::new();
@@ -1242,8 +1177,6 @@ mod tests {
         }
     }
 
-    /// The response body from section 5.2, deserialised and run through the
-    /// same validation a real enrollment would.
     #[test]
     fn the_documented_response_deserialises_and_validates() {
         let key = org_key("sk_01J8", SigningKeyStatus::Active);
@@ -1262,8 +1195,7 @@ mod tests {
         let pinned = validate(&response).expect("the documented response should validate");
         assert_eq!(pinned.describe().len(), 1);
         assert_eq!(response.config.checkin_timeout_s, 55);
-        // Absent from the documented body, so the default has to fill it in or
-        // every real response would fail to parse.
+        // not in the documented body; must default
         assert_eq!(response.config.refresh_metadata_interval_s, 3600);
     }
 
@@ -1279,9 +1211,8 @@ mod tests {
         assert_eq!(exchange.url, "https://agents.updawg.net/agent/v1/enroll");
     }
 
-    /// The failure an operator is most likely to hit on day one: the gateway
-    /// name resolves but has no usable certificate. `reqwest`'s own message
-    /// names only the URL, so without this the log says nothing useful.
+    // Typical first-day failure: the name resolves but TLS fails, and reqwest's
+    // top-level message only names the URL.
     #[test]
     fn an_unreachable_server_reports_the_underlying_reason() {
         #[derive(Debug)]
@@ -1314,9 +1245,7 @@ mod tests {
 
     #[test]
     fn the_gateways_own_error_is_reported_by_its_message_not_its_json() {
-        // Byte for byte what the gateway answers an organization that has no
-        // signing key yet — the first real enrollment's error, which this
-        // printed as JSON.
+        // Verbatim gateway response for an org with no signing key yet.
         let detail = problem_detail(
             r#"{"code":"organization_not_ready","message":"this organization has no signing key yet; an administrator must create one before hosts can enroll"}"#,
         );
@@ -1335,7 +1264,7 @@ mod tests {
         assert_eq!(problem_detail("plain text"), "plain text");
     }
 
-    // ---- trusted_org_key (DAWG-157, ADR 0006) ----
+    // ---- trusted_org_key ----
 
     fn anchor_of(key: &TestOrgKey) -> updawg_crypto::OrgPublicKey {
         updawg_crypto::OrgPublicKey::parse("anchor", &key.wire).unwrap()
@@ -1364,9 +1293,7 @@ mod tests {
         assert!(fx.state.is_enrolled());
     }
 
-    /// ⚠️ Property 2 of ADR 0006, end to end: an enrollment answer offering a
-    /// key the customer did not endorse writes nothing, and the operator's
-    /// override for a broken rotation chain does not override the anchor.
+    // --accept-new-org-key must not bypass the anchor.
     #[tokio::test]
     async fn a_host_anchored_on_the_customers_key_refuses_one_the_server_made_up() {
         let fx = Fixture::new();

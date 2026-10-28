@@ -1,18 +1,16 @@
 //! Durable local state under `/var/lib/updawg`.
 //!
-//! Three things have to survive a restart, and each for a different reason:
+//! The main things kept here:
 //!
-//! - **Identity** — the host id, its certificate, and the organization signing
-//!   keys pinned at enrollment. Lose this and the host has to re-enroll.
-//! - **Seen job ids** — replay protection. A job must not execute twice, and
-//!   "twice" includes "once before a reboot and once after".
-//! - **Pending reboot context** — a job that reboots the machine cannot report
-//!   its own result. The agent writes down what it was doing, reboots, and
-//!   finishes reporting on the way back up.
+//! - Identity: host id, certificate, and the organization signing keys pinned
+//!   at enrollment. Losing it means re-enrolling.
+//! - Seen job ids, for replay protection across restarts and reboots.
+//! - Pending reboot context. A job that reboots the machine can't report its
+//!   result before it goes down, so the agent records it and reports after
+//!   boot.
 //!
-//! Every write goes to a temporary file and is renamed into place. A half-written
-//! identity file on a host that lost power mid-write would be worse than no file
-//! at all: the agent would refuse to start rather than simply re-enrolling.
+//! Writes go to a temp file that is renamed into place. A truncated identity
+//! file after a power loss would stop the agent from starting at all.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,7 +21,7 @@ use std::{
 };
 use updawg_protocol::{HostId, JobId, OrgSigningKey};
 
-/// The file `updawgctl renew` leaves for `updawgd` (DAWG-308).
+/// The file `updawgctl renew` leaves for `updawgd`.
 const RENEWAL_REQUEST: &str = "renew-requested";
 
 #[derive(Debug, thiserror::Error)]
@@ -63,62 +61,56 @@ pub struct Identity {
     /// PEM client certificate.
     pub certificate: String,
     pub ca_chain: Vec<String>,
-    /// Keys pinned at enrollment. Every job is verified against these, not
-    /// against whatever the server currently claims.
+    /// Keys pinned at enrollment. Jobs are verified against these.
     pub org_signing_keys: Vec<OrgSigningKey>,
     pub enrolled_at: String,
 }
 
-/// What the agent was doing when it rebooted, so it can finish the report
-/// (DAWG-103).
+/// What the agent was doing when it rebooted, so it can finish the report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingReboot {
-    /// The job, as signed, which is what the report is addressed to.
+    /// The job as signed.
     pub job: updawg_protocol::Job,
-    /// Everything but the ending: changes, the checks from before the
-    /// reboot, and when it started.
+    /// The report so far: changes, pre-reboot checks, start time.
     pub report: updawg_protocol::JobComplete,
-    /// `/proc/sys/kernel/random/boot_id` when the reboot was asked for. A
-    /// different one afterwards is the proof it happened.
+    /// `/proc/sys/kernel/random/boot_id` when the reboot was requested. A
+    /// different value afterwards means the reboot happened.
     pub boot_id_before: String,
 }
 
-/// A release upgrade that the reboot carries out (leapp, DAWG-152): what the
-/// agent checks once the host is back, for the job that asked.
+/// A release upgrade that completes during the reboot (leapp), and what to
+/// check once the host is back.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseCheck {
     pub job: JobId,
     /// The major release the host should be on now (`9`).
     pub release: String,
-    /// What was installed before, to report what changed.
+    /// Installed packages before the upgrade, for the change report.
     pub before: Vec<updawg_protocol::InstalledPackage>,
 }
 
-/// A self-update under way, and what the helper made of it (DAWG-46).
+/// A self-update in progress, and the helper's result.
 const SELF_UPDATE: &str = "self-update.json";
 const SELF_UPDATE_OUTCOME: &str = "self-update-outcome.json";
 
-/// Replay protection. Bounded: an agent running for years must not accumulate
-/// an unbounded file of job ids.
+/// Bounded so the file doesn't grow forever on a long-lived agent.
 const SEEN_JOBS_CAPACITY: usize = 2048;
 
-// Small enough to stay a cheap file, large enough that a busy host cannot cycle
-// through it between reboots and quietly lose replay protection. Enforced at
-// compile time rather than by a test, because it is a property of the constant.
+// Large enough that a busy host can't cycle through it and lose replay
+// protection.
 const _: () = assert!(SEEN_JOBS_CAPACITY >= 1024);
 
 /// The inventory this host last uploaded, as it was sent.
 ///
-/// Persisted rather than held in memory: a restart must not look like an
-/// inventory change, and it must not lose the base a delta is computed against.
+/// Persisted so a restart doesn't look like an inventory change and the next
+/// delta still has a base.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InventorySnapshot {
-    /// Hash of `packages`, and what the server holds against this host.
+    /// Hash of `packages`; should match what the server has for this host.
     pub hash: String,
-    /// Exactly what was uploaded, so the next run can say what changed.
     pub packages: Vec<updawg_protocol::InstalledPackage>,
-    /// Cheap counts, answered on every check-in without touching the package
-    /// manager. See [`LocalState::inventory_snapshot`].
+    /// Reported on every check-in without asking the package manager. See
+    /// [`LocalState::inventory_snapshot`].
     #[serde(default)]
     pub pending_updates: u32,
     #[serde(default)]
@@ -143,14 +135,12 @@ impl LocalState {
         }
     }
 
-    /// Create the state directory if it does not exist.
     pub fn ensure(&self) -> Result<()> {
         fs::create_dir_all(&self.root).map_err(|source| StateError::CreateDir {
             path: self.root.display().to_string(),
             source,
         })?;
-        // The identity file and pinned keys live here. Other users on the host
-        // have no business reading them.
+        // holds the identity and pinned keys
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -168,10 +158,7 @@ impl LocalState {
         self.root.join(name)
     }
 
-    /// Write a file atomically: temp file, flush, fsync, rename.
-    ///
-    /// The rename is what makes it atomic. Without it a power loss mid-write
-    /// leaves a truncated file that parses as neither valid nor absent.
+    /// Temp file, fsync, rename.
     fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<()> {
         self.ensure()?;
         let final_path = self.path(name);
@@ -241,11 +228,8 @@ impl LocalState {
 
     /* -------------------------------------------------- inventory hash */
 
-    /// Hash of the inventory this host last uploaded.
-    ///
-    /// Sent on every check-in so the server can notice the two have diverged
-    /// and ask for a fresh one. Kept next to the identity rather than held in
-    /// memory because a restart must not silently look like a change.
+    /// Hash of the inventory this host last uploaded. Sent on every check-in
+    /// so the server can ask for a fresh upload if they differ.
     pub fn inventory_hash(&self) -> Result<Option<String>> {
         self.read_json::<String>("inventory-hash.json")
     }
@@ -260,19 +244,12 @@ impl LocalState {
 
     /* ----------------------------------------------- inventory snapshot */
 
-    /// What this host last uploaded, and the cheap counts taken with it.
+    /// What this host last uploaded, and the update counts taken with it.
     ///
-    /// The package list is here because **a delta is meaningless without it**: to
-    /// say what changed, the agent has to know what it said last time. The
-    /// alternative is uploading everything every six hours, which is what the
-    /// delta exists to avoid.
-    ///
-    /// The counts are here for a different reason. A check-in carries
-    /// `pending_updates` and `security_updates` and runs every fifty-five
-    /// seconds; asking the package manager for them means `apt-get -s
-    /// dist-upgrade`, which takes seconds and reads the whole package database.
-    /// Answering a heartbeat from the last collection is the difference between a
-    /// heartbeat that costs nothing and one that hammers the host all day.
+    /// The package list is the base for the next delta upload. The counts are
+    /// cached because every check-in (roughly once a minute) reports them, and
+    /// computing them means something like `apt-get -s dist-upgrade`, which
+    /// takes seconds and reads the whole package database.
     pub fn inventory_snapshot(&self) -> Result<Option<InventorySnapshot>> {
         self.read_json::<InventorySnapshot>("inventory.json")
     }
@@ -285,12 +262,8 @@ impl LocalState {
         self.write_atomic("inventory.json", &bytes)
     }
 
-    /// Forget what we believe the server holds.
-    ///
-    /// Called when the server refuses a delta: the two disagree about the base,
-    /// and the only way back into step is a full upload. Clearing this rather
-    /// than retrying is what stops a host re-sending a delta that can never
-    /// apply.
+    /// Called when the server rejects a delta. The next upload is then a full
+    /// one instead of a retry of a delta that can't apply.
     pub fn clear_inventory_snapshot(&self) -> Result<()> {
         let path = self.root.join("inventory.json");
         match std::fs::remove_file(&path) {
@@ -305,7 +278,6 @@ impl LocalState {
 
     /* --------------------------------------------------------- seen jobs */
 
-    /// Whether this job has already been handled.
     pub fn has_seen_job(&self, id: &JobId) -> Result<bool> {
         let seen: SeenJobs = self.read_json("seen-jobs.json")?.unwrap_or_default();
         Ok(seen.ids.iter().any(|s| s == id.as_str()))
@@ -365,9 +337,7 @@ impl LocalState {
         Ok(check)
     }
 
-    /// Read and clear the pending reboot record.
-    ///
-    /// Taking rather than reading, because it must only be reported once.
+    /// Read and clear the pending reboot record, so it is reported once.
     pub fn take_pending_reboot(&self) -> Result<Option<PendingReboot>> {
         let pending: Option<PendingReboot> = self.read_json("pending-reboot.json")?;
         if pending.is_some() {
@@ -380,13 +350,12 @@ impl LocalState {
         Ok(pending)
     }
 
-    /// The pending reboot, if there is one, **without** taking it: for
-    /// `updawgctl status`, which must never be the thing that loses it.
+    /// The pending reboot, without clearing it. For `updawgctl status`.
     pub fn pending_reboot(&self) -> Result<Option<PendingReboot>> {
         self.read_json("pending-reboot.json")
     }
 
-    /* ----------------------------------------- self-update (DAWG-46) */
+    /* ----------------------------------------------------- self-update */
 
     /// Record a self-update under way (see `crate::self_update`).
     pub fn set_self_update(&self, pending: &crate::self_update::Pending) -> Result<()> {
@@ -403,7 +372,7 @@ impl LocalState {
         self.read_json(SELF_UPDATE)
     }
 
-    /// Read and clear it, with the helper's outcome if it wrote one: once
+    /// Read and clear it, with the helper's outcome if it wrote one. Used once
     /// the job is reported.
     pub fn take_self_update(
         &self,
@@ -433,7 +402,7 @@ impl LocalState {
         Ok(Some((pending, outcome)))
     }
 
-    /// The helper's word, when the old agent is what runs afterwards.
+    /// Written by the helper when the old agent ends up running afterwards.
     pub fn set_self_update_outcome(&self, outcome: &crate::self_update::Outcome) -> Result<()> {
         let bytes = serde_json::to_vec(outcome).map_err(|source| StateError::Corrupt {
             path: SELF_UPDATE_OUTCOME.into(),
@@ -442,30 +411,27 @@ impl LocalState {
         self.write_atomic(SELF_UPDATE_OUTCOME, &bytes)
     }
 
-    /// Whether the helper has written its word yet.
     pub fn self_update_outcome(&self) -> Result<Option<crate::self_update::Outcome>> {
         self.read_json(SELF_UPDATE_OUTCOME)
     }
 
-    /* ------------------------------- renewal asked for by hand (DAWG-308) */
+    /* ---------------------------------------------------- manual renewal */
 
-    /// Ask the running agent to renew its certificate at its next check-in:
-    /// `updawgctl renew`, after a key rotation an operator does not want to
-    /// wait for.
+    /// Asks the running agent to renew its certificate at the next check-in
+    /// (`updawgctl renew`), e.g. after a key rotation.
     pub fn request_renewal(&self) -> Result<()> {
         self.write_atomic(RENEWAL_REQUEST, b"")
     }
 
-    /// Whether a renewal was asked for by hand, forgetting the request.
+    /// Whether a renewal was requested. Clears the request.
     #[must_use]
     pub fn take_renewal_request(&self) -> bool {
         fs::remove_file(self.root().join(RENEWAL_REQUEST)).is_ok()
     }
 
-    /* ------------------------------------- what updawgctl shows (DAWG-37) */
+    /* --------------------------------------------- shown by updawgctl */
 
-    /// How the last check-in went. Local only: it is for a person on the host
-    /// asking whether the agent is talking to anybody.
+    /// How the last check-in went. Local only, for `updawgctl status`.
     pub fn last_checkin(&self) -> Result<Option<LastCheckin>> {
         self.read_json("last-checkin.json")
     }
@@ -483,8 +449,8 @@ impl LocalState {
         Ok(self.read_json("job-history.json")?.unwrap_or_default())
     }
 
-    /// Record where a job has got to, replacing what was recorded for it
-    /// before. The oldest fall off after [`JOB_HISTORY`].
+    /// Records a job's latest status, replacing any earlier entry for it.
+    /// Keeps at most [`JOB_HISTORY`] jobs.
     pub fn record_job_status(&self, record: &JobRecord) -> Result<()> {
         let mut history = self.job_history()?;
         history.retain(|r| r.id != record.id);
@@ -500,14 +466,12 @@ impl LocalState {
 
     /* ------------------------------------------------ across a rollback */
 
-    /// Everything in the state directory, held in memory while the
-    /// filesystem under it is rolled back (DAWG-119).
+    /// Reads the whole state directory into memory so it can be restored
+    /// after a filesystem rollback.
     ///
-    /// ⚠️ A rollback puts the whole filesystem back, and this directory is on
-    /// it. Without this, the agent would forget every job it has run since
-    /// the snapshot — the one that installed the packages included, which a
-    /// replay could then run again — and keys pinned by a rotation since.
-    /// The agent's memory is not part of the host state being undone.
+    /// The rollback would otherwise revert this directory too, forgetting
+    /// jobs run since the snapshot (including the install being rolled back,
+    /// which could then be replayed) and keys pinned by a rotation since.
     pub fn carry(&self) -> Result<Carried> {
         let entries = fs::read_dir(&self.root).map_err(|source| StateError::Read {
             path: self.root.display().to_string(),
@@ -520,7 +484,7 @@ impl LocalState {
                 source,
             })?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            // Temporary files are half-writes, and directories are not ours.
+            // skip temp files and directories
             if name.starts_with('.') || !entry.path().is_file() {
                 continue;
             }
@@ -533,9 +497,8 @@ impl LocalState {
         Ok(Carried { files })
     }
 
-    /// Put back what [`LocalState::carry`] held, and remove what it did not:
-    /// a `pending-reboot.json` the rollback restored from before would
-    /// otherwise finish a job that finished long ago.
+    /// Restores what [`LocalState::carry`] read and removes anything else, such
+    /// as an old `pending-reboot.json` the rollback brought back.
     pub fn put_back(&self, carried: &Carried) -> Result<()> {
         for (name, bytes) in &carried.files {
             self.write_atomic(name, bytes)?;
@@ -560,7 +523,7 @@ impl LocalState {
 /// How many jobs [`LocalState::job_history`] keeps.
 pub const JOB_HISTORY: usize = 50;
 
-/// How the last check-in went (DAWG-37).
+/// How the last check-in went.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastCheckin {
     pub at: chrono::DateTime<chrono::Utc>,
@@ -568,18 +531,17 @@ pub struct LastCheckin {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Which agent checked in: how a self-update's helper knows the new
-    /// version is up and talking (DAWG-46). Absent in a record an older agent
-    /// wrote.
+    /// Agent version. The self-update helper uses it to tell the new version
+    /// is up. Missing in records from older agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
 }
 
-/// One job, as `updawgctl jobs` lists it (DAWG-37).
+/// One job, as `updawgctl jobs` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobRecord {
     pub id: String,
-    /// `apply_updates`, `reboot`, …
+    /// `apply_updates`, `reboot`, ...
     pub kind: String,
     /// `running`, `rebooting`, `succeeded`, `failed`, `refused`.
     pub status: String,
@@ -608,8 +570,7 @@ impl std::fmt::Debug for Carried {
 mod tests {
     use super::*;
 
-    /// Tests run in parallel in one process, so a timestamp alone is not a
-    /// unique directory name. The counter is what makes it one.
+    // tests run in parallel in one process; the counter keeps dirs unique
     static NEXT_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn temp_state() -> (LocalState, PathBuf) {
@@ -691,9 +652,7 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
-    /// Tested against a small capacity rather than the real one: each record
-    /// is an fsync, and proving the ring works does not need two thousand of
-    /// them. The production capacity is asserted separately.
+    // Small capacity: each record is an fsync.
     #[test]
     fn seen_jobs_stay_bounded() {
         let (state, dir) = temp_state();
@@ -702,7 +661,6 @@ mod tests {
                 .record_job_bounded(&JobId::new(format!("job_{i}")), 8)
                 .unwrap();
         }
-        // The oldest have fallen off; the newest are still there.
         assert!(!state.has_seen_job(&JobId::new("job_0")).unwrap());
         assert!(!state.has_seen_job(&JobId::new("job_3")).unwrap());
         assert!(state.has_seen_job(&JobId::new("job_11")).unwrap());
@@ -710,8 +668,6 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
-    /// A rollback puts the filesystem back, this directory included; the
-    /// agent's memory comes through it as it was just before (DAWG-119).
     #[test]
     fn what_was_carried_across_a_rollback_is_put_back_exactly() {
         let (state, dir) = temp_state();
@@ -726,8 +682,8 @@ mod tests {
         let carried = state.carry().unwrap();
         assert!(!format!("{carried:?}").contains("BEGIN"), "{carried:?}");
 
-        // What the rollback does: the files as they were at the snapshot,
-        // and one that existed then and has gone since.
+        // simulate the rollback: old seen-jobs, and a file that existed at
+        // snapshot time
         fs::write(dir.join("seen-jobs.json"), &at_snapshot).unwrap();
         fs::write(dir.join("pending-reboot.json"), b"{}").unwrap();
 
@@ -820,7 +776,6 @@ mod tests {
         assert_eq!(taken.job.id.as_str(), "job_reboot");
         assert!(taken.report.reboot_required);
         assert_eq!(taken.boot_id_before, "b81e");
-        // Taken, not read: a second call finds nothing.
         assert!(reopened.take_pending_reboot().unwrap().is_none());
         fs::remove_dir_all(dir).ok();
     }

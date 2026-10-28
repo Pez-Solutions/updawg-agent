@@ -1,49 +1,45 @@
-//! Snapper, for btrfs (DAWG-116).
+//! Snapper, for btrfs.
 //!
-//! Shells out to `snapper` in its JSON mode, like the package backends do to
-//! apt and dnf, so the agent stays one static binary.
+//! Shells out to `snapper --jsonout`, the same way the package backends use
+//! apt and dnf, so the agent stays a single static binary.
 //!
-//! # Why `undochange`, not `snapper rollback`
+//! # `undochange` instead of `snapper rollback`
 //!
-//! `snapper rollback` makes a snapshot the default subvolume and waits for a
-//! reboot to boot into it. That works on openSUSE's layout and **does nothing
-//! at all** on the common Fedora and Ubuntu layouts, whose fstab and kernel
-//! command line mount `subvol=root` or `subvol=@` by name: the default moves,
-//! nothing mounts it, and the host comes back unchanged while the job said it
-//! rolled back. `undochange N..0` copies the snapshot's files back over the
-//! live filesystem instead: it works on every layout, needs no reboot, and
-//! reports what it touched, which is what a rollback job reports (DAWG-119).
-//! What is already running keeps running the old code until restarted, which
-//! is the same as after any package change, and the health checks run after.
+//! `snapper rollback` changes the default subvolume and expects a reboot.
+//! That works on openSUSE, but Fedora and Ubuntu mount `subvol=root` or
+//! `subvol=@` by name from fstab and the kernel command line, so the new
+//! default is never mounted and the host comes back unchanged.
+//! `undochange N..0` copies the snapshot's files back over the live
+//! filesystem: it works on any layout, needs no reboot, and reports what it
+//! changed. Running processes keep the old code until restarted, as after any
+//! package change; health checks run afterwards.
 //!
-//! # Marked as ours
+//! # Ownership
 //!
-//! Every snapshot the agent takes carries `updawg=<job id>` as userdata, and
-//! only those are listed, restored or pruned. The ones an administrator took,
-//! and the pre/post pairs a distribution's package-manager plugin takes, are
-//! never counted or touched.
+//! The agent's snapshots carry `updawg=<job id>` as userdata, and only those
+//! are listed, restored or pruned. Administrator snapshots and the pre/post
+//! pairs from package-manager plugins are ignored.
 
 use crate::{Provider, Restored, Result, Snapshot, SnapshotError, SnapshotProvider};
 use async_trait::async_trait;
 
 const TOOL: &str = "snapper";
-/// The userdata key that marks a snapshot as the agent's.
 const MARK: &str = "updawg";
 
-/// Snapper, driving one configuration.
+/// Snapper, using one configuration.
 #[derive(Debug, Clone)]
 pub struct Snapper {
     config: String,
 }
 
 impl Snapper {
-    /// The root filesystem's configuration, `root` by snapper's convention.
+    /// The `root` configuration, snapper's convention for `/`.
     #[must_use]
     pub fn root() -> Self {
         Self::with_config("root")
     }
 
-    /// Another configuration. Tests, which must not touch the real root.
+    /// Uses another configuration. For tests.
     #[must_use]
     pub fn with_config(config: &str) -> Self {
         Self {
@@ -114,8 +110,8 @@ impl SnapshotProvider for Snapper {
 
     async fn create(&self, description: &str, job: &str) -> Result<Snapshot> {
         let userdata = format!("{MARK}={job}");
-        // No cleanup algorithm: snapper's own timers must not delete one a
-        // rollout may still need. `prune` is what bounds them.
+        // No cleanup algorithm, so snapper's timers can't delete a snapshot
+        // a rollout still needs. `prune` bounds them instead.
         let out = self
             .snapper(&[
                 "create",
@@ -143,7 +139,7 @@ impl SnapshotProvider for Snapper {
 
     async fn rollback(&self, snapshot: &str) -> Result<Restored> {
         let (number, _) = parse_id(snapshot)?;
-        // The whole id, job included: see `id`.
+        // compare the whole id, job included (see `id`)
         if !self.list().await?.iter().any(|s| s.id == snapshot) {
             return Err(SnapshotError::NotFound {
                 id: snapshot.to_owned(),
@@ -163,7 +159,7 @@ impl SnapshotProvider for Snapper {
             .into_iter()
             .find(|(name, _)| *name == self.config)
             .map_or_else(|| "/".to_owned(), |(_, s)| s);
-        // Not JSON: `status` prints one change per line either way.
+        // no --jsonout; plain status output is one change per line
         let range = format!("{number}..0");
         let out = run(&["-c", &self.config, "status", &range]).await?;
         Ok(parse_status_kernels(&out, &subvolume))
@@ -187,18 +183,17 @@ impl SnapshotProvider for Snapper {
     }
 }
 
-/// `snapper:412:job_…`: the number, and the job it was taken for.
+/// `snapper:<number>:<job>`.
 ///
-/// ⚠️ The number alone is not an identity. Snapper **reuses numbers**: delete
-/// the newest and the next one created gets its number back (seen on snapper
-/// 0.10.6). A rollback job naming `snapper:412` could then restore a snapshot
-/// taken for some other job. With the job in the id, it restores the one it
-/// was approved for or nothing.
+/// The job is part of the id because snapper reuses numbers: delete the newest
+/// snapshot and the next one gets the same number (seen on snapper 0.10.6).
+/// Without the job, a rollback could restore a snapshot taken for a different
+/// job.
 fn id(number: u64, job: &str) -> String {
     format!("{}:{number}:{job}", Provider::Snapper.name())
 }
 
-/// The snapper number and job in `snapper:412:job_…`.
+/// The snapper number and job in `snapper:412:job_abc`.
 ///
 /// # Errors
 /// [`SnapshotError::ForeignId`] for anything else, including snapshot 0,
@@ -214,10 +209,10 @@ pub fn parse_id(id: &str) -> Result<(u64, &str)> {
         })
 }
 
-/// `snapper create --print-number` prints the new number and nothing else.
+/// Parses the output of `snapper create --print-number`.
 ///
 /// # Errors
-/// [`SnapshotError::Unparseable`] when it did not.
+/// [`SnapshotError::Unparseable`] if it isn't a number.
 pub fn parse_number(out: &str) -> Result<u64> {
     out.trim().parse().map_err(|_| SnapshotError::Unparseable {
         tool: TOOL,
@@ -225,10 +220,10 @@ pub fn parse_number(out: &str) -> Result<u64> {
     })
 }
 
-/// `snapper --jsonout list-configs`: each configuration and its subvolume.
+/// Parses `snapper --jsonout list-configs` into (config, subvolume) pairs.
 ///
 /// # Errors
-/// [`SnapshotError::Unparseable`] when the JSON is not that shape.
+/// [`SnapshotError::Unparseable`] if the JSON has an unexpected shape.
 pub fn parse_configs(out: &str) -> Result<Vec<(String, String)>> {
     let value: serde_json::Value = json(out)?;
     let configs = value
@@ -247,14 +242,15 @@ pub fn parse_configs(out: &str) -> Result<Vec<(String, String)>> {
         .collect()
 }
 
-/// `snapper --jsonout -c <config> list`: the agent's own, oldest first.
+/// Parses `snapper --jsonout -c <config> list`, returning the agent's
+/// snapshots oldest first.
 ///
-/// The output is one key, the configuration's name, holding every snapshot,
-/// including number 0 (the live filesystem) and other people's; only the ones
-/// marked `updawg=` come back.
+/// The output has a single key (the config name) holding every snapshot,
+/// including number 0 (the live filesystem). Only those with `updawg=`
+/// userdata are kept.
 ///
 /// # Errors
-/// [`SnapshotError::Unparseable`] when the JSON is not that shape.
+/// [`SnapshotError::Unparseable`] if the JSON has an unexpected shape.
 pub fn parse_list(out: &str) -> Result<Vec<Snapshot>> {
     let value: serde_json::Value = json(out)?;
     let entries = value
@@ -288,11 +284,11 @@ pub fn parse_list(out: &str) -> Result<Vec<Snapshot>> {
     Ok(ours.into_iter().map(|(_, s)| s).collect())
 }
 
-/// `snapper undochange N..0` ends with `create:C modify:M delete:D`, or says
-/// `nothing to do` when nothing differs.
+/// Parses `snapper undochange N..0`, which ends with
+/// `create:C modify:M delete:D` or prints `nothing to do`.
 ///
 /// # Errors
-/// [`SnapshotError::Unparseable`] when it says neither.
+/// [`SnapshotError::Unparseable`] if neither is found.
 pub fn parse_undo(out: &str) -> Result<Restored> {
     if out.trim() == "nothing to do" {
         return Ok(Restored::default());
@@ -322,9 +318,9 @@ pub fn parse_undo(out: &str) -> Result<Restored> {
     )))
 }
 
-/// Kernels a rollback would take away, from `snapper status N..0`: module
-/// directories created since snapshot N (`+` first). Paths are absolute on
-/// the live system, under `subvolume`.
+/// Kernels a rollback would remove, from `snapper status N..0`: module
+/// directories created since snapshot N (flags starting with `+`). Paths are
+/// absolute on the live system, under `subvolume`.
 #[must_use]
 pub fn parse_status_kernels(out: &str, subvolume: &str) -> Vec<String> {
     let mut kernels: Vec<String> = out
@@ -346,9 +342,8 @@ pub fn parse_status_kernels(out: &str, subvolume: &str) -> Vec<String> {
     kernels
 }
 
-/// The `Available` column of `df -P`, in 1024-byte blocks, as bytes. POSIX
-/// specifies the format, which is why it is `df` and not `statvfs`: the
-/// workspace forbids `unsafe`.
+/// The `Available` column of `df -P`, converted to bytes. We use `df` because
+/// `statvfs` would need `unsafe`.
 #[must_use]
 pub fn parse_df(out: &str) -> Option<u64> {
     let line = out.lines().nth(1)?;
@@ -370,7 +365,7 @@ fn unparseable(detail: &str) -> SnapshotError {
 async fn run(args: &[&str]) -> Result<String> {
     let output = tokio::process::Command::new(TOOL)
         .args(args)
-        // Parsed, so in the one language it is parsed in.
+        // output is parsed, so force the C locale
         .env("LC_ALL", "C")
         .kill_on_drop(true)
         .output()

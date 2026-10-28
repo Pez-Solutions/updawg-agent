@@ -1,10 +1,6 @@
-//! Tests for the authenticated transport.
-//!
-//! These run a real TLS server in-process, with a real CA, and require a client
-//! certificate. Nothing here mocks the handshake, because the handshake is the
-//! part that is easy to get subtly wrong: a client that builds fine, connects
-//! fine, and quietly presents no certificate at all would pass any test that
-//! stopped at the HTTP layer.
+//! These run a real in-process TLS server with a test CA that requires a
+//! client certificate. Mocking the handshake would hide a client that
+//! connects fine but presents no certificate.
 
 use super::*;
 use crate::testing::{EnrolledHost, NEXT, TestCa, TestGateway, checkin_request, transport};
@@ -13,8 +9,6 @@ use std::{fs, sync::atomic::Ordering};
 const THIRTY_DAYS: Duration = Duration::from_secs(30 * 86_400);
 const LONG_POLL: Duration = Duration::from_secs(55);
 
-/// The one that matters: the client really presents its certificate, and the
-/// server really required it.
 #[tokio::test]
 async fn every_request_presents_the_client_certificate() {
     let ca = TestCa::new();
@@ -49,13 +43,12 @@ async fn every_request_presents_the_client_certificate() {
     assert!(seen[0].body.contains("b81e"));
 }
 
-/// End-to-end rotation: renew, then prove the *new* certificate is what the
-/// next request presents. Checking only that the file changed would miss a
-/// client that was never rebuilt.
+/// Checks the next request presents the new certificate, not just that the
+/// file changed, which would miss a client that was never rebuilt.
 #[tokio::test]
 async fn a_renewed_certificate_is_what_the_next_request_presents() {
     let ca = TestCa::new();
-    // Twenty-five days into a thirty-day life, so renewal is due now.
+    // 25 days into 30, so renewal is due
     let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
     let renewed_pem = ca.issue_for(
         "hst_01J9ZC6Q_renewed",
@@ -93,7 +86,6 @@ async fn a_renewed_certificate_is_what_the_next_request_presents() {
     );
     assert_ne!(transport.certificate().serial(), before);
 
-    // Survives a restart, and is what the wire sees.
     let reloaded = host.state.identity().unwrap().unwrap();
     assert!(reloaded.certificate.contains("BEGIN CERTIFICATE"));
     assert_eq!(
@@ -134,14 +126,11 @@ async fn renewal_does_nothing_while_the_certificate_is_young() {
     );
 }
 
-/// The renewal response is validated before it is adopted, for the same reason
-/// the enrollment response is: a certificate that cannot work must not replace
-/// one that does.
 #[tokio::test]
 async fn a_certificate_for_the_wrong_key_is_refused_and_the_old_one_kept() {
     let ca = TestCa::new();
     let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
-    // Issued for a key this host does not hold.
+    // issued for a key this host doesn't hold
     let (wrong, _) = ca.issue("hst_01J9ZC6Q", THIRTY_DAYS);
 
     let gateway = TestGateway::start(
@@ -198,9 +187,6 @@ async fn a_rejected_certificate_says_what_to_do_about_it() {
     );
 }
 
-/// A gateway refusing an expired certificate fails at the handshake, not with
-/// a status code. The local expiry is a fact we already have, so say that
-/// rather than reporting an opaque connection error.
 #[tokio::test]
 async fn an_expired_certificate_is_diagnosed_locally() {
     let ca = TestCa::new();
@@ -244,8 +230,8 @@ async fn a_server_error_is_reported_with_its_problem_detail() {
     assert!(err.to_string().contains("The gateway is draining."));
 }
 
-/// A 429 is a request to slow down, not a failure to report (DAWG-131). This
-/// stub sends no `Retry-After`, so the agent waits the minute it assumes.
+/// The stub sends no `Retry-After` header, so the agent falls back to a
+/// minute.
 #[tokio::test]
 async fn a_rate_limited_check_in_says_how_long_to_wait() {
     let ca = TestCa::new();
@@ -292,8 +278,6 @@ fn a_plain_http_gateway_is_refused() {
     );
 }
 
-/// The fleet-scale property. A thousand hosts enrolled together must not renew
-/// together, and each one's offset must survive a restart.
 #[test]
 fn renewal_spread_is_stable_per_host_and_spread_across_the_fleet() {
     let one = spread_from("0a1b2c3d");
@@ -332,9 +316,7 @@ fn inventory_upload() -> updawg_protocol::InventoryUpload {
         frozen: None,
         modules_reported: false,
         packages: updawg_protocol::PackageDelta {
-            // Repetitive on purpose: a real package list is hundreds of similar
-            // lines, which is the case zstd is best at, and a body that did not
-            // actually shrink would make the assertion below meaningless.
+            // repetitive like a real package list, so it compresses well
             added: (0..200)
                 .map(|i| updawg_protocol::InstalledPackage {
                     name: format!("package-{i}"),
@@ -374,9 +356,6 @@ async fn an_inventory_is_uploaded_compressed_and_arrives_intact() {
     assert_eq!(seen[0].path, "/agent/v1/inventory");
     assert_eq!(seen[0].header("content-encoding"), Some("zstd"));
 
-    // The bytes on the wire are genuinely compressed, and genuinely smaller.
-    // Sending the header without compressing, or compressing something that grew,
-    // would both pass a test that only checked the header.
     let raw = serde_json::to_vec(&upload).unwrap();
     assert!(
         seen[0].body_bytes.len() < raw.len() / 2,
@@ -385,10 +364,8 @@ async fn an_inventory_is_uploaded_compressed_and_arrives_intact() {
         raw.len()
     );
 
-    // And it decompresses back to exactly what was sent — the agent compressing
-    // something the gateway cannot read is the failure this is really for.
     let decoded = zstd::decode_all(seen[0].body_bytes.as_slice()).expect("the body is zstd");
-    // DAWG-37: byte for byte what `updawgctl print-inventory --json` prints.
+    // same bytes as `updawgctl print-inventory --json`
     assert_eq!(decoded, super::inventory_body(&upload).unwrap());
     let round_tripped: updawg_protocol::InventoryUpload =
         serde_json::from_slice(&decoded).expect("the body is the inventory JSON");
@@ -414,9 +391,6 @@ async fn a_refused_delta_is_recognised_by_its_code() {
         .await
         .expect_err("a 409 is an error");
 
-    // The agent answers this one case by sending a full inventory, so it has to
-    // be told apart from every other server error — and told apart by the
-    // *code*, which the protocol makes stable, rather than by the wording.
     assert!(
         error.is_inventory_base_mismatch(),
         "a base mismatch was not recognised: {error}"
@@ -427,8 +401,7 @@ async fn a_refused_delta_is_recognised_by_its_code() {
 async fn any_other_server_error_is_not_a_base_mismatch() {
     let ca = TestCa::new();
     let host = EnrolledHost::new(&ca, THIRTY_DAYS);
-    // A 409 is the only status that carries the code, and a 500 that happened to
-    // mention it must not send the agent down the re-upload path.
+    // a 500 that happens to mention the code is not a mismatch
     let gateway = TestGateway::start(
         &ca,
         vec![(
@@ -458,19 +431,16 @@ async fn a_rejected_certificate_is_reported_as_such_on_upload_too() {
         .await
         .expect_err("a 401 is an error");
 
-    // "re-enroll this host", not "the inventory was bad". Every path to the
-    // gateway has to say the same thing about a dead certificate, or an operator
-    // gets a different diagnosis depending on which request happened to run.
     assert!(
         matches!(error, TransportError::CertificateRejected { .. }),
         "{error}"
     );
 }
 
-// ---- Following a rotation at renewal (DAWG-99) ----
+// ---- Following a key rotation at renewal ----
 
-/// A throwaway organization key that keeps its private half, so these can
-/// endorse rather than assert against a fixture.
+/// A throwaway organization key that keeps its private half so tests can sign
+/// endorsements.
 struct RotationKey {
     pair: aws_lc_rs::signature::Ed25519KeyPair,
     wire: String,
@@ -580,9 +550,6 @@ fn a_renewal_that_offers_an_endorsed_key_rotates_the_host() {
     assert_eq!(key_ids(&merged), vec!["sk_old", "sk_new"]);
 }
 
-/// ⚠️ The renewal path was the widest way to change a fleet's trusted keys
-/// without anybody agreeing to it: no operator is present, and until DAWG-99
-/// this adopted whatever arrived.
 #[test]
 fn a_renewal_that_offers_an_unendorsed_key_keeps_the_pinned_set() {
     use updawg_protocol::SigningKeyStatus;
@@ -606,9 +573,6 @@ fn a_renewal_that_offers_an_unendorsed_key_keeps_the_pinned_set() {
     );
 }
 
-/// The renewal itself still succeeds. A certificate that cannot be renewed
-/// takes the host off the air; a key set that was not adopted costs nothing
-/// until somebody rotates for real.
 #[test]
 fn a_refused_key_set_does_not_fail_the_renewal() {
     use updawg_protocol::SigningKeyStatus;
@@ -628,8 +592,6 @@ fn a_refused_key_set_does_not_fail_the_renewal() {
     );
 }
 
-/// The other half, unchanged by DAWG-99 and worth keeping asserted beside it:
-/// a renewal that drops a key this host relies on is refused too.
 #[test]
 fn a_renewal_that_drops_a_relied_on_key_keeps_the_pinned_set() {
     use updawg_protocol::SigningKeyStatus;

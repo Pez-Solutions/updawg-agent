@@ -1,14 +1,8 @@
-//! The client certificate, and knowing when to replace it.
+//! The client certificate and its renewal schedule.
 //!
-//! Certificates are short-lived on purpose — thirty days — so a host that is
-//! decommissioned or compromised falls out of the fleet on its own. The cost of
-//! that choice is that renewal has to be reliable, because a host that fails to
-//! renew stops being able to authenticate and goes stale.
-//!
-//! Stale is the *correct* failure: a host Updawg cannot authenticate is a host
-//! whose state Updawg should not claim to know. But it should never happen
-//! quietly or at the last minute, which is what the renewal window below is
-//! for.
+//! Certificates last thirty days, so a decommissioned or compromised host
+//! drops out of the fleet by itself. A host that fails to renew goes stale,
+//! so renewal starts well before expiry.
 
 use crate::{CryptoError, Result};
 use std::{
@@ -16,14 +10,12 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-/// Renew once this fraction of the certificate's life remains.
-///
-/// A third of a thirty-day certificate is ten days, which leaves room for a
-/// host that is powered off for a week, a gateway outage, and a retry schedule,
-/// all at once.
+/// Renew once this fraction of the certificate's life remains. Ten days of a
+/// thirty-day certificate covers a host being off for a week plus an outage
+/// and retries.
 const RENEW_AT_REMAINING_FRACTION: f64 = 1.0 / 3.0;
 
-/// A parsed client certificate. Only the facts needed to manage its life.
+/// The parts of a client certificate needed to manage its renewal.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ClientCertificate {
     not_before: SystemTime,
@@ -33,8 +25,7 @@ pub struct ClientCertificate {
     public_key_spki: Vec<u8>,
 }
 
-// A certificate is public, but a Debug that dumps the whole DER makes every
-// error message containing one unreadable. Show what identifies it.
+// keep the DER out of error messages
 impl fmt::Debug for ClientCertificate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientCertificate")
@@ -47,7 +38,7 @@ impl fmt::Debug for ClientCertificate {
 }
 
 impl ClientCertificate {
-    /// Parse the leaf certificate out of a PEM document.
+    /// Parses the first (leaf) certificate in a PEM document.
     ///
     /// # Errors
     /// [`CryptoError::MalformedCertificate`] if there is no certificate in the
@@ -91,17 +82,14 @@ impl ClientCertificate {
         &self.serial
     }
 
-    /// The `SubjectPublicKeyInfo` this certificate was issued for.
-    ///
-    /// Compared against the host's own key at renewal: a certificate issued for
-    /// a different key parses perfectly and then fails every handshake, which
-    /// is a miserable thing to diagnose.
+    /// Checked against the host's key at renewal. A certificate for a different
+    /// key parses fine and then fails every handshake.
     #[must_use]
     pub fn public_key_spki(&self) -> &[u8] {
         &self.public_key_spki
     }
 
-    /// How long until this certificate expires. `None` once it has.
+    /// `None` once expired.
     #[must_use]
     pub fn remaining(&self, now: SystemTime) -> Option<Duration> {
         self.not_after.duration_since(now).ok()
@@ -112,11 +100,9 @@ impl ClientCertificate {
         self.remaining(now).is_none()
     }
 
-    /// The moment renewal should begin, as a fraction of the certificate's own
-    /// lifetime rather than a fixed number of days.
-    ///
-    /// Deriving it from the lifetime means a change to certificate duration on
-    /// the server does not silently leave every agent renewing too late.
+    /// When renewal should start. Computed from the certificate's lifetime, not
+    /// a fixed number of days, so it adapts if the server changes the
+    /// validity period.
     #[must_use]
     pub fn renew_after(&self) -> SystemTime {
         let lifetime = self
@@ -129,12 +115,8 @@ impl ClientCertificate {
             .unwrap_or(self.not_before)
     }
 
-    /// Whether renewal should be attempted now.
-    ///
-    /// `spread` shifts this host's window earlier by up to one whole renewal
-    /// window. A fleet enrolled in one afternoon would otherwise all renew in
-    /// the same hour a month later, which is a self-inflicted thundering herd
-    /// on the one endpoint that must not be down.
+    /// `spread` (0.0 to 1.0) moves this host's renewal earlier by up to one
+    /// renewal window, so hosts enrolled together don't all renew at once.
     #[must_use]
     pub fn renewal_due(&self, now: SystemTime, spread: f64) -> bool {
         let lifetime = self
@@ -150,11 +132,7 @@ impl ClientCertificate {
     }
 }
 
-/// Decode the first PEM block of the given label into DER.
-///
-/// Hand-rolled rather than adding a PEM crate: this is a base64 body between
-/// two known markers, and the agent already carries enough dependencies that
-/// run as root.
+/// Hand-rolled to avoid another dependency in a binary that runs as root.
 fn first_pem_block(pem: &str, label: &str) -> Option<Vec<u8>> {
     use base64::Engine as _;
 
@@ -179,7 +157,6 @@ fn unix(seconds: i64) -> SystemTime {
     }
 }
 
-/// RFC 3339-ish rendering, for log lines and `Debug`.
 fn humantime(t: SystemTime) -> String {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map_or_else(|_| "before 1970".into(), |d| format!("{}", d.as_secs()))
@@ -190,8 +167,7 @@ mod tests {
     use super::*;
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ED25519};
 
-    /// Mint a real certificate rather than using a fixture: a fixture expires,
-    /// and a test that starts failing in 2027 is a test nobody trusts.
+    /// Generated rather than a fixture, which would eventually expire.
     fn certificate(valid_for: Duration) -> (String, SystemTime, SystemTime) {
         let key = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -209,7 +185,7 @@ mod tests {
         (cert.pem(), not_before, not_after)
     }
 
-    /// Certificate times have one-second resolution, so compare that way.
+    /// Certificate times have one-second resolution.
     fn about_equal(a: SystemTime, b: SystemTime) -> bool {
         a.duration_since(b)
             .or_else(|_| b.duration_since(a))
@@ -270,24 +246,20 @@ mod tests {
         let (pem, before, _) = certificate(THIRTY_DAYS);
         let cert = ClientCertificate::from_pem(&pem).unwrap();
 
-        // No spread: day 5 and day 19 are both too early.
         assert!(!cert.renewal_due(before + Duration::from_secs(5 * 86_400), 0.0));
         assert!(!cert.renewal_due(before + Duration::from_secs(19 * 86_400), 0.0));
         assert!(cert.renewal_due(before + Duration::from_secs(21 * 86_400), 0.0));
     }
 
-    /// The fleet-scale behaviour. A thousand hosts enrolled the same afternoon
-    /// must not all renew in the same hour a month later.
     #[test]
     fn spread_moves_renewal_earlier_but_never_outside_the_window() {
         let (pem, before, _) = certificate(THIRTY_DAYS);
         let cert = ClientCertificate::from_pem(&pem).unwrap();
 
-        // Full spread pulls renewal forward by one whole window, to day 10.
+        // full spread: day 10
         assert!(cert.renewal_due(before + Duration::from_secs(11 * 86_400), 1.0));
         assert!(!cert.renewal_due(before + Duration::from_secs(9 * 86_400), 1.0));
 
-        // And it never reaches back past the start of the certificate's life.
         assert!(!cert.renewal_due(before - Duration::from_secs(60), 1.0));
     }
 

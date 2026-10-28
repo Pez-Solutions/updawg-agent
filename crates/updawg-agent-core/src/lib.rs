@@ -1,8 +1,4 @@
-//! Scheduler, transport and local state: the spine the rest of the agent hangs off.
-//!
-//! Scope note: DAWG-19 creates this skeleton. DAWG-29 implements the scheduler
-//! and local state, DAWG-30 enrollment, DAWG-31 the mTLS transport and DAWG-32
-//! the check-in loop.
+//! Scheduler, transport, enrollment and local state for the agent.
 
 pub mod checkin;
 pub mod config;
@@ -25,13 +21,11 @@ pub mod state;
 mod testing;
 pub mod transport;
 
-/// The agent version: the build, as its packages name it.
+/// The agent version, identical to the package version.
 ///
-/// `0.1.0-20260930183310.g8c53d52` for a build of main, `0.2.0-1` for a tag —
-/// the package version exactly, so the server can compare what a host runs
-/// with what a channel holds (DAWG-46). Before this every build said `0.1.0`
-/// and nothing could tell two apart. Set by `build.rs` from `UPDAWG_BUILD`,
-/// which the release workflow exports; `-dev` for any other build.
+/// `0.1.0-20260930183310.g8c53d52` for a build of main, `0.2.0-1` for a tag.
+/// The server compares it with what a channel holds. Set by `build.rs` from
+/// `UPDAWG_BUILD`, which the release workflow exports; `-dev` otherwise.
 pub const VERSION: &str = env!("UPDAWG_VERSION");
 
 /// Default location of the agent configuration file.

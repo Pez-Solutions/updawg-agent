@@ -1,5 +1,5 @@
-//! The agent's release manifest for one channel (DAWG-46; the format is
-//! `updawg_protocol::ReleaseManifest`'s).
+//! The agent's release manifest for one channel, in the
+//! `updawg_protocol::ReleaseManifest` format.
 
 use crate::openpgp::Signer;
 use anyhow::{Context as _, bail};
@@ -8,11 +8,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 use updawg_protocol::{ReleaseArtifact, ReleaseChannel, ReleaseManifest};
 
-/// The targets a build has, as the manifest and the agent name them.
 const TARGETS: [&str; 2] = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
 const BINARIES: [&str; 2] = ["updawgd", "updawgctl"];
 
-/// The manifest, signed and serialised.
 pub(crate) fn build(
     signer: &dyn Signer,
     channel: &str,
@@ -31,7 +29,7 @@ pub(crate) fn build(
     Ok(format!("{}\n", serde_json::to_string_pretty(&manifest)?))
 }
 
-/// Everything but the signature: every binary of every target in `dir`.
+/// The manifest without its signature.
 pub(crate) fn unsigned(
     channel: ReleaseChannel,
     version: &str,

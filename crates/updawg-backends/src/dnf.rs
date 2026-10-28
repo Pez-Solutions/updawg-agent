@@ -1,73 +1,53 @@
-//! RHEL-family backend (DAWG-35).
+//! RHEL-family backend.
 //!
 //! Installed packages come from `rpm -qa` with a format string, candidates from
 //! `dnf repoquery --upgrades`, repository origin from `dnf repolist -v`, advisory
 //! hints from `dnf updateinfo`, obsoletions from `dnf check-update --obsoletes`,
 //! and holds from `dnf versionlock list`.
 //!
-//! Shelling out rather than linking `libdnf` is what keeps the binary statically
-//! linked against musl, so one build per architecture runs on every supported
-//! distribution.
-//!
-//! # Where the logic lives
-//!
-//! Every function that interprets output is a **pure function over `&str`**, and
-//! every one of them is tested against output captured from real containers —
-//! Rocky 8, Rocky 9 and Amazon Linux 2023, in `tests/fixtures/dnf/`. The methods
-//! below are a shell invocation and a call to one of those, exactly as in
-//! [`crate::apt`].
+//! As in [`crate::apt`], parsing is done by plain functions over `&str`, tested
+//! against output captured from Rocky 8, Rocky 9 and Amazon Linux 2023
+//! containers (`tests/fixtures/dnf/`).
 //!
 //! # Why `repoquery --upgrades` and not `check-update`
 //!
-//! `dnf check-update` is the command a person runs, and its output is a padded
-//! table meant for a terminal. **It wraps.** A package whose `name.arch` is wider
-//! than the first column is printed alone on its line and its version and
-//! repository follow on the next, indented:
+//! `dnf check-update` prints a padded table for terminals, and it wraps. A
+//! package whose `name.arch` is wider than the first column gets its own line,
+//! with the version and repository indented on the next:
 //!
 //! ```text
 //! elfutils-default-yama-scope.noarch
 //!                                   0.188-3.amzn2023.0.3   amazonlinux
 //! ```
 //!
-//! A parser that takes three whitespace-separated fields per line drops that
-//! package silently, which is the worst possible way to be wrong about an
-//! outstanding update. `repoquery --qf` emits exactly the fields asked for, one
-//! record per line, and never wraps.
+//! A three-fields-per-line parser silently drops those. `repoquery --qf`
+//! prints exactly the requested fields, one record per line.
 //!
-//! **`--latest-limit=1` is load-bearing.** Without it `repoquery --upgrades`
-//! returns *every* newer version in the repositories rather than the one `dnf
-//! upgrade` would install — on a stock Rocky 9 container that is 77 records for
-//! 38 upgradable packages, three of them `glib2`. Reporting those would invent
-//! two updates that will never be applied. With it, the set matches
-//! `check-update` package for package, which is what `tests/dnf.rs` asserts
-//! against the captured table and `tests/dnf_live.rs` asserts against a live one.
+//! `--latest-limit=1` is required. Without it `repoquery --upgrades` returns
+//! every newer version in the repositories, not just the one `dnf upgrade`
+//! would install: 77 records for 38 packages on a stock Rocky 9 container
+//! (three for `glib2`). With it the set matches `check-update` exactly;
+//! `tests/dnf.rs` and `tests/dnf_live.rs` check this.
 //!
-//! ⚠️ A measuring trap that cost me twenty minutes: **dnf deduplicates identical
-//! formatted output lines**. Counting `--qf '%{name}.%{arch}'` gives 38 either
-//! way and makes the problem invisible; the duplicates only appear once the
-//! version is in the format string.
+//! dnf deduplicates identical output lines, so counting with
+//! `--qf '%{name}.%{arch}'` gives 38 either way. The duplicates only show up
+//! once the version is in the format.
 //!
-//! # The one thing `check-update` is still needed for
+//! # Obsoletes
 //!
-//! `repoquery --upgrades` does not report **obsoletes** — an obsoletion is not
-//! an upgrade — and no `--qf` names both sides of one. `check-update
-//! --obsoletes` does, under an `Obsoleting Packages` heading, so that is where
-//! [`parse_obsoletes`] reads them from despite everything above. It survives the
-//! wrapping by not reading lines at all: see that function.
+//! `repoquery --upgrades` doesn't report obsoletes, and no `--qf` names both
+//! sides of one. `check-update --obsoletes` does, under an
+//! `Obsoleting Packages` heading, so [`parse_obsoletes`] reads that (and
+//! handles the wrapping by not parsing line by line).
 //!
-//! ⚠️ **`dnf check-update` exits 100 when there are updates.** Treating a
-//! non-zero status as a failure means it never answers on a host that has
-//! anything to do, which is every host worth asking. [`run_ok`] is why.
+//! `dnf check-update` exits 100 when there are updates, hence [`run_ok`].
 //!
-//! # What the agent does not decide
+//! # Security classification
 //!
-//! Whether an update is *security* is reported here only as what dnf itself says
-//! in `updateinfo`. That is a local hint for the heartbeat, not a
-//! classification: the authoritative answer is the server's, against advisory
-//! data. It matters more here than on Debian, because **the RHEL family has no
-//! security pocket** — a security fix and a bugfix are published to the same
-//! `baseos`, so [`AvailableUpdate::repo`] carries no signal at all and
-//! `updateinfo` is the only thing that does.
+//! The security flag is only what dnf's `updateinfo` says; the server makes
+//! the real call from advisory data. The RHEL family has no security pocket
+//! (fixes and bugfixes both go to `baseos`), so [`AvailableUpdate::repo`]
+//! says nothing about it and `updateinfo` is the only local signal.
 
 use crate::{
     ApplyOutcome, ApplyPlan, BackendError, Change, LogSink, PackageBackend, PendingChanges, Pin,
@@ -82,9 +62,9 @@ use updawg_protocol::{
 
 #[derive(Debug, Default, Clone)]
 pub struct DnfBackend {
-    /// The distribution's own name, as `/etc/os-release` spells it — `Rocky
-    /// Linux`, `Amazon Linux`, `Red Hat Enterprise Linux`. Everything whose
-    /// repository does not announce itself under that name is third-party.
+    /// The distribution's name from `/etc/os-release` (`Rocky Linux`,
+    /// `Amazon Linux`, `Red Hat Enterprise Linux`). Repositories not named
+    /// after it are third-party.
     distro: Option<String>,
 }
 
@@ -117,11 +97,8 @@ impl PackageBackend for DnfBackend {
     }
 
     async fn pending_changes(&self) -> Result<PendingChanges> {
-        // `repoquery` reports the candidate and the repository it comes from but
-        // not what is installed, so the installed set is read again here rather
-        // than threaded through the trait. `rpm -qa` is local and reads the same
-        // database `repoquery` just consulted; the alternative is a trait that
-        // makes every backend accept an argument only one of them wants.
+        // repoquery doesn't report the installed version, so read it here.
+        // `rpm -qa` is local and cheap.
         let installed = self.installed().await?;
         let out = run(
             "dnf",
@@ -137,11 +114,8 @@ impl PackageBackend for DnfBackend {
         .await?;
         let mut updates = parse_upgrades(&out, &installed);
 
-        // Three commands, because dnf keeps the three answers in three places:
-        // the candidate in `repoquery`, the advisory in `updateinfo`, and the
-        // obsoletion in `check-update`. Skipped entirely when there is nothing
-        // to upgrade, which is the common steady state and the one where an
-        // Amazon Linux host pinned to a snapshot sits for ever (DAWG-233).
+        // Skip updateinfo when there's nothing to upgrade, the usual case
+        // (and permanently so on an Amazon Linux host pinned to a release).
         if !updates.is_empty() {
             let out = run("dnf", &["-q", "updateinfo", "list", "--available"]).await?;
             attach_advisories(&mut updates, &parse_updateinfo(&out));
@@ -150,9 +124,7 @@ impl PackageBackend for DnfBackend {
         let out = run_ok(
             "dnf",
             &["-q", "check-update", "--obsoletes"],
-            // 100 is `check-update` saying there are updates, which is the
-            // interesting case and not an error. Reading it as one is how this
-            // returns nothing on every host that has anything to do.
+            // 100 means updates are available
             &[100],
         )
         .await?;
@@ -167,10 +139,9 @@ impl PackageBackend for DnfBackend {
         Ok(parse_repositories(&out, self.distro.as_deref()))
     }
 
-    /// `/etc/dnf/vars/releasever`, where it fixes the release; on Amazon
-    /// Linux 2023 the installed release otherwise, which is where every host
-    /// is pinned unless told `latest`, and `dnf check-release-update` for
-    /// what it could move to (DAWG-233).
+    /// Pinned by `/etc/dnf/vars/releasever` if set. On Amazon Linux 2023
+    /// hosts are pinned to the installed release unless set to `latest`, and
+    /// `dnf check-release-update` gives the newest available.
     async fn frozen(&self) -> Result<Option<updawg_protocol::Frozen>> {
         let file = std::fs::read_to_string(RELEASEVER)
             .ok()
@@ -195,9 +166,7 @@ impl PackageBackend for DnfBackend {
                 .trim()
                 .to_owned(),
         };
-        // Metadata for releases other than the pinned one, read and not
-        // installed. Unanswered, the pin is still reported: that it is pinned
-        // is known, how far behind is not.
+        // If this fails, still report the pin, just without `latest`.
         let asked = run_status("dnf", &["check-release-update".to_owned()]).await?;
         let latest = (asked.code == 0).then(|| {
             newest_release(&format!("{}{}", asked.stdout, asked.stderr))
@@ -213,11 +182,8 @@ impl PackageBackend for DnfBackend {
     async fn held_packages(&self) -> Result<Vec<String>> {
         match run("dnf", &["-q", "versionlock", "list"]).await {
             Ok(out) => Ok(parse_holds(&out)),
-            // versionlock is a plugin and is not installed by default. Its
-            // absence is not a failure to answer: with no plugin there is
-            // nothing enforcing a lock, so no package is held and an empty list
-            // is the truth rather than a guess. This is the one place where
-            // "none" and "I cannot tell you" genuinely are the same answer.
+            // versionlock is an optional plugin. Without it nothing can be
+            // locked, so an empty list is correct.
             Err(BackendError::CommandFailed { ref stderr, .. })
                 if stderr.contains("No such command: versionlock") =>
             {
@@ -228,12 +194,9 @@ impl PackageBackend for DnfBackend {
     }
 
     async fn security_updates(&self, updates: &[AvailableUpdate]) -> Result<BTreeSet<String>> {
-        // Answered from the updates rather than by asking `updateinfo` again:
-        // `pending_changes` already attached what it said (DAWG-231), and a
-        // second call could only disagree with the first. That disagreement
-        // would be a repository that published between the two commands, and
-        // resolving it in favour of the newer half would make the count on the
-        // heartbeat describe a different set of updates from the one uploaded.
+        // Use the advisories `pending_changes` already attached. Asking
+        // updateinfo again could disagree if a repository published in
+        // between.
         Ok(updates
             .iter()
             .filter(|u| u.advisories.iter().any(|a| a.kind == SECURITY))
@@ -241,22 +204,7 @@ impl PackageBackend for DnfBackend {
             .collect())
     }
 
-    /// Install exactly the approved versions, or nothing (DAWG-102).
-    ///
-    /// The same four steps as [`crate::apt`], and the first three change
-    /// nothing:
-    ///
-    /// 1. **What is installed now**, from `rpm -q`. Each pin must be at its
-    ///    `from` — or already at its `to`, which is done and skipped.
-    /// 2. **What dnf would do**, from `dnf install --assumeno` with the exact
-    ///    command line. It must upgrade exactly the remaining pins to exactly
-    ///    their versions and nothing else. On Rocky 9 asking for
-    ///    `openssl-libs` alone upgrades `openssl` and `openssl-fips-provider`
-    ///    too, and that is refused: nobody approved them.
-    /// 3. **Do it**, with the same command line and `-y`. Weak dependencies
-    ///    are off on both, so a recommended package is never pulled in.
-    /// 4. **What is installed after.** Each pin must now be at its `to`.
-    /// Leapp (DAWG-152): see [`crate::leapp_upgrade`].
+    /// Leapp: see [`crate::leapp_upgrade`].
     fn upgrade_finishes_at_reboot(&self) -> bool {
         true
     }
@@ -281,6 +229,17 @@ impl PackageBackend for DnfBackend {
         Ok(vec![])
     }
 
+    /// Installs exactly the approved versions, or nothing. Same steps as
+    /// [`crate::apt`]:
+    ///
+    /// 1. Each pin must be at `from` (or already at `to`, which is skipped),
+    ///    per `rpm -q`.
+    /// 2. `dnf install --assumeno` with the exact command line must upgrade
+    ///    only the remaining pins, to exactly their versions. On Rocky 9,
+    ///    asking for `openssl-libs` alone also upgrades `openssl` and
+    ///    `openssl-fips-provider`, which gets refused.
+    /// 3. Run it with `-y`. Weak dependencies are off in both runs.
+    /// 4. Each pin must now be at `to`.
     async fn apply(&self, plan: &ApplyPlan, log: &dyn LogSink) -> Result<ApplyOutcome> {
         let before = installed_versions(&plan.packages).await?;
         let todo = still_to_do(&plan.packages, &before)?;
@@ -325,33 +284,22 @@ impl PackageBackend for DnfBackend {
     }
 }
 
-/// `rpm -qa` format: name, `[epoch:]version-release`, architecture.
+/// `rpm -qa` format: name, `[epoch:]version-release`, architecture, module.
 ///
-/// The `%|EPOCH?{…}|` conditional prints the epoch only when the package has
-/// one, which is exactly the `[epoch:]version[-release]` that the server's
-/// `rpmvercmp` parses — and it is what `dnf`'s own `%{evr}` produces, so the
-/// installed version and the candidate are spelled the same way on both sides of
-/// a comparison.
+/// `%|EPOCH?{...}|` prints the epoch only when there is one, which matches
+/// dnf's `%{evr}`, so installed and candidate versions compare cleanly.
 const RPM_QF: &str =
     "%{NAME}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\t%{ARCH}\t%{MODULARITYLABEL}\n";
 
 /// `dnf repoquery` format: name, `[epoch:]version-release`, architecture, repo.
 ///
-/// No trailing newline: `repoquery` ends every record with one of its own, and
-/// adding a second gives a blank line between records — which makes every line
-/// count twice and is how I first convinced myself `--upgrades` was returning
-/// duplicates.
+/// No trailing newline: `repoquery` adds one itself.
 const REPOQUERY_QF: &str = "%{name}\t%{evr}\t%{arch}\t%{reponame}";
-
-/* ------------------------------------------------------------- the parsers */
 
 /// `rpm -qa --qf` output: name, EVR, architecture, modularity label.
 ///
-/// **`gpg-pubkey` is not a package.** rpm keeps imported signing keys in the same
-/// database and `rpm -qa` lists them, with `(none)` for the architecture. Sending
-/// them as installed software would have the server matching advisories against a
-/// key fingerprint and, worse, proposing to upgrade one. Filtering on the
-/// architecture catches every such pseudo-entry rather than just the one name.
+/// Entries with arch `(none)` are skipped. That's how rpm lists imported
+/// signing keys (`gpg-pubkey`) and similar pseudo-packages.
 #[must_use]
 pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
     out.lines()
@@ -368,13 +316,10 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
                 name: name.to_owned(),
                 version: version.to_owned(),
                 arch: arch.to_owned(),
-                // rpm records where a package came from only when dnf put it
-                // there, and it is empty on anything installed by rpm itself or
-                // baked into an image. Left absent rather than guessed, as with
-                // dpkg.
+                // rpm only knows the repo if dnf installed it, so leave it
+                // out as with dpkg.
                 repo: None,
-                // rpm's SOURCERPM is a file name, not a name and version; not
-                // needed until the RHEL family has unfixed advisories too.
+                // SOURCERPM is a file name, not name and version
                 source: None,
                 module: module_stream(label),
             })
@@ -382,10 +327,8 @@ pub fn parse_installed(out: &str) -> Vec<InstalledPackage> {
         .collect()
 }
 
-/// `name:stream` from rpm's `MODULARITYLABEL`, `name:stream:version:context`
-/// (DAWG-236). The build version and context say which build of the stream a
-/// package is, which no advisory is about. `(none)` — rpm's word for a tag a
-/// package does not have — and anything without a stream are not modular.
+/// `name:stream` from rpm's `MODULARITYLABEL` (`name:stream:version:context`).
+/// `(none)`, rpm's value for a missing tag, means not modular.
 fn module_stream(label: &str) -> Option<String> {
     let mut parts = label.split(':');
     let (Some(name), Some(stream)) = (parts.next(), parts.next()) else {
@@ -400,16 +343,9 @@ fn module_stream(label: &str) -> Option<String> {
 /// `dnf repoquery --upgrades --latest-limit=1 --qf` output, joined to what is
 /// installed.
 ///
-/// **A candidate for something not installed is dropped**, which is the same rule
-/// as apt's bracket test and exists for the same reason: an "update" to a package
-/// the host does not have is an invention. `--upgrades` should never produce one,
-/// so this is a guard rather than a filter — but the alternative to guarding is
-/// an `AvailableUpdate` with an empty `installed`, and nothing downstream would
-/// notice.
-///
-/// Keyed on **name and architecture together**, because a multilib host has
-/// `glibc.i686` and `glibc.x86_64` installed at once and they upgrade
-/// independently.
+/// Candidates for packages that aren't installed are dropped (`--upgrades`
+/// shouldn't produce any). Keyed on name and arch, since on a multilib host
+/// `glibc.i686` and `glibc.x86_64` upgrade independently.
 #[must_use]
 pub fn parse_upgrades(out: &str, installed: &[InstalledPackage]) -> Vec<AvailableUpdate> {
     let have: BTreeMap<(&str, &str), &str> = installed
@@ -433,36 +369,20 @@ pub fn parse_upgrades(out: &str, installed: &[InstalledPackage]) -> Vec<Availabl
                 arch: arch.to_owned(),
                 installed: (*current).to_owned(),
                 candidate: candidate.to_owned(),
-                // The RHEL family has no security pocket, so this is `baseos` or
-                // `appstream` and carries no severity of its own. It is reported
-                // because the server wants to know which repository an update
-                // came from, not because it means anything about urgency.
                 repo: (!repo.is_empty()).then(|| repo.to_owned()),
-                // Filled in by `attach_advisories` from `dnf updateinfo`, which
-                // is a separate command and a separate parse. Empty here rather
-                // than absent from the type, so the one place that joins them is
-                // the one place that can get it wrong.
+                // filled in by `attach_advisories`
                 advisories: Vec::new(),
-                // dnf names no source upload per update; the server does
-                // not need one for the RHEL family, which has no changelogs to
-                // look up by it.
                 source: None,
             })
         })
         .collect()
 }
 
-/// One row of `dnf updateinfo list`.
+/// One row of `dnf updateinfo list`. [`attach_advisories`] turns these into
+/// [`updawg_protocol::AdvisoryHint`]s on the matching update.
 ///
-/// Not [`updawg_protocol::AdvisoryHint`], which is what goes on the wire: this
-/// carries the package and architecture the row named, and the wire type hangs
-/// off the update those identify. [`attach_advisories`] is the join.
-///
-/// The severity is the vendor's word — `Critical`, `Important`, `Moderate`, `Low`
-/// on Red Hat and its rebuilds, and `Critical`, `Important`, `Medium`, `Low` on
-/// Amazon Linux, which uses `Medium` where Red Hat uses `Moderate`. Normalising
-/// those onto one scale is the server's job (DAWG-65); the agent reports the word
-/// it was given.
+/// Severity is the vendor's word, passed through as is. Red Hat and rebuilds
+/// use `Moderate` where Amazon Linux uses `Medium`; the server normalises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateinfoRow {
     pub advisory: String,
@@ -478,22 +398,16 @@ pub enum AdvisoryKind {
     Security,
     Bugfix,
     Enhancement,
-    /// Anything dnf printed that is none of the above, kept verbatim rather than
-    /// folded into one of them. A type nobody has seen before is worth reporting
-    /// as itself.
+    /// Any other type, kept verbatim.
     Other(String),
 }
 
-/// What [`AdvisoryKind::as_str`] returns for a security advisory, and the only
-/// value any of this code compares against.
+/// What [`AdvisoryKind::as_str`] returns for a security advisory.
 pub const SECURITY: &str = "security";
 
 impl AdvisoryKind {
-    /// How this type is spelled on the wire.
-    ///
-    /// Lowercase and verbatim, matching what `updateinfo` printed. The server
-    /// decides what the word means; normalising it here would be a guess made
-    /// on the host, and a guess made on the host cannot be corrected later.
+    /// Wire spelling: lowercase, as `updateinfo` printed it. The server does
+    /// any normalising.
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
@@ -515,14 +429,11 @@ impl AdvisoryKind {
 /// RLBA-2026:12345 bugfix         less-590-5.el9.aarch64
 /// ```
 ///
-/// The type column is either `Severity/Sec.` for a security advisory or a bare
-/// word for anything else — **a bugfix has no severity at all**, and inventing
-/// one for it would put every routine rebuild on the same scale as a remote code
-/// execution.
+/// The type column is `Severity/Sec.` for security advisories and a bare word
+/// otherwise. Non-security advisories have no severity.
 ///
-/// The same package appears once per advisory, including advisories for versions
-/// between the installed one and the candidate. That is dnf being complete rather
-/// than repetitive, and [`security_packages`] collapses it.
+/// A package appears once per advisory, including ones for versions between
+/// installed and candidate. [`security_packages`] collapses them.
 #[must_use]
 pub fn parse_updateinfo(out: &str) -> Vec<UpdateinfoRow> {
     out.lines()
@@ -531,8 +442,7 @@ pub fn parse_updateinfo(out: &str) -> Vec<UpdateinfoRow> {
             let advisory = fields.next()?;
             let kind = fields.next()?;
             let nevra = fields.next()?;
-            // A fourth field means this is not the row shape we understand —
-            // `updateinfo` grows columns under `--summary` and friends.
+            // extra columns mean a different format (`--summary` etc.)
             if fields.next().is_some() {
                 return None;
             }
@@ -562,11 +472,7 @@ pub fn parse_updateinfo(out: &str) -> Vec<UpdateinfoRow> {
         .collect()
 }
 
-/// The packages `dnf updateinfo` attributes a security advisory to.
-///
-/// Names only. A package with three outstanding security advisories is one
-/// package with a security update available, and the count on the heartbeat is a
-/// count of updates rather than of advisories.
+/// Names of packages with at least one security advisory.
 #[must_use]
 pub fn security_packages(out: &str) -> BTreeSet<String> {
     parse_updateinfo(out)
@@ -576,16 +482,11 @@ pub fn security_packages(out: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Hang each `updateinfo` row on the update it is about (DAWG-231).
+/// Attaches each `updateinfo` row to its update, keyed on name and arch.
 ///
-/// Keyed on **name and architecture together**, as everything else here is: a
-/// multilib host has `glibc.i686` and `glibc.x86_64` installed at once, they
-/// upgrade independently, and an advisory names one of them.
-///
-/// A row for a package with no pending update is dropped. `updateinfo` answers
-/// about the repositories rather than about this host, so it can name a package
-/// that is not installed or is already current — and an advisory hung on
-/// nothing would be a claim the host cannot act on.
+/// Rows without a pending update are dropped. `updateinfo` describes the
+/// repositories, so it can name packages that aren't installed or are
+/// already current.
 pub fn attach_advisories(updates: &mut [AvailableUpdate], rows: &[UpdateinfoRow]) {
     let mut by_package: BTreeMap<(&str, &str), Vec<AdvisoryHint>> = BTreeMap::new();
     for row in rows {
@@ -605,10 +506,7 @@ pub fn attach_advisories(updates: &mut [AvailableUpdate], rows: &[UpdateinfoRow]
             continue;
         };
         update.advisories.clone_from(hints);
-        // dnf prints one row per advisory per version and its order is its own.
-        // Sorting makes the upload stable, which matters because the server
-        // stores it and a list that reshuffles every six hours looks like a
-        // change every six hours.
+        // sort so the upload is stable and the server doesn't see churn
         update
             .advisories
             .sort_by(|a, b| (&a.id, &a.fixed_in, &a.kind).cmp(&(&b.id, &b.fixed_in, &b.kind)));
@@ -616,8 +514,7 @@ pub fn attach_advisories(updates: &mut [AvailableUpdate], rows: &[UpdateinfoRow]
     }
 }
 
-/// The `Obsoleting Packages` section of `dnf check-update --obsoletes`
-/// (DAWG-232).
+/// The `Obsoleting Packages` section of `dnf check-update --obsoletes`.
 ///
 /// ```text
 /// Obsoleting Packages
@@ -625,24 +522,13 @@ pub fn attach_advisories(updates: &mut [AvailableUpdate], rows: &[UpdateinfoRow]
 ///     oldthing.noarch                    1.0-1.el9      @System
 /// ```
 ///
-/// **This is the one place `check-update` is the right command**, against the
-/// rule at the top of this file, because `repoquery --upgrades` does not report
-/// obsoletes at all — an obsoletion is not an upgrade — and no `--qf` names
-/// both sides of one. Verified against a real Rocky 9 container with two
-/// obsoleting packages built into a local repository; `repoquery --upgrades`
-/// listed neither.
+/// The table can wrap, so it's read as a stream of tokens rather than lines:
+/// every entry is exactly three fields with no spaces in them. Indentation
+/// can't be trusted (wrapped lines are indented too), but an `@` prefix on
+/// the repository marks the installed, obsoleted package.
 ///
-/// The table still wraps, and the answer to that is to **stop reading it as
-/// lines**. Every entry is exactly three whitespace-separated fields and none of
-/// them can contain a space, so the section is one token stream and wrapping is
-/// invisible to it. An indented line is not a reliable marker of anything — a
-/// wrapped continuation is indented too — but the repository is: dnf prints an
-/// installed package's repository with an `@` prefix, so `@` is what tells the
-/// obsoleted package from the thing obsoleting it.
-///
-/// A triple that is not shaped like one ends the section rather than being
-/// skipped, because skipping it would shift every following entry by a field
-/// and produce a list of confident nonsense.
+/// A malformed triple ends parsing, since skipping it would misalign every
+/// entry after it.
 #[must_use]
 pub fn parse_obsoletes(out: &str, installed: &[InstalledPackage]) -> Vec<PendingRemoval> {
     let have: BTreeMap<(&str, &str), &str> = installed
@@ -665,19 +551,15 @@ pub fn parse_obsoletes(out: &str, installed: &[InstalledPackage]) -> Vec<Pending
         let Some((name, arch)) = name_arch.rsplit_once('.') else {
             break;
         };
-        // An EVR always carries a release, so a middle field with no hyphen in
-        // it means the columns are not where this parser thinks they are.
+        // an EVR always has a release, so no hyphen means we're misaligned
         if name.is_empty() || arch.is_empty() || !evr.contains('-') || repo.is_empty() {
             break;
         }
 
         match repo.strip_prefix('@') {
-            // Installed, so this is the package being obsoleted.
+            // installed, so this is the one being obsoleted
             Some(_) => {
-                // Reported with rpm's own version rather than the table's, so
-                // the removal names the same string the inventory reported as
-                // installed. A package the host does not actually have is
-                // dropped, as an upgrade for one is in `parse_upgrades`.
+                // Use rpm's version string so it matches the inventory.
                 let Some(version) = have.get(&(name, arch)) else {
                     continue;
                 };
@@ -702,16 +584,10 @@ pub fn parse_obsoletes(out: &str, installed: &[InstalledPackage]) -> Vec<Pending
     removals
 }
 
-/// The heading `dnf check-update` prints above the obsoletions, under `LC_ALL=C`.
 const OBSOLETING: &str = "Obsoleting Packages";
 
-/// Split `name-version-release.arch` into its name, its `version-release` and its
-/// architecture.
-///
-/// Neither the version nor the release may contain a hyphen, which is what makes
-/// this decidable: the last two hyphens are always the separators, whatever the
-/// name contains. `elfutils-default-yama-scope-0.188-3.amzn2023.0.3.noarch` is
-/// one package, not four.
+/// Splits `name-version-release.arch`. Version and release can't contain
+/// hyphens, so the last two hyphens are always the separators.
 fn split_nevra(nevra: &str) -> Option<(&str, &str, &str)> {
     let (rest, arch) = nevra.rsplit_once('.')?;
     let (rest, release) = rest.rsplit_once('-')?;
@@ -719,8 +595,6 @@ fn split_nevra(nevra: &str) -> Option<(&str, &str, &str)> {
     if name.is_empty() || version.is_empty() || release.is_empty() || arch.is_empty() {
         return None;
     }
-    // The version and release are contiguous in the input, so the slice covering
-    // both is the EVR without having to rebuild it.
     let start = name.len() + 1;
     let evr = nevra.get(start..nevra.len() - arch.len() - 1)?;
     Some((name, evr, arch))
@@ -728,20 +602,11 @@ fn split_nevra(nevra: &str) -> Option<(&str, &str, &str)> {
 
 /// `dnf repolist --all -v` output.
 ///
-/// The verbose form prints one `Key : value` line per attribute, which is the
-/// reason to use it. **The table `dnf repolist` prints without `-v` is truncated
-/// to the terminal width** — `Rocky Linux 9 - Devel WARNING! FOR BUILDROOT ONLY
-/// DO NOT LEAVE ENABLED` arrives as `Rocky Linux 9 - Devel WARNING! FOR BUILDROOT`
-/// — and a name cut off mid-word is a name that cannot be matched against
-/// anything.
-///
-/// dnf prints its own progress and cache chatter to the same stream, so
-/// everything that is not a `Repo-` line is ignored rather than counted on being
-/// absent.
+/// Uses the verbose `Key : value` form because the plain table truncates
+/// names to the terminal width. Lines other than `Repo-*` (progress, cache
+/// messages) are ignored.
 #[must_use]
 pub fn parse_repositories(out: &str, distro: Option<&str>) -> Vec<Repository> {
-    /// One repository as the verbose listing spells it, before it becomes a
-    /// [`Repository`].
     struct Block {
         id: String,
         name: String,
@@ -758,17 +623,10 @@ pub fn parse_repositories(out: &str, distro: Option<&str>) -> Vec<Repository> {
             "Repo-id" => blocks.push(Block {
                 id: value.to_owned(),
                 name: String::new(),
-                // dnf prints `Repo-status` for every repository, so this default
-                // is never what is reported. It is `true` rather than `false`
-                // because a repository whose status line went missing is one the
-                // host is probably using, and a disabled repository reported as
-                // enabled is a smaller lie than the reverse — the reverse hides a
-                // source of packages entirely.
+                // dnf always prints `Repo-status`; if it's ever missing, err
+                // towards showing the repo as enabled.
                 enabled: true,
             }),
-            // Only inside a block. A `Repo-name` with no `Repo-id` before it
-            // cannot happen in dnf's output, and if it ever does the name belongs
-            // to nothing and is better dropped than attached to the wrong repo.
             "Repo-name" => {
                 if let Some(b) = blocks.last_mut() {
                     value.clone_into(&mut b.name);
@@ -790,30 +648,21 @@ pub fn parse_repositories(out: &str, distro: Option<&str>) -> Vec<Repository> {
             kind: "rpm".to_owned(),
             third_party: !distro.is_some_and(|d| repo_is_distro(&b.name, d)),
             enabled: b.enabled,
-            // Not sent from dnf yet (DAWG-149): leapp checks its own.
+            // not sent for dnf; leapp checks repositories itself
             url: None,
         })
         .collect()
 }
 
-/// Whether a repository belongs to the distribution the host is running.
+/// Whether a repository belongs to the host's distribution, matched on the
+/// repository name. It's the only field every vendor fills in recognisably:
+/// `Rocky Linux 9 - BaseOS`, `Amazon Linux 2023 repository` and
+/// `Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)` all start with
+/// their distribution's `NAME`, and EPEL doesn't.
 ///
-/// Matched on the repository's **name** rather than on its id or its `.repo`
-/// file, because the name is the only field every vendor fills in with something
-/// recognisable. `Rocky Linux 9 - BaseOS`, `Amazon Linux 2023 repository` and
-/// `Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)` all begin with the
-/// `NAME` in their own `/etc/os-release`; `Extra Packages for Enterprise Linux 9`
-/// does not begin with any of them.
-///
-/// The first-word fallback is for Oracle, whose `NAME` is `Oracle Linux Server`
-/// while its repositories are named `Oracle Linux 9 BaseOS Latest`. It is looser
-/// than the prefix test and deliberately so — the direction that costs something
-/// is calling a third-party repository the distribution's, and `Oracle` is not a
-/// word another vendor's repository starts with.
-///
-/// An unrecognised name counts as third-party, as it does on apt: an unsigned or
-/// hand-rolled repository often has a name nobody would recognise, and those are
-/// exactly the ones that break a release upgrade.
+/// The first-word fallback is for Oracle (`NAME` is `Oracle Linux Server`,
+/// repositories are `Oracle Linux 9 BaseOS Latest`). Unrecognised names count
+/// as third-party.
 #[must_use]
 pub fn repo_is_distro(repo_name: &str, distro: &str) -> bool {
     let repo = repo_name.trim().to_ascii_lowercase();
@@ -833,15 +682,10 @@ pub fn repo_is_distro(repo_name: &str, distro: &str) -> bool {
     }
 }
 
-/// The distribution's own name, from `/etc/os-release`.
-///
-/// `NAME`, not `ID`: the apt backend matches an apt *origin*, which is spelled
-/// like an id, while dnf has no origin field and the closest thing is the
-/// human-readable repository name. `ID=amzn` matches nothing in `Amazon Linux
-/// 2023 repository`; `NAME="Amazon Linux"` matches it exactly.
-///
-/// Returns `None` when the file says nothing useful, and then every repository
-/// reads as third-party — the safe direction.
+/// `NAME` from `/etc/os-release`. Uses `NAME` rather than `ID` because it's
+/// matched against repository names: `ID=amzn` doesn't match
+/// `Amazon Linux 2023 repository`, `NAME="Amazon Linux"` does. With `None`,
+/// every repository counts as third-party.
 #[must_use]
 pub fn distro_name(os_release: &str) -> Option<String> {
     let name = os_release.lines().find_map(|line| {
@@ -853,18 +697,14 @@ pub fn distro_name(os_release: &str) -> Option<String> {
 
 /// `dnf versionlock list` output.
 ///
-/// Entries are written as `name-epoch:version-release.*`, and dnf adds **one per
-/// version it knows about** — `dnf versionlock add tar` on Amazon Linux produced
-/// three lines for one package. The name is what a held package is, so they are
-/// collapsed to it, in the order first seen.
+/// Entries look like `name-epoch:version-release.*`, and dnf may add several
+/// per package (one per known version), so they're collapsed to names in
+/// first-seen order.
 ///
 /// ```text
 /// zlib-0:1.2.11-40.el9.*
 /// tar-2:1.34-11.el9.*
 /// ```
-///
-/// A held package will not be upgraded no matter what a proposal says, so a plan
-/// that ignores these is a plan that silently does nothing.
 #[must_use]
 pub fn parse_holds(out: &str) -> Vec<String> {
     let mut seen = BTreeSet::new();
@@ -884,13 +724,9 @@ pub fn parse_holds(out: &str) -> Vec<String> {
     holds
 }
 
-/// The package name out of one versionlock entry.
-///
-/// The epoch's colon is the anchor: everything before it is `name-epoch`, so the
-/// name is what precedes its last hyphen. dnf always writes the epoch, even a
-/// zero one, which is what makes this reliable — but the list is a plain file a
-/// person can edit, so an entry with no colon falls back to the text before the
-/// first glob character.
+/// dnf always writes the epoch, so the name is everything before the last
+/// hyphen preceding the colon. The file can be hand-edited, so entries
+/// without a colon fall back to the text before the first `*`.
 fn hold_name(entry: &str) -> Option<String> {
     let name = match entry.split_once(':') {
         Some((head, _)) => head.rsplit_once('-').map(|(name, _)| name)?,
@@ -899,27 +735,21 @@ fn hold_name(entry: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/* ------------------------------------------------------------- applying */
-
-/// On the simulation and the install alike, so the one checked is the one run.
-///
-/// Weak dependencies off: on Rocky 8, upgrading `openssl-libs` otherwise
-/// installs `openssl-pkcs11` because something recommends it.
+/// Used for both the simulation and the install. Weak dependencies are off
+/// because on Rocky 8 upgrading `openssl-libs` otherwise pulls in
+/// `openssl-pkcs11`.
 const DNF_OPTIONS: &[&str] = &["--setopt=install_weak_deps=False"];
 
-/// `name.arch`, which is how `rpm -q` and a transaction table both key a
-/// package, and which keeps two architectures of one package apart.
 fn key(name: &str, arch: &str) -> String {
     format!("{name}.{arch}")
 }
 
-/// `openssl-libs-1:3.5.5-5.el9_8.aarch64`: the exact package dnf is asked for.
+/// `openssl-libs-1:3.5.5-5.el9_8.aarch64`
 #[must_use]
 pub fn nevra(pin: &Pin) -> String {
     format!("{}-{}.{}", pin.name, pin.to, pin.arch)
 }
 
-/// The exact `dnf install` command line for these pins.
 #[must_use]
 pub fn install_args(todo: &[&Pin]) -> Vec<String> {
     let mut args = vec!["install".to_owned(), "-y".to_owned()];
@@ -928,9 +758,8 @@ pub fn install_args(todo: &[&Pin]) -> Vec<String> {
     args
 }
 
-/// The same command line, answered "no" at the prompt: dnf resolves the
-/// transaction, prints it, and stops. It exits 1 whatever it decided, so the
-/// output is the only answer.
+/// The install command with `--assumeno`: dnf resolves and prints the
+/// transaction, then stops. It always exits 1, so only the output matters.
 #[must_use]
 pub fn simulate_args(todo: &[&Pin]) -> Vec<String> {
     let mut args = install_args(todo);
@@ -938,17 +767,15 @@ pub fn simulate_args(todo: &[&Pin]) -> Vec<String> {
     args
 }
 
-/// `rpm -q --qf` for the installed versions of these packages, keyed
-/// `name.arch`, spelled as [`RPM_QF`] spells them so they compare equal to
-/// what the server was sent.
+/// Keyed `name.arch`, versions formatted as in [`RPM_QF`].
 const RPM_Q_QF: &str = "%{NAME}.%{ARCH}\t%|EPOCH?{%{EPOCH}:}|%{VERSION}-%{RELEASE}\n";
 
-/// Every installed version of each package. More than one is normal for an
-/// install-only package such as `kernel`.
+/// Every installed version of each package (install-only packages like
+/// `kernel` have several).
 #[must_use]
 pub fn parse_versions(out: &str) -> BTreeMap<String, Vec<String>> {
     let mut versions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    // Lines without a tab are rpm's "package x is not installed".
+    // lines without a tab are "package x is not installed"
     for (name, version) in out.lines().filter_map(|l| l.split_once('\t')) {
         versions
             .entry(name.to_owned())
@@ -958,8 +785,7 @@ pub fn parse_versions(out: &str) -> BTreeMap<String, Vec<String>> {
     versions
 }
 
-/// The pins not already at their approved version, or a refusal naming the
-/// first one at neither end.
+/// The pins not yet at their approved version.
 ///
 /// # Errors
 /// [`BackendError::Refused`] when a package moved since the approval.
@@ -996,9 +822,9 @@ pub fn still_to_do<'a>(
 /// One row of a dnf transaction table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRow {
-    /// The heading it sits under, without the colon: `Upgrading`,
-    /// `Installing dependencies`, `Downgrading`, `Removing`, … — or
-    /// `Replacing` for the indented `replacing` lines under an obsoletion.
+    /// The heading without the colon (`Upgrading`, `Installing dependencies`,
+    /// `Removing`, ...), or `Replacing` for `replacing` lines under an
+    /// obsoletion.
     pub section: String,
     pub name: String,
     pub arch: String,
@@ -1007,11 +833,10 @@ pub struct TransactionRow {
 
 /// The table `dnf install --assumeno` prints.
 ///
-/// `check-update`'s table wraps a long name onto its own line (see the module
-/// docs). This one, with output piped, **widened instead** in every capture —
-/// `tests/fixtures/dnf/transaction/rocky9-long-names.txt` is 87 columns. A
-/// lone name followed by the rest of its row is still read as one row, in
-/// case some dnf does wrap it; that path has no real capture behind it.
+/// Unlike `check-update`, this table has widened rather than wrapped in every
+/// capture so far (`tests/fixtures/dnf/transaction/rocky9-long-names.txt` is
+/// 87 columns). A wrapped row is still handled, though no real capture
+/// exercises that path.
 #[must_use]
 pub fn parse_transaction(out: &str) -> Vec<TransactionRow> {
     let mut rows = Vec::new();
@@ -1022,7 +847,7 @@ pub fn parse_transaction(out: &str) -> Vec<TransactionRow> {
             break;
         }
         if !line.starts_with(' ') {
-            // A heading, or the table's own frame and column titles.
+            // a heading, or the table frame and column titles
             section = line.strip_suffix(':').map(str::to_owned);
             wrapped = None;
             continue;
@@ -1083,8 +908,8 @@ fn row(section: &str, words: &[&str]) -> Option<TransactionRow> {
 /// # Errors
 /// [`BackendError::Refused`] naming what differs.
 pub fn check_transaction(todo: &[&Pin], simulated: &Ran) -> Result<()> {
-    // `--assumeno` exits 1 whether it resolved or not; an error says so in
-    // words. Almost always a version the repositories no longer carry.
+    // `--assumeno` always exits 1, so look for an error line. Usually the
+    // approved version is gone from the repositories.
     if let Some(error) = simulated
         .stderr
         .lines()
@@ -1103,8 +928,7 @@ pub fn check_transaction(todo: &[&Pin], simulated: &Ran) -> Result<()> {
     let mut seen = BTreeSet::new();
     for row in parse_transaction(&simulated.stdout) {
         let k = key(&row.name, &row.arch);
-        // `Installing` rather than `Upgrading` is how an install-only package
-        // such as `kernel` arrives: alongside, not in place.
+        // install-only packages like `kernel` show up as `Installing`
         let approved = matches!(row.section.as_str(), "Upgrading" | "Installing")
             && wanted.get(&k) == Some(&row.version.as_str());
         if !approved {
@@ -1126,7 +950,7 @@ pub fn check_transaction(todo: &[&Pin], simulated: &Ran) -> Result<()> {
     Ok(())
 }
 
-/// What changed, as rpm reports it afterwards. Each pin must be at its `to`.
+/// What changed, according to rpm afterwards.
 ///
 /// # Errors
 /// [`BackendError::CommandFailed`] when dnf said it worked and rpm disagrees.
@@ -1156,7 +980,7 @@ pub fn changes(todo: &[&Pin], after: &BTreeMap<String, Vec<String>>) -> Result<V
     Ok(changed)
 }
 
-/// The `rpm -q` command line for these pins' installed versions, read by
+/// `rpm -q` arguments for the pins' installed versions; see
 /// [`parse_versions`].
 #[must_use]
 pub fn query_args(pins: &[Pin]) -> Vec<String> {
@@ -1166,14 +990,14 @@ pub fn query_args(pins: &[Pin]) -> Vec<String> {
 }
 
 async fn installed_versions(pins: &[Pin]) -> Result<BTreeMap<String, Vec<String>>> {
-    // Exit 1 means one of them is not installed, which is an answer.
+    // exit 1 just means one of them isn't installed
     let ran = run_status("rpm", &query_args(pins)).await?;
     Ok(parse_versions(&ran.stdout))
 }
 
-/// `needs-restarting -r`: exit 1 means a reboot is needed. Missing or
-/// anything else is "no"; the inventory uploaded after every job carries the
-/// collector's fuller answer.
+/// `needs-restarting -r` exits 1 when a reboot is needed. Anything else,
+/// including the tool missing, counts as no; the post-job inventory has the
+/// collector's more thorough answer.
 async fn reboot_required() -> bool {
     tokio::process::Command::new("needs-restarting")
         .arg("-r")
@@ -1186,7 +1010,6 @@ fn is_locked(stderr: &str) -> bool {
     stderr.contains("Failed to obtain the transaction lock") || stderr.contains("to finish.")
 }
 
-/// A command and what it said, whatever its exit status.
 async fn run_status(tool: &'static str, args: &[String]) -> Result<Ran> {
     let output = tokio::process::Command::new(tool)
         .args(args)
@@ -1208,12 +1031,10 @@ async fn run_status(tool: &'static str, args: &[String]) -> Result<Ran> {
     })
 }
 
-/// Where dnf's `$releasever` is fixed, when something fixes it.
 const RELEASEVER: &str = "/etc/dnf/vars/releasever";
 
-/// The newest release `dnf check-release-update` offers, from its
-/// `Version 2023.6.20241010:` lines. `None` when it offers none, which is
-/// what it prints for a host that is current.
+/// The newest release in `dnf check-release-update` output
+/// (`Version 2023.6.20241010:` lines). `None` if the host is current.
 #[must_use]
 pub fn newest_release(out: &str) -> Option<&str> {
     let numeric = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
@@ -1224,24 +1045,17 @@ pub fn newest_release(out: &str) -> Option<&str> {
         .max_by_key(|v| numeric(v))
 }
 
-/* ------------------------------------------------------------- the shelling */
-
 async fn run(tool: &'static str, args: &[&str]) -> Result<String> {
     run_ok(tool, args, &[]).await
 }
 
-/// As [`run`], but treating some non-zero exit codes as success.
-///
-/// `dnf check-update` exits **100** when there are updates — the useful case,
-/// and the one where reading a non-zero status as a failure means the command
-/// never answers on any host that has anything to do.
+/// As [`run`], but treating the exit codes in `also_ok` as success
+/// (`dnf check-update` exits 100 when there are updates).
 async fn run_ok(tool: &'static str, args: &[&str], also_ok: &[i32]) -> Result<String> {
     let output = tokio::process::Command::new(tool)
         .args(args)
-        // Parsing depends on the exact words dnf prints — `enabled`, `bugfix`,
-        // `No such command` — and every one of them is translated. A host with
-        // LANG set to anything else would report no repositories and no holds,
-        // with no error anywhere.
+        // The parsers match English output (`enabled`, `bugfix`,
+        // `No such command`); other locales would silently parse as empty.
         .env("LC_ALL", "C")
         .env("LANG", "C")
         .output()
@@ -1261,9 +1075,7 @@ async fn run_ok(tool: &'static str, args: &[&str], also_ok: &[i32]) -> Result<St
             .code()
             .is_some_and(|code| also_ok.contains(&code));
     if !accepted {
-        // Another transaction holds the rpm database. Waiting and retrying is the
-        // only safe answer: forcing it corrupts the database, and the caller
-        // decides when to come back.
+        // the caller retries later; forcing the lock corrupts the database
         if stderr.contains("Failed to obtain the transaction lock") || stderr.contains("to finish.")
         {
             return Err(BackendError::Locked);

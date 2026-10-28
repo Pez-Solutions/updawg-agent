@@ -1,17 +1,16 @@
-//! Applying exact versions against real apt, in a container (DAWG-102).
+//! Applying exact versions against real apt in a container.
 //!
-//! `#[ignore]`d like the other Docker canaries; run with
+//! Ignored by default since it needs Docker. Run with
 //!
 //! ```text
 //! cargo test -p updawg-backends --test apt_apply_live -- --ignored --nocapture
 //! ```
 //!
-//! The command lines are the ones [`install_args`] builds — not a hand-written
-//! copy — so what is tested here is what the agent will run. The packages are
-//! made up with `dpkg-deb` in a local repository, so the scenarios do not
-//! depend on what the image happens to be behind on: `updawgtest` 1.0 is
-//! installed, and the repository offers 2.0 **and** 3.0. A job approved for
-//! 1.0 → 2.0 must install 2.0, not the newer 3.0. That is the whole point.
+//! The command lines come from [`install_args`], so this tests what the agent
+//! actually runs. The packages are built with `dpkg-deb` into a local
+//! repository so the results don't depend on how out of date the image is:
+//! `updawgtest` 1.0 is installed and the repository has both 2.0 and 3.0. A
+//! job approved for 1.0 to 2.0 has to install 2.0, not 3.0.
 
 #![allow(
     clippy::expect_used,
@@ -54,7 +53,7 @@ mk updawgpulls 2.0 "Depends: updawgdep"
 dpkg -i /tmp/repo/updawgtest-1.0.deb /tmp/repo/updawgpulls-1.0.deb >/dev/null
 cd /tmp/repo
 rm -f updawgtest-1.0.deb updawgpulls-1.0.deb
-# `-m`: every version, not only the newest — the test is about choosing.
+# `-m`: every version, not only the newest, the test is about choosing.
 dpkg-scanpackages -m . /dev/null > Packages 2>/dev/null
 echo "deb [trusted=yes] file:/tmp/repo ./" > /etc/apt/sources.list.d/local.list
 apt-get update -qq >/dev/null 2>&1
@@ -166,7 +165,6 @@ fn the_approved_version_is_installed_and_not_the_newest() {
         );
         eprintln!("{image}: updawgtest 1.0 -> 2.0, with 3.0 on offer");
 
-        // And a second run finds nothing to do.
         assert!(still_to_do(&pins, &after).expect("done").is_empty());
     }
 }
@@ -206,7 +204,6 @@ fn what_apt_would_do_beyond_the_approval_is_refused_before_anything_changes() {
             other => panic!("{image}: {other:?}"),
         }
 
-        // Nothing changed.
         let now = c.versions(&["updawgtest", "updawgpulls", "updawgdep"]);
         assert_eq!(now.get("updawgtest").map(String::as_str), Some("1.0"));
         assert_eq!(now.get("updawgpulls").map(String::as_str), Some("1.0"));

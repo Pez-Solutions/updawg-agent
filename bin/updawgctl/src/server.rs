@@ -1,18 +1,16 @@
-//! `updawgctl enroll --server` (DAWG-296): which region's gateway this host
-//! reports to.
+//! `updawgctl enroll --server`: which region's gateway this host reports to.
 //!
-//! An organization outside the EU is served by its own region's gateway, so
-//! the portal's install command for one carries `UPDAWG_SERVER`, and `sudo`
-//! hands it through install.sh to here. It is written to `agent.toml` as
-//! `server`, before enrolling, because enrolling is the first thing that talks
-//! to it.
+//! An organization outside the EU uses its own region's gateway, so the
+//! portal's install command sets `UPDAWG_SERVER`, which `install.sh` passes
+//! through to here. It's written to `agent.toml` as `server` before
+//! enrolling, since enrollment is the first request to it.
 //!
-//! Only the `server` line changes: comments, order and every other setting
-//! are left exactly as they were, because this file is the host owner's.
+//! Only the `server` line changes. Comments, ordering and other settings are
+//! left alone.
 
 use anyhow::{Context, Result, bail};
 
-/// Where an agent reports when nobody said otherwise: the EU region.
+/// The default gateway, in the EU region.
 pub(crate) const DEFAULT_SERVER: &str = "https://agents.updawg.net";
 
 /// `url` if it is an `https://` origin, without a trailing slash.
@@ -49,7 +47,7 @@ pub(crate) fn with_server(text: &str, server: &str) -> String {
         })
         .collect();
     if !replaced {
-        // First, so it is a top-level key and not part of a [table].
+        // at the top so it isn't inside a [table]
         out.insert(0, line);
     }
     let mut joined = out.join("\n");
@@ -59,10 +57,9 @@ pub(crate) fn with_server(text: &str, server: &str) -> String {
     joined
 }
 
-/// Point this host at `server` in the config at `path`, unless it already
-/// reports somewhere else that is not the default — then only with `force`,
-/// because moving a host to another region by accident would be silent.
-/// Returns whether the file changed.
+/// Points this host at `server` in the config at `path`. A host already set
+/// to a non-default server is only moved with `force`, since an accidental
+/// region move would go unnoticed. Returns whether the file changed.
 pub(crate) fn point_at(path: &str, current: &str, server: &str, force: bool) -> Result<bool> {
     let server = origin(server)?;
     if current.trim_end_matches('/') == server {
@@ -76,8 +73,7 @@ pub(crate) fn point_at(path: &str, current: &str, server: &str, force: bool) -> 
     }
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     let updated = with_server(&text, &server);
-    // Through a file beside it and a rename, so a crash leaves the old
-    // config or the new one, never half of one.
+    // write and rename so a crash can't leave a half-written config
     let tmp = format!("{path}.updawgctl-new");
     std::fs::write(&tmp, updated).with_context(|| format!("writing {tmp}"))?;
     if let Ok(meta) = std::fs::metadata(path) {

@@ -1,37 +1,30 @@
-//! A RHEL-family release upgrade (DAWG-152): leapp, which Red Hat ships for
-//! RHEL and AlmaLinux's ELevate project packages for Rocky, AlmaLinux and
-//! CentOS Stream.
+//! RHEL-family release upgrade via leapp. Red Hat ships it for RHEL;
+//! AlmaLinux's ELevate project packages it for Rocky, AlmaLinux and CentOS
+//! Stream. Leapp runs its own preflight, so this mostly drives it and
+//! reports what it says.
 //!
-//! Leapp does its own preflight, so the agent's part is mostly to drive it
-//! and report what it says, faithfully.
-//!
-//! 0. **Install leapp** where it is missing ([`install`], the job only):
-//!    from Red Hat's own repositories on RHEL, from AlmaLinux's ELevate on
-//!    Rocky and AlmaLinux (DAWG-152, decided 2026-09-30: approving the
-//!    upgrade is approving the tool that does it). A leapp the host already
-//!    has is used as it is. CentOS Stream and Oracle Linux are not installed
-//!    for: nothing here has been tried on them, so they are told how.
-//!    A preflight installs nothing, so on a host without leapp it cannot ask
-//!    leapp's opinion and says so as a warning ([`BackendError::CannotTell`]).
-//! 1. **Refuse** ([`blockers`], which a preflight asks too): the RHEL family
-//!    only; one major release on (8 to 9, never 8 to 10); leapp installed;
-//!    nothing held (`dnf versionlock`). Then **`leapp preupgrade`**,
-//!    and every report entry it flags as an inhibitor is a refusal, with the
-//!    remediation leapp suggests; an error that stops it (no known upgrade
-//!    path, say) is one too. It changes no package, but it is not quick: it
-//!    downloads the target's metadata and writes its report under
-//!    `/var/log/leapp`.
-//! 2. **`leapp upgrade`**, its output in the job log. It repeats the checks,
-//!    downloads every target package and builds the upgrade's initramfs. Still
-//!    nothing installed: a failure here leaves the host as it was, apart from
-//!    leapp's own files.
-//! 3. **The reboot does the upgrade.** Leapp's initramfs replaces the
-//!    packages, then boots the new release (twice, where SELinux relabels).
-//!    So the job must reboot, and its outcome is only known after it: the
-//!    agent checks `/etc/os-release` for the target and works out what
-//!    changed once the host is back (`AfterReboot`). A host that comes back
-//!    on the old release failed, and `/var/log/leapp/leapp-upgrade.log` says
-//!    why.
+//! 0. Install leapp if missing ([`install`], job only): from Red Hat's
+//!    repositories on RHEL, from ELevate on Rocky and AlmaLinux. An existing
+//!    install is used as is. CentOS Stream and Oracle Linux are untested, so
+//!    the agent tells the operator how to install it instead. A preflight
+//!    installs nothing, so without leapp it returns
+//!    [`BackendError::CannotTell`].
+//! 1. Check for blockers ([`blockers`], also used by the preflight): RHEL
+//!    family only, one major release at a time, leapp installed, nothing
+//!    version-locked. Then run `leapp preupgrade`; each inhibitor in its
+//!    report becomes a refusal with leapp's suggested fix, as does an error
+//!    that stops it (no known upgrade path, for instance). It changes no
+//!    packages but is slow: it downloads the target's metadata and writes a
+//!    report under `/var/log/leapp`.
+//! 2. `leapp upgrade`. It repeats the checks, downloads the target packages
+//!    and builds the upgrade initramfs. Nothing is installed yet, so a
+//!    failure leaves the host as it was apart from leapp's own files.
+//! 3. The reboot performs the upgrade: leapp's initramfs replaces the
+//!    packages and boots the new release (twice if SELinux relabels). The
+//!    outcome is only known afterwards, when the agent checks
+//!    `/etc/os-release` and diffs the package list ([`AfterReboot`]). If the
+//!    host comes back on the old release, `/var/log/leapp/leapp-upgrade.log`
+//!    has the reason.
 
 use crate::release::Host;
 use crate::{BackendError, LogSink, Result};
@@ -40,36 +33,30 @@ use updawg_protocol::InstalledPackage;
 
 const LEAPP: &str = "/usr/bin/leapp";
 const REPORT: &str = "/var/log/leapp/leapp-report.json";
-/// Where the data package says which repositories map to which, and in which
-/// version of that file's format.
+/// Repository mapping shipped by the data package, including its format
+/// version.
 const REPOMAP: &str = "/etc/leapp/files/repomap.json";
 
-/// The distributions leapp upgrades, as `/etc/os-release` names them.
+/// `/etc/os-release` IDs leapp can upgrade.
 const FAMILY: &[&str] = &["rhel", "rocky", "almalinux", "centos", "ol"];
 
-/// What the agent checks once the host is back from the reboot that does
-/// the upgrade.
+/// What the agent checks once the host is back from the upgrade reboot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AfterReboot {
-    /// The release it should be on now, by major version (`9`).
+    /// Expected major version (`9`).
     pub release: String,
-    /// What was installed before, to tell what changed.
     pub before: Vec<InstalledPackage>,
 }
 
-/// `8.10` is `8`.
 fn major(version: &str) -> Option<u32> {
     version.trim().split('.').next()?.parse().ok()
 }
 
-/// Whether `host` is on major release `target` now.
 #[must_use]
 pub fn arrived(host: &Host, target: &str) -> bool {
     major(&host.version).is_some() && major(&host.version) == major(target)
 }
 
-/// Whether this host may be upgraded to `target` at all.
-///
 /// # Errors
 /// Why not.
 pub fn plan(host: &Host, target: &str) -> std::result::Result<(), String> {
@@ -94,9 +81,9 @@ pub fn plan(host: &Host, target: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Every entry in leapp's JSON report that stops the upgrade, as its title
-/// and the remediation leapp suggests. Flagged `inhibitor` in `flags` by
-/// leapp 0.20, in `groups` by later ones.
+/// Inhibitors from leapp's JSON report, each as its title plus leapp's
+/// suggested remediation. leapp 0.20 marks them in `flags`, later versions
+/// in `groups`.
 ///
 /// # Errors
 /// A report that is not leapp's JSON.
@@ -138,8 +125,7 @@ pub fn inhibitors(report: &str) -> std::result::Result<Vec<String>, String> {
         .collect())
 }
 
-/// The errors leapp prints when it cannot go on at all, each as its
-/// `Message:` line.
+/// The `Message:` lines from leapp's fatal error output.
 #[must_use]
 pub fn errors(out: &str) -> Vec<String> {
     let Some((_, rest)) = out.split_once("Following errors occurred") else {
@@ -152,9 +138,8 @@ pub fn errors(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// Why this host would refuse to be upgraded to `target`: see the module
-/// note, step 1. Runs `leapp preupgrade`. Empty when nothing stands in the
-/// way.
+/// Reasons the upgrade to `target` would be refused (step 1 in the module
+/// docs). Runs `leapp preupgrade`. Empty when nothing blocks it.
 ///
 /// # Errors
 /// When the host could not be asked.
@@ -195,8 +180,8 @@ pub async fn blockers(
     Ok(out)
 }
 
-/// A preupgrade's or an upgrade's refusals: the inhibitors in its report,
-/// else its errors, else, when it failed and said neither, that it failed.
+/// Inhibitors from the report, falling back to errors from the output, then
+/// to a generic failure if leapp exited non-zero.
 fn what_leapp_said(status: i32, said: &str) -> Result<Vec<String>> {
     let report = std::fs::read_to_string(REPORT).unwrap_or_default();
     let mut found = if report.is_empty() {
@@ -218,12 +203,10 @@ fn what_leapp_said(status: i32, said: &str) -> Result<Vec<String>> {
     Ok(found)
 }
 
-/// Whether the job installs leapp on this host when it is missing.
 fn installs_leapp(host: &Host) -> bool {
     host.id == "rhel" || data_package(&host.id).is_some()
 }
 
-/// ELevate's package describing this distribution's upgrade path.
 fn data_package(id: &str) -> Option<&'static str> {
     match id {
         "rocky" => Some("leapp-data-rocky"),
@@ -232,22 +215,20 @@ fn data_package(id: &str) -> Option<&'static str> {
     }
 }
 
-/// `"1.2.1"` is `(1, 2)`.
 fn format_of(repomap: &str) -> Option<(u32, u32)> {
     let map: serde_json::Value = serde_json::from_str(repomap).ok()?;
     let mut parts = map.get("version_format")?.as_str()?.split('.');
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
-/// What to ask dnf for, given the repository-mapping format the data package
-/// ships: the newest leapp-upgrade for format 1.3 and later, else the last
-/// build known to read 1.2. `None` when no build is known to read it here.
+/// Which leapp-upgrade packages to install for the data package's
+/// repository-mapping format: the latest for 1.3+, otherwise the last build
+/// known to read 1.2. `None` if no known build reads it.
 ///
-/// Found on Rocky 8.10, 2026-09-30, with leapp-data-rocky 0.9-10 (format
-/// 1.2.1): ELevate's 0.24 refuses the file ("required 1.3.0"), 0.23 cannot
-/// work out a target and crashes, 0.22 runs. leapp-data-almalinux already
-/// ships 1.3.0. Keyed on the format rather than the distribution, so Rocky
-/// moves to the newest by itself once its data does.
+/// On Rocky 8.10 with leapp-data-rocky 0.9-10 (format 1.2.1), ELevate's 0.24
+/// rejects the file ("required 1.3.0"), 0.23 crashes working out the target,
+/// and 0.22 works. leapp-data-almalinux already ships 1.3.0. Keyed on format
+/// so Rocky picks up the latest once its data package catches up.
 fn leapp_upgrade_for(major: u32, format: (u32, u32)) -> Option<Vec<String>> {
     if format >= (1, 3) {
         return Some(vec!["leapp-upgrade".into()]);
@@ -261,9 +242,8 @@ fn leapp_upgrade_for(major: u32, format: (u32, u32)) -> Option<Vec<String>> {
     }
 }
 
-/// `dnf install -y` these, streamed to the job log; a refusal naming `what`
-/// if dnf fails, which leaves the host as it was (a dnf transaction installs
-/// everything or nothing).
+/// Returns a refusal naming `what` if dnf fails. A dnf transaction is
+/// all-or-nothing, so the host is unchanged in that case.
 async fn dnf_install(packages: &[&str], what: &str, log: &dyn LogSink) -> Result<()> {
     let mut args = vec!["install", "-y"];
     args.extend_from_slice(packages);
@@ -277,12 +257,12 @@ async fn dnf_install(packages: &[&str], what: &str, log: &dyn LogSink) -> Result
     }
 }
 
-/// Step 0 of the module note: leapp, where the host does not have it.
+/// Installs leapp if missing (step 0 in the module docs).
 ///
 /// # Errors
-/// [`BackendError::Refused`] when it could not be installed. Every step is
-/// its own dnf transaction, so a later one failing leaves the earlier ones
-/// installed, and the refusal says which.
+/// [`BackendError::Refused`] when it could not be installed. Each step is a
+/// separate dnf transaction, so earlier steps stay installed if a later one
+/// fails; the refusal says which.
 pub async fn install(host: &Host, log: &dyn LogSink) -> Result<()> {
     if Path::new(LEAPP).exists() {
         log.line("leapp is installed: using it as it is");
@@ -347,13 +327,12 @@ pub async fn install(host: &Host, log: &dyn LogSink) -> Result<()> {
     .await
 }
 
-/// Prepare this host's upgrade to `target`. See the module note: what it
-/// returns is not the upgrade, which happens during the reboot, but what to
-/// check once it is done.
+/// Prepares the upgrade to `target`. The upgrade itself happens during the
+/// reboot; the returned outcome says what to check afterwards.
 ///
 /// # Errors
-/// [`BackendError::Refused`] when nothing was changed, which is every
-/// failure here: leapp installs nothing before the reboot.
+/// [`BackendError::Refused`] for any failure, since leapp installs nothing
+/// before the reboot.
 pub async fn upgrade(
     backend: &dyn crate::PackageBackend,
     target: &str,
@@ -455,7 +434,7 @@ mod tests {
     }
 
     /// Trimmed from a real `leapp preupgrade` on Rocky 8.10 (ELevate,
-    /// leapp 0.20), 2026-09-29.
+    /// leapp 0.20).
     const ROCKY_8_REPORT: &str = r#"{"entries": [
         {"title": "SElinux will be set to permissive mode", "severity": "low", "groups": null, "flags": [],
          "detail": {"remediations": [{"context": "Make sure there are no SElinux related warnings after the upgrade.", "type": "hint"}]}},

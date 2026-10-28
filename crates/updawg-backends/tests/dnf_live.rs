@@ -1,24 +1,19 @@
-//! The dnf parsers against live containers, not checked-in fixtures (DAWG-35).
+//! The dnf parsers against live containers.
 //!
-//! `tests/dnf.rs` runs against captured output and is fast, hermetic and always
-//! green. That is exactly its weakness: it proves the parsers still handle what
-//! dnf printed on the day the fixtures were taken, and says nothing about what
-//! dnf prints today. This file is the canary for that drift.
+//! `tests/dnf.rs` uses captured fixtures, so it can't notice dnf's output
+//! changing after they were taken. This can.
 //!
-//! Ignored by default because it needs Docker and pulls three images. Run it when
-//! touching a parser, when a new distribution is added, or when dnf has moved:
+//! Ignored by default because it needs Docker and pulls three images. Run it
+//! after touching a parser, adding a distribution, or a dnf release:
 //!
 //! ```text
 //! cargo test -p updawg-backends --test dnf_live -- --ignored --nocapture
 //! ```
 //!
-//! Set `UPDAWG_REQUIRE_DOCKER=1` to turn "no Docker, so this quietly did nothing"
-//! into a failure — the same guard the server uses for its database tests, and
-//! for the same reason: a test suite that silently shrinks stays green.
+//! Set `UPDAWG_REQUIRE_DOCKER=1` to fail rather than skip when Docker is
+//! missing.
 
-// clippy.toml allows unwrap and expect in `#[cfg(test)]` modules, but that does
-// not reach an integration test in `tests/` — the whole file is the test. In here
-// a panic *is* the assertion.
+// clippy.toml's test allowances don't apply to integration tests.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -34,22 +29,20 @@ use updawg_backends::dnf::{
 
 /// The image, and whether a stock one should have any updates.
 ///
-/// Amazon Linux 2023 pins `$releasever` to the snapshot its image was built from
-/// and genuinely has none, which is the thing worth asserting about it: a fleet
-/// of those hosts reports itself fully patched and is telling the truth about a
-/// state somebody still has to decide about.
+/// Amazon Linux 2023 pins `$releasever` to the snapshot the image was built
+/// from, so it has none.
 const IMAGES: &[(&str, bool)] = &[
     ("rockylinux/rockylinux:8", true),
     ("rockylinux/rockylinux:9", true),
     ("amazonlinux:2023", false),
 ];
 
-/// Exactly what `tests/fixtures/dnf/*.txt` was captured with. Kept here so the
-/// fixtures can be regenerated from the one source of truth.
+/// The script `tests/fixtures/dnf/*.txt` were captured with, kept so they can
+/// be regenerated.
 ///
-/// `RELEASEVER` is set only for the `amazonlinux2023-latest` fixture, where it
-/// reproduces `dnf upgrade --releasever=latest` — how an Amazon Linux host moves
-/// off the snapshot it is pinned to.
+/// `RELEASEVER` is only set for the `amazonlinux2023-latest` fixture. It
+/// mirrors `dnf upgrade --releasever=latest`, which is how an Amazon Linux host
+/// moves off its pinned snapshot.
 const CAPTURE: &str = r#"
 set -u
 DNFARGS=""
@@ -77,13 +70,11 @@ dnf -q versionlock list 2>&1
 "#;
 
 /// Builds the state `tests/fixtures/dnf/rocky9-obsoletes.txt` was captured
-/// from, because no official image has an obsoletion in it.
+/// from, since no official image has an obsoletion in it.
 ///
-/// Three synthetic packages, built with `rpmbuild` and served from a local
-/// repository: one that obsoletes an installed package and nothing else, one
-/// that is an upgrade *and* obsoletes something, and one with a name long
-/// enough to be worth looking at in a padded table. The packages are made up;
-/// everything `dnf` then prints about them is not.
+/// Three packages from a local repository: one that only obsoletes an
+/// installed package, one that is an upgrade and also obsoletes something, and
+/// one with a long name to check column padding in the table.
 const OBSOLETES_CAPTURE: &str = r#"
 set -u
 dnf -q install -y rpm-build createrepo_c >/dev/null 2>&1
@@ -178,8 +169,7 @@ fn section(fixture: &str, name: &str) -> String {
     out
 }
 
-/// `name.arch` for every row of a `check-update` table. See `tests/dnf.rs` for
-/// why this lives in the tests and not in the backend.
+/// `name.arch` for every row of a `check-update` table.
 fn check_update_names(table: &str) -> BTreeSet<String> {
     table
         .lines()
@@ -206,7 +196,7 @@ fn the_parsers_still_understand_what_dnf_prints_today() {
         let out = capture(image);
         assert!(
             out.contains("===RPM_QA==="),
-            "{image}: captured nothing — is the image pullable?"
+            "{image}: captured nothing; is the image pullable?"
         );
 
         let distro = distro_name(&section(&out, "OS_RELEASE"))
@@ -215,7 +205,7 @@ fn the_parsers_still_understand_what_dnf_prints_today() {
         let installed = parse_installed(&section(&out, "RPM_QA"));
         assert!(
             installed.len() > 50,
-            "{image}: only {} packages — rpm's format string has moved",
+            "{image}: only {} packages; rpm's format string has moved",
             installed.len()
         );
         assert!(
@@ -250,9 +240,8 @@ fn the_parsers_still_understand_what_dnf_prints_today() {
             );
         }
 
-        // The assertion most likely to catch a real regression: `--latest-limit=1`
-        // still means one candidate per package, and `repoquery` still answers the
-        // same question as the table a person would read.
+        // `--latest-limit=1` should still give one candidate per package, and
+        // repoquery should agree with the check-update table.
         let queried: BTreeSet<String> = updates
             .iter()
             .map(|u| format!("{}.{}", u.name, u.arch))
@@ -266,7 +255,7 @@ fn the_parsers_still_understand_what_dnf_prints_today() {
         let repos = parse_repositories(&section(&out, "REPOLIST"), Some(&distro));
         assert!(
             !repos.is_empty(),
-            "{image}: no repositories — dnf repolist -v's format has moved"
+            "{image}: no repositories; dnf repolist -v's format has moved"
         );
         assert!(
             repos.iter().all(|r| !r.third_party),
@@ -288,7 +277,7 @@ fn the_parsers_still_understand_what_dnf_prints_today() {
             .count();
         assert!(
             counted > 0 || !*has_updates,
-            "{image}: {} updates and not one security advisory — updateinfo's format has moved",
+            "{image}: {} updates and not one security advisory; updateinfo's format has moved",
             updates.len()
         );
 
@@ -317,7 +306,7 @@ fn an_obsoletion_is_still_reported_the_way_the_fixture_was_captured() {
     let out = capture_with("rockylinux/rockylinux:9", OBSOLETES_CAPTURE);
     assert!(
         out.contains("===RPM_QA==="),
-        "captured nothing — is rpmbuild still in the Rocky 9 repositories?"
+        "captured nothing; is rpmbuild still in the Rocky 9 repositories?"
     );
 
     let installed = parse_installed(&section(&out, "RPM_QA"));
@@ -344,9 +333,8 @@ fn an_obsoletion_is_still_reported_the_way_the_fixture_was_captured() {
         "the `Obsoleting Packages` section has moved"
     );
 
-    // `repoquery --upgrades` still does not report an obsoletion, which is the
-    // whole reason `check-update` is read at all. The day it does, this fails
-    // and the backend gets simpler.
+    // repoquery --upgrades doesn't report obsoletions, which is why the backend
+    // reads check-update at all. If that changes, this fails.
     let updates = parse_upgrades(&section(&out, "UPGRADES"), &installed);
     assert!(
         !updates.iter().any(|u| u.name == "newthing"),
@@ -383,7 +371,7 @@ fn an_update_still_carries_the_advisory_dnf_names_for_it() {
         let rated = updates.iter().filter(|u| !u.advisories.is_empty()).count();
         assert!(
             rated > 0,
-            "{image}: {} updates and not one advisory attached — updateinfo's              package names no longer line up with repoquery's",
+            "{image}: {} updates and not one advisory attached; updateinfo's package names no longer line up with repoquery's",
             updates.len()
         );
         for update in &updates {
@@ -399,7 +387,6 @@ fn an_update_still_carries_the_advisory_dnf_names_for_it() {
             }
         }
 
-        // And a stock host has nothing an upgrade would remove.
         assert!(
             parse_obsoletes(&section(&out, "CHECK_UPDATE_OBSOLETES"), &installed).is_empty(),
             "{image}: a stock image reported an obsoletion"

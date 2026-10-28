@@ -1,10 +1,9 @@
-//! `updawgctl self-update-run`: the half of a self-update that runs outside
-//! the agent, in the transient unit [`super::UNIT`] (see the module above).
+//! `updawgctl self-update-run`, the part of a self-update that runs outside
+//! the agent in the transient unit [`super::UNIT`].
 //!
-//! Synchronous and plain on purpose: it is a short script in Rust, run once,
-//! and the thing it must never do is leave the host without an agent. Every
-//! path that does not end with the new agent checked in ends with the old one
-//! put back and restarted, and [`super::Outcome`] saying why.
+//! Kept synchronous and simple. It must not leave the host without an agent:
+//! unless the new version checks in, the old one is restored and restarted
+//! and an [`super::Outcome`] records why.
 
 use super::{Method, Outcome, PACKAGE, Pending, previous, staged};
 use crate::state::LocalState;
@@ -12,25 +11,24 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// Run the update recorded in `state`.
+/// Runs the update recorded in `state`.
 ///
 /// # Errors
-/// Only when there is nothing to run, or the record cannot be read. Every
-/// failure of the update itself is written down as an [`Outcome`] instead.
+/// Only if there is no pending update or it can't be read. Failures of the
+/// update itself are recorded as an [`Outcome`].
 pub fn run(state: &LocalState) -> anyhow::Result<()> {
     let pending = state.self_update()?.ok_or_else(|| {
         anyhow::anyhow!("no self-update is recorded in {}", state.root().display())
     })?;
     say(&format!(
-        "updating the agent {} → {} for job {}",
+        "updating the agent {} -> {} for job {}",
         pending.from, pending.to, pending.job.id
     ));
     let began = chrono::Utc::now();
 
     if let Err(why) = install(&pending.method, &pending.to) {
         say(&format!("the update did not install: {why}"));
-        // Possibly half-done (a swap that renamed one binary of two), so put
-        // the old one back the same way a failed start would.
+        // may be half done (one of two binaries swapped), so roll back
         return give_up(
             state,
             &pending,
@@ -58,7 +56,6 @@ pub fn run(state: &LocalState) -> anyhow::Result<()> {
     )
 }
 
-/// Put `pending.from` back, restart, and write down why.
 fn give_up(state: &LocalState, pending: &Pending, why: &str) -> anyhow::Result<()> {
     say(&format!("putting {} back: {why}", pending.from));
     let outcome = match roll_back(&pending.method, &pending.from) {
@@ -75,13 +72,12 @@ fn give_up(state: &LocalState, pending: &Pending, why: &str) -> anyhow::Result<(
         },
     };
     say(&outcome.detail);
-    // Written before the restart: the agent that starts reads it.
+    // must be written before the restart, the next agent reads it
     state.set_self_update_outcome(&outcome)?;
     restart();
     Ok(())
 }
 
-/// Whether the agent has checked in as `version` since `began`.
 fn confirmed(state: &LocalState, version: &str, began: chrono::DateTime<chrono::Utc>) -> bool {
     matches!(
         state.last_checkin(),
@@ -103,11 +99,10 @@ fn roll_back(method: &Method, version: &str) -> Result<(), String> {
     }
 }
 
-/// Install exactly `version` of the package, up or down, and check that it is
-/// what is installed afterwards.
+/// Installs exactly `version` (upgrade or downgrade) and checks the result.
 ///
-/// The package's postinstall restarts `updawgd` (this helper is not under it,
-/// see packaging/nfpm/postinstall.sh); [`restart`] after it does no harm.
+/// The package's postinstall already restarts `updawgd` (see
+/// packaging/nfpm/postinstall.sh); the extra [`restart`] is harmless.
 fn package(method: &Method, version: &str) -> Result<(), String> {
     match method {
         Method::Apt => {
@@ -129,9 +124,8 @@ fn package(method: &Method, version: &str) -> Result<(), String> {
         }
         Method::Dnf => {
             let spec = format!("{PACKAGE}-{version}");
-            // `install` of an older version than the one installed does
-            // nothing and succeeds, so: install, look, and downgrade if it is
-            // still not there.
+            // `dnf install` of an older version is a successful no-op, so
+            // fall back to `downgrade`
             exec(Command::new("dnf").args(["-y", "install"]).arg(&spec))?;
             if installed(method).as_deref() != Some(version) {
                 exec(Command::new("dnf").args(["-y", "downgrade"]).arg(&spec))?;
@@ -146,7 +140,6 @@ fn package(method: &Method, version: &str) -> Result<(), String> {
     }
 }
 
-/// The installed version of the package, as the package manager says it.
 fn installed(method: &Method) -> Option<String> {
     let out = match method {
         Method::Apt => Command::new("dpkg-query")
@@ -163,9 +156,8 @@ fn installed(method: &Method) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// Keep each binary as `.prev`, then rename the staged one over it. Both
-/// renames are within one directory, so each is atomic; the pair is not, which
-/// is what [`put_back`] is for.
+/// Hard-links each binary to `.prev`, then renames the staged one over it.
+/// Each rename is atomic but the pair isn't; [`put_back`] handles that.
 fn swap(dir: &Path) -> Result<(), String> {
     for name in ["updawgd", "updawgctl"] {
         let live = dir.join(name);
@@ -182,7 +174,6 @@ fn swap(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Put back whatever [`swap`] kept.
 fn put_back(dir: &Path) -> Result<(), String> {
     let mut failed = Vec::new();
     for name in ["updawgd", "updawgctl"] {
@@ -207,7 +198,7 @@ fn restart() {
     }
 }
 
-/// Run it; its output goes to the unit's journal.
+/// Output goes to the unit's journal.
 fn exec(command: &mut Command) -> Result<(), String> {
     let shown = format!("{command:?}");
     say(&format!("running {shown}"));
@@ -221,7 +212,6 @@ fn exec(command: &mut Command) -> Result<(), String> {
     }
 }
 
-/// To the journal, through the unit's stdout.
 #[allow(clippy::print_stdout)]
 fn say(line: &str) {
     println!("{line}");

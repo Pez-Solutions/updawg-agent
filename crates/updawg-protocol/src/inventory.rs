@@ -1,15 +1,14 @@
 //! Inventory: `PUT /agent/v1/inventory`.
 //!
-//! The list of what the agent reports is exhaustive by design. It never
-//! collects file contents, environment variables, process arguments, user data
-//! or credentials, and `updawgctl --print-inventory` prints exactly what these
+//! These types are everything the agent reports. It never collects file
+//! contents, environment variables, process arguments, user data or
+//! credentials, and `updawgctl print-inventory` prints exactly what these
 //! types serialise to.
 //!
 //! Uploads are full or delta. A delta names the hash it was computed against;
-//! if that does not match what the server holds, the server answers 409 with
+//! if that doesn't match what the server holds, the server answers 409 with
 //! [`ApiError::INVENTORY_BASE_MISMATCH`](crate::ApiError::INVENTORY_BASE_MISMATCH)
-//! and the agent sends a full inventory instead. Blindly applying a delta to an
-//! unknown base is how an inventory drifts silently.
+//! and the agent sends a full inventory instead.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -46,38 +45,34 @@ pub struct InstalledPackage {
     pub arch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    /// The source package it was built from, where the package manager says
-    /// (DAWG-212). Advisories and Debian's list of unfixed vulnerabilities
-    /// are per source package, and its **version**, not the binary's, is what
-    /// they compare: a binNMU or an epoch makes the two differ, so the name
-    /// alone cannot be mapped back.
+    /// The source package it was built from, if the package manager says.
+    /// Advisories and Debian's unfixed-vulnerability list compare source
+    /// package versions, which can differ from the binary's (binNMUs, epochs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourcePackage>,
-    /// The module stream it was installed from, as `name:stream` — `nodejs:20`
-    /// (DAWG-236, protocol 0.10). rpm's `MODULARITYLABEL` without its build
-    /// version and context, which say which build of the stream and nothing
-    /// an advisory is about.
+    /// The module stream it was installed from, as `name:stream` (for example
+    /// `nodejs:20`). This is rpm's `MODULARITYLABEL` minus the build version
+    /// and context, which advisories don't care about.
     ///
     /// On the RHEL family a modular package ships once per stream, so one
-    /// advisory can fix `nodejs` at 18.20.4 and at 20.17.0 at once. Which of
-    /// the two applies to a host is the stream its package came from, and
-    /// nothing in the name or version says so.
+    /// advisory can fix `nodejs` at both 18.20.4 and 20.17.0. Only the stream
+    /// tells you which applies.
     ///
-    /// `None` for a package that is not modular, but only when
-    /// [`InventoryUpload::modules_reported`] says the agent looked: from an
-    /// older agent, or from apt, it means nobody asked.
+    /// `None` means not modular only when
+    /// [`InventoryUpload::modules_reported`] is set. From an older agent, or
+    /// from apt, it means nobody looked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
 }
 
-/// A source package, by name and version (DAWG-212).
+/// A source package, by name and version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourcePackage {
     pub name: String,
     pub version: String,
 }
 
-/// Enough to identify a package being removed, without repeating everything.
+/// Enough to identify a removed package.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemovedPackage {
     pub name: String,
@@ -87,10 +82,8 @@ pub struct RemovedPackage {
 
 /// A newer candidate version the package manager is offering.
 ///
-/// Whether this counts as a security update, and how severe it is, is decided
-/// server-side against advisory data. The agent's view is incomplete and
-/// inconsistent between distros, so it reports what it sees and does not
-/// editorialise.
+/// Whether this is a security update, and how severe, is decided server-side
+/// against advisory data. The agent's view varies too much between distros.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableUpdate {
     pub name: String,
@@ -99,92 +92,71 @@ pub struct AvailableUpdate {
     pub candidate: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    /// What the host's own package manager says this update fixes (DAWG-231).
+    /// What the host's own package manager says this update fixes.
     ///
-    /// A **hint**, in the strict sense: it is what the vendor's metadata on
-    /// this host happens to say, and the authoritative classification stays the
-    /// server's, against advisory feeds. The server must not start reading this
-    /// instead — a host's own metadata is exactly as incomplete as its vendor
-    /// chose to make it, and a hint that became the answer would make the
-    /// product's coverage depend on which mirror a customer happens to use.
+    /// Only a hint. The server classifies updates against advisory feeds and
+    /// shouldn't rely on this, since local metadata is only as complete as the
+    /// vendor (or mirror) made it.
     ///
-    /// It is here because on the RHEL family there is nothing else. Debian and
-    /// Ubuntu publish security fixes to a `-security` pocket, which [`repo`]
-    /// already carries; Red Hat and its rebuilds publish a fix and a routine
-    /// rebuild to the same `baseos`, so `repo` carries no signal at all and
-    /// `dnf updateinfo` is the only local thing that does.
+    /// It exists for the RHEL family. Debian and Ubuntu put security fixes in
+    /// a `-security` pocket, which [`repo`] already shows, but Red Hat and its
+    /// rebuilds publish fixes and routine rebuilds to the same `baseos`, so
+    /// `dnf updateinfo` is the only local signal.
     ///
-    /// A list rather than one, because a package can be behind several
-    /// advisories at once — `dnf updateinfo` lists one per version, including
-    /// versions between the installed one and the candidate, and all of them
-    /// are fixed by taking the candidate.
+    /// A package can be behind several advisories at once: `dnf updateinfo`
+    /// lists one per version between the installed one and the candidate.
     ///
     /// [`repo`]: AvailableUpdate::repo
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisories: Vec<AdvisoryHint>,
-    /// The source package the **candidate** is built from, where the package
-    /// manager says (0.7, DAWG-287). Not always the installed package's: a
-    /// kernel's binary is `linux-image-cloud-amd64 6.12.111-1` and its source
-    /// `linux-signed-amd64 6.12.111+1`, which nothing on the server can work
-    /// out from the binary. What the server looks a changelog up by.
+    /// The source package the candidate is built from, if the package manager
+    /// says. The server uses it to look up changelogs. It can't be derived
+    /// from the binary: `linux-image-cloud-amd64 6.12.111-1` comes from
+    /// `linux-signed-amd64 6.12.111+1`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourcePackage>,
 }
 
 /// One advisory the host's package manager attributes to an update.
 ///
-/// Every field is **verbatim**. Normalising here would be a guess made on the
-/// host, and a guess made on the host cannot be corrected later: Red Hat's
-/// rebuilds say `Moderate` where Amazon Linux says `Medium` for the same band,
-/// and deciding they are the same is the server's call against a feed it can
-/// re-read.
+/// Every field is verbatim. Normalisation happens on the server, where it can
+/// be corrected later; Red Hat rebuilds say `Moderate` where Amazon Linux says
+/// `Medium` for the same band.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvisoryHint {
     /// The vendor's advisory id: `RLSA-2026:60226`, `ALAS2023-2025-1194`.
     pub id: String,
-    /// The vendor's severity word, unnormalised, and absent when there is none.
-    ///
-    /// **A bugfix has no severity at all.** Inventing one puts every routine
-    /// rebuild on the same scale as a remote code execution, which is the exact
-    /// noise that makes an operator stop reading.
+    /// The vendor's severity word, if any. Bugfixes usually have none, and we
+    /// don't make one up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<String>,
     /// `security`, `bugfix`, `enhancement`, or whatever else the package
-    /// manager printed. A type nobody has seen before is worth reporting as
-    /// itself rather than folded into one of the three.
+    /// manager printed.
     pub kind: String,
-    /// The version this advisory fixes the package at, when the package manager
-    /// names one. It may be **below** the candidate: several advisories can sit
-    /// between what is installed and what would be installed.
+    /// The version this advisory fixes the package at, if named. May be below
+    /// the candidate when several advisories sit between the installed version
+    /// and the candidate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_in: Option<String>,
 }
 
-/// A package an upgrade would **remove** rather than move to a new version
-/// (DAWG-232).
+/// A package an upgrade would remove rather than move to a new version.
 ///
-/// Its own list, not a shape of [`AvailableUpdate`], because an update has one
-/// name and two versions and this is a removal and possibly an install. Folding
-/// it into an update would put a name and two versions on a row that describes
-/// neither, and it would be believed.
-///
-/// The invisible state is the dangerous one. A host with an obsoleted package
-/// installed is a host where applying updates will take something away, and the
-/// proposal carrying it should say so before anybody approves it rather than
-/// after the job has run.
+/// Kept separate from [`AvailableUpdate`] because it's a removal and maybe an
+/// install, not one package going between two versions. Reported so a
+/// proposal can show that applying updates will remove something before
+/// anyone approves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingRemoval {
     pub name: String,
     pub arch: String,
-    /// The version installed now, which is what would go away.
+    /// The version that would be removed.
     pub installed: String,
-    /// What takes its place, **when the package manager names one**.
+    /// What takes its place, if the package manager says.
     ///
-    /// dnf does: `check-update` prints the obsoleting package above the one it
-    /// obsoletes. apt does not — a simulated `dist-upgrade` prints
-    /// `Remv barpkg [1.0]` and nothing about what caused it, which is why this
-    /// is an `Option` and not two more required fields. Captured from both
-    /// families rather than assumed.
+    /// dnf's `check-update` prints the obsoleting package above the one it
+    /// obsoletes. apt doesn't: a simulated `dist-upgrade` just prints
+    /// `Remv barpkg [1.0]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaced_by: Option<Replacement>,
 }
@@ -203,30 +175,27 @@ pub struct Replacement {
 pub struct Repository {
     pub id: String,
     pub kind: String,
-    /// Not from the distro. These are what break a dist-upgrade when they have
-    /// no packages for the target release.
+    /// Not from the distro. These break a dist-upgrade when they have no
+    /// packages for the target release.
     pub third_party: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Where a third-party repository is fetched from, so the server can ask
-    /// whether it publishes the next release (DAWG-149, protocol 0.6).
+    /// Where a third-party repository is fetched from, so the server can check
+    /// whether it publishes the next release.
     ///
-    /// **Without credentials**: no user name, password, query or fragment —
-    /// see [`public_url`]. `None` for a distribution repository (the upgrade
-    /// rewrites those itself), for one not reached over HTTP, and from agents
-    /// before 0.6.
+    /// Credentials, query and fragment are stripped; see [`public_url`].
+    /// `None` for distribution repositories (the upgrade rewrites those
+    /// itself), for anything not served over HTTP, and from agents before 0.6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
-/// `uri` as it may leave the host (DAWG-149): `http` or `https` only, with
-/// any `user:password@`, `?query` and `#fragment` removed, and no trailing
-/// slash. `None` for anything else — `file:`, `cdrom:`, `mirror+file:`,
-/// `tor+https:`.
+/// `uri` in the form it may leave the host: `http` or `https` only, with any
+/// `user:password@`, `?query` and `#fragment` removed, and no trailing slash.
+/// `None` for anything else (`file:`, `cdrom:`, `mirror+file:`, `tor+https:`).
 ///
-/// A secret written into the **path** (`https://host/<token>/deb`) cannot be
-/// told from a directory name and is sent as it is; that is documented where
-/// repositories are described.
+/// A secret in the path (`https://host/<token>/deb`) looks like a directory
+/// name and is sent as is. The user docs on repositories say so.
 #[must_use]
 pub fn public_url(uri: &str) -> Option<String> {
     let (scheme, rest) = uri.split_once("://")?;
@@ -284,50 +253,44 @@ pub struct InventoryUpload {
     pub repositories: Vec<Repository>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_packages: Vec<String>,
-    /// Packages an upgrade would remove rather than upgrade (DAWG-232).
+    /// Packages an upgrade would remove rather than upgrade.
     ///
-    /// Current state, like [`updates`](InventoryUpload::updates), and sent in
-    /// full on a delta as well as on a full inventory: it describes what the
-    /// package manager would do now, not what changed since last time.
+    /// Like [`updates`](InventoryUpload::updates), this is current state and
+    /// is sent in full on deltas too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removals: Vec<PendingRemoval>,
-    /// The host's package sources are pinned in time (DAWG-233, protocol
-    /// 0.8), so [`updates`](InventoryUpload::updates) is measured against a
-    /// snapshot that does not move: "nothing to install" says nothing about
-    /// how current it is.
+    /// Set when the host's package sources are pinned in time, in which case
+    /// an empty [`updates`](InventoryUpload::updates) doesn't mean the host is
+    /// current.
     ///
-    /// Current state, sent on a delta as well. `None` when nothing pins it,
-    /// and from agents before 0.8.
+    /// Current state, sent on deltas too. `None` when nothing pins it, and
+    /// from agents before 0.8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen: Option<Frozen>,
-    /// Every package in this upload says its module stream, so one with
-    /// [`InstalledPackage::module`] `None` is not modular (DAWG-236, protocol
-    /// 0.10). False from apt hosts, which have no modules, and from agents
-    /// before 0.10, whose `None` means "not asked" — the server has to tell
-    /// those apart, because the first is a fact and the second is not.
+    /// Every package in this upload reports its module stream, so
+    /// [`InstalledPackage::module`] `None` means not modular. False from apt
+    /// hosts, which have no modules, and from agents before 0.10.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub modules_reported: bool,
 }
 
-/// What pins a host's package sources in time (DAWG-233).
+/// What pins a host's package sources in time.
 ///
-/// Amazon Linux 2023 pins every host to a dated release unless told
-/// otherwise; `/etc/dnf/vars/releasever` does the same to any dnf host (a
-/// RHEL minor release, say); an apt host whose distribution sources are all
-/// on snapshot.debian.org or snapshot.ubuntu.com is frozen at that moment.
-/// A private mirror that has stopped syncing looks exactly like a live one
-/// from the host and is not reported: there is nothing on the host to tell.
+/// Amazon Linux 2023 pins every host to a dated release by default;
+/// `/etc/dnf/vars/releasever` does the same on any dnf host (a RHEL minor
+/// release, say); an apt host whose distribution sources all point at
+/// snapshot.debian.org or snapshot.ubuntu.com is frozen at that date. A
+/// private mirror that stopped syncing can't be detected from the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Frozen {
     pub kind: FrozenKind,
     /// What it is pinned to, as the host names it: `2023.5.20240805`, `9.2`,
     /// `20240101T000000Z`.
     pub pinned: String,
-    /// The newest release the host is offered, where the agent can find out
-    /// without changing anything (`dnf check-release-update` on Amazon
-    /// Linux, which offers newer releases but not always the very newest).
-    /// The same as `pinned` when nothing newer is offered; `None` when the
-    /// agent cannot tell.
+    /// The newest release the host is offered, if the agent can find out
+    /// without changing anything (`dnf check-release-update` on Amazon Linux,
+    /// which doesn't always offer the very newest). Equal to `pinned` when
+    /// nothing newer is offered; `None` when the agent can't tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest: Option<String>,
 }
@@ -339,8 +302,7 @@ pub enum FrozenKind {
     Releasever,
     /// The distribution's sources are a dated archive snapshot.
     Snapshot,
-    /// A kind this version does not know, from a newer agent. Still a pin:
-    /// read as one rather than refusing the inventory it came in.
+    /// A kind from a newer agent. Still treated as a pin.
     #[serde(other)]
     Other,
 }
@@ -354,10 +316,7 @@ impl Frozen {
 }
 
 impl InventoryUpload {
-    /// Whether this upload is internally consistent.
-    ///
-    /// A delta without a base hash cannot be applied safely, and a full
-    /// inventory claiming a base is confused about what it is.
+    /// A delta needs a base hash; a full inventory must not have one.
     #[must_use]
     pub fn is_coherent(&self) -> bool {
         match self.kind {
@@ -520,7 +479,7 @@ mod wire_tests {
         let back: AvailableUpdate = serde_json::from_value(json).unwrap();
         assert_eq!(back, kernel);
 
-        // A 0.6 agent's update: no source, and it still reads.
+        // from a 0.6 agent
         let old: AvailableUpdate = serde_json::from_str(
             r#"{"name":"curl","arch":"amd64","installed":"1","candidate":"2"}"#,
         )
@@ -556,9 +515,6 @@ mod wire_tests {
 
     #[test]
     fn a_severity_word_is_not_normalised_on_the_way_past() {
-        // Red Hat's rebuilds say Moderate where Amazon Linux says Medium for the
-        // same band. Deciding they are the same is the server's job, against a
-        // feed it can re-read; a guess made on the host cannot be corrected.
         for word in ["Moderate", "Medium", "Important", "Critical"] {
             let hint = AdvisoryHint {
                 id: "X".into(),
