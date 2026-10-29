@@ -1,3 +1,17 @@
-# build.rs needs the build id inside the cross container.
+# cross builds both release targets in a container, so its C toolchain,
+# linker and strip are part of the output bytes. The images are pinned by
+# digest for reproducible builds; move both together in their own PR.
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:0.2.5@sha256:77db671d8356a64ae72a3e1415e63f547f26d374fbe3c4762c1cd36c7eac7b99"
+
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5@sha256:702154f52b2d8091671aa2c84d5582d849f949977228c735ff8462f93cc0e1e4"
+
+# The build id build.rs needs, and packaging/build.sh's reproducibility
+# settings, inside the container.
 [build.env]
-passthrough = ["UPDAWG_BUILD"]
+passthrough = [
+  "UPDAWG_BUILD",
+  "SOURCE_DATE_EPOCH",
+  "RUSTFLAGS",
+]
