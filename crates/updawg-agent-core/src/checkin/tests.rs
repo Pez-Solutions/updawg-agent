@@ -161,25 +161,117 @@ async fn a_proxy_hanging_up_mid_poll_is_not_treated_as_a_failure() {
     assert!(!outcome.inventory_requested);
 }
 
+/// One cut is not an idle limit: a gateway restart cuts every held poll at a
+/// random point. The agent's own timeout is left alone too; the gateway
+/// decides the hold.
 #[tokio::test]
-async fn a_trimmed_poll_is_recorded_without_changing_the_hold() {
-    let h = harness(vec![Reply::HangUpAfter(Duration::from_secs(6))]).await;
-    assert_eq!(h.checkin.observed_idle_limit(), None);
+async fn one_trimmed_poll_is_not_taken_for_an_idle_limit() {
+    let h = harness(vec![
+        Reply::HangUpAfter(Duration::from_secs(6)),
+        Reply::Now(200, empty_response()),
+    ])
+    .await;
 
     h.checkin.check_in().await.unwrap();
+    h.checkin.check_in().await.unwrap();
 
-    let observed = h
-        .checkin
-        .observed_idle_limit()
-        .expect("should have been recorded");
+    assert_eq!(h.checkin.observed_idle_limit(), None);
+    assert_eq!(h.checkin.requested_hold(), None);
+    let seen = h.gateway.seen.lock().unwrap();
+    let body: serde_json::Value = serde_json::from_str(&seen[1].body).unwrap();
     assert!(
-        observed >= Duration::from_secs(5) && observed < Duration::from_secs(20),
-        "recorded a nonsensical idle limit: {observed:?}"
+        body.get("max_hold_s").is_none(),
+        "one cut should not change the hold asked for: {body}"
     );
     assert_eq!(
         h.checkin.hold(),
         Duration::from_secs(55),
         "the gateway decides the hold; the agent must not quietly give up sooner"
+    );
+}
+
+/// A proxy that trims at 30s every time is believed after [`CONFIRM_CUTS`]
+/// cuts and asked for 20s. A poll answered early in between doesn't reset the
+/// count.
+#[tokio::test]
+async fn cuts_at_the_same_point_converge_on_two_thirds_of_it() {
+    let h = harness(vec![]).await;
+    h.checkin.record_idle_limit(Duration::from_secs(31));
+    h.checkin.record_answered(Duration::from_secs(2));
+    h.checkin.record_idle_limit(Duration::from_secs(30));
+    assert_eq!(h.checkin.requested_hold(), None, "not after two");
+    h.checkin.record_idle_limit(Duration::from_secs(32));
+    assert_eq!(
+        h.checkin.observed_idle_limit(),
+        Some(Duration::from_secs(30)),
+        "the shortest of the run"
+    );
+    assert_eq!(h.checkin.requested_hold(), Some(20));
+}
+
+/// Cuts at random points, as deploys cause, don't change what is asked for,
+/// whether or not a limit has been learned.
+#[tokio::test]
+async fn cuts_at_random_points_do_not_change_the_hold() {
+    let h = harness(vec![]).await;
+    for after in [12, 41, 23, 7, 50] {
+        h.checkin.record_idle_limit(Duration::from_secs(after));
+    }
+    assert_eq!(h.checkin.requested_hold(), None);
+
+    for _ in 0..CONFIRM_CUTS {
+        h.checkin.record_idle_limit(Duration::from_secs(30));
+    }
+    h.checkin.record_idle_limit(Duration::from_secs(7));
+    assert_eq!(h.checkin.requested_hold(), Some(20));
+    // The next poll, held for the 20s asked for, outlives the stray cut.
+    h.checkin.record_answered(Duration::from_secs(20));
+    h.checkin.record_idle_limit(Duration::from_secs(8));
+    h.checkin.record_idle_limit(Duration::from_secs(7));
+    assert_eq!(h.checkin.requested_hold(), Some(20));
+}
+
+/// After [`RELEARN_AFTER`] the full hold is retried; if it survives, the limit
+/// is forgotten and has to be seen [`CONFIRM_CUTS`] times again.
+#[test]
+fn a_learned_limit_is_forgotten_when_the_full_hold_survives() {
+    let start = Instant::now();
+    let thirty = Duration::from_secs(30);
+    let mut limit = IdleLimit::default();
+    assert_eq!(limit.cut(thirty, start), Learned::Nothing);
+    assert_eq!(limit.cut(thirty, start), Learned::Nothing);
+    assert_eq!(limit.cut(thirty, start), Learned::New(thirty));
+
+    let almost = start + RELEARN_AFTER.saturating_sub(Duration::from_secs(1));
+    assert_eq!(limit.current(almost), Some(thirty));
+    assert_eq!(limit.current(start + RELEARN_AFTER), None, "retried");
+
+    limit.answered(Duration::from_secs(55));
+    assert_eq!(limit.cut(thirty, start + RELEARN_AFTER), Learned::Nothing);
+    assert_eq!(limit.current(start + RELEARN_AFTER), None);
+}
+
+/// A limit that still applies after the retry is believed again on the first
+/// cut at the same point, so a network that really trims doesn't flap.
+#[test]
+fn a_limit_that_still_applies_is_believed_again_after_one_cut() {
+    let start = Instant::now();
+    let thirty = Duration::from_secs(30);
+    let mut limit = IdleLimit::default();
+    for _ in 0..CONFIRM_CUTS {
+        limit.cut(thirty, start);
+    }
+    let retry = start + RELEARN_AFTER;
+    assert_eq!(limit.current(retry), None);
+    assert_eq!(
+        limit.cut(Duration::from_secs(29), retry),
+        Learned::Again(Duration::from_secs(29))
+    );
+    assert_eq!(limit.current(retry), Some(Duration::from_secs(29)));
+    assert_eq!(
+        limit.current(retry + RELEARN_AFTER.saturating_sub(Duration::from_secs(1))),
+        Some(Duration::from_secs(29)),
+        "and believed for another hour"
     );
 }
 
@@ -217,22 +309,6 @@ async fn a_gateway_that_fails_immediately_is_still_a_failure() {
         checkin.observed_idle_limit(),
         None,
         "a fast failure says nothing about the network's idle timeout"
-    );
-}
-
-#[tokio::test]
-async fn only_the_shortest_idle_limit_is_kept() {
-    let h = harness(vec![]).await;
-    h.checkin.record_idle_limit(Duration::from_secs(30));
-    h.checkin.record_idle_limit(Duration::from_secs(40));
-    assert_eq!(
-        h.checkin.observed_idle_limit(),
-        Some(Duration::from_secs(30))
-    );
-    h.checkin.record_idle_limit(Duration::from_secs(12));
-    assert_eq!(
-        h.checkin.observed_idle_limit(),
-        Some(Duration::from_secs(12))
     );
 }
 
