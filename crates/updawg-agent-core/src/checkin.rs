@@ -20,6 +20,12 @@
 //! trim. Instead the agent asks for a shorter hold through
 //! `CheckinRequest::max_hold_s`, and keeps the request timeout at the full
 //! hold. Older gateways ignore the field and hold for their default.
+//!
+//! One cut connection says nothing about the network: a gateway restart cuts
+//! every held poll at whatever point it had reached. So a limit is only
+//! learned from the same cut-off seen [`CONFIRM_CUTS`] times in a row, and a
+//! learned limit is dropped after [`RELEARN_AFTER`] to see whether it still
+//! applies.
 
 use crate::{
     scheduler::{CheckIn, CheckinOutcome},
@@ -28,7 +34,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use std::{
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 use updawg_collectors::{StateCollector, SystemState};
@@ -42,6 +48,100 @@ const SETTLED: Duration = Duration::from_secs(5);
 /// trims at 30s gets asked for 20s. The observed limit is only an upper bound
 /// and may vary, hence the margin.
 const HOLD_FRACTION: u32 = 3;
+
+/// Cuts in a row at about the same point before that point is believed. Three
+/// rather than two, because a rolling deploy can cut an agent twice in quick
+/// succession and two random points often land close together.
+const CONFIRM_CUTS: u32 = 3;
+
+/// Two cuts within a fifth of the longer one, or two seconds, count as the
+/// same cut-off. The agent only sees a middlebox's timer through a
+/// connection's lifetime, which includes the request and the TLS handshake.
+const CUT_TOLERANCE: Duration = Duration::from_secs(2);
+
+/// How long a learned limit is believed. A shortened hold never gets cut, so
+/// without retrying the full hold nothing would show that the limit had gone.
+const RELEARN_AFTER: Duration = Duration::from_secs(3600);
+
+fn same_cut(a: Duration, b: Duration) -> bool {
+    a.abs_diff(b) <= CUT_TOLERANCE.max(a.max(b) / 5)
+}
+
+/// What the agent believes about the network's idle limit. Time is passed in
+/// so this can be tested without holding real connections.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct IdleLimit {
+    /// The limit acted on, and when it was learned.
+    learned: Option<(Duration, Instant)>,
+    /// A cut-off seen but not yet believed: the shortest of the run, and how
+    /// many cuts in a row landed near it.
+    candidate: Option<(Duration, u32)>,
+    /// A limit dropped to retry the full hold, so seeing it again can be told
+    /// apart from learning a new one.
+    retrying: Option<Duration>,
+}
+
+/// What a cut changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Learned {
+    Nothing,
+    /// A limit believed for the first time, or a different one.
+    New(Duration),
+    /// The limit being retried, confirmed again.
+    Again(Duration),
+}
+
+impl IdleLimit {
+    /// The limit to act on now. After [`RELEARN_AFTER`] it is dropped, but
+    /// kept as a candidate one cut short of believed, so a network that still
+    /// trims at the same point is believed again after a single cut.
+    fn current(&mut self, now: Instant) -> Option<Duration> {
+        let (limit, at) = self.learned?;
+        if now.saturating_duration_since(at) < RELEARN_AFTER {
+            return Some(limit);
+        }
+        self.learned = None;
+        self.candidate = Some((limit, CONFIRM_CUTS - 1));
+        self.retrying = Some(limit);
+        tracing::debug!(
+            after_s = limit.as_secs(),
+            "retrying the full check-in hold to see whether the idle limit still applies"
+        );
+        None
+    }
+
+    /// A poll was cut off after `survived`.
+    fn cut(&mut self, survived: Duration, now: Instant) -> Learned {
+        let (seen, streak) = match self.candidate {
+            // Keep the shortest of the run: the limit is at most that.
+            Some((seen, streak)) if same_cut(seen, survived) => (seen.min(survived), streak + 1),
+            _ => (survived, 1),
+        };
+        if streak < CONFIRM_CUTS {
+            self.candidate = Some((seen, streak));
+            return Learned::Nothing;
+        }
+        self.candidate = None;
+        self.learned = Some((seen, now));
+        match self.retrying.take() {
+            Some(before) if same_cut(before, seen) => Learned::Again(seen),
+            _ => Learned::New(seen),
+        }
+    }
+
+    /// A poll was answered after `lasted`. One that outlived the candidate
+    /// shows it was not a limit; one answered sooner says nothing.
+    fn answered(&mut self, lasted: Duration) {
+        if self
+            .candidate
+            .is_some_and(|(seen, _)| lasted >= seen && !same_cut(seen, lasted))
+        {
+            self.candidate = None;
+            // The full hold survived, so a limit being retried has gone.
+            self.retrying = None;
+        }
+    }
+}
 
 /// Where jobs go once a check-in returns them. Verifying and running jobs is
 /// kept out of the check-in loop.
@@ -147,9 +247,10 @@ pub struct GatewayCheckIn {
     policy: LocalPolicy,
     snapshots: Option<updawg_protocol::SnapshotSupport>,
     install: Option<updawg_protocol::AgentInstall>,
-    /// Shortest time a poll survived before being cut off. Used for logging
-    /// and for `requested_hold`; the client timeout is not changed.
-    observed_idle_limit: RwLock<Option<Duration>>,
+    /// Where something on the path reliably cuts idle polls, once seen (see
+    /// [`IdleLimit`]). Used for logging and for `requested_hold`; the client
+    /// timeout is not changed.
+    idle_limit: Mutex<IdleLimit>,
     renewal: Mutex<RenewalPlan>,
 }
 
@@ -178,7 +279,7 @@ impl GatewayCheckIn {
             policy,
             snapshots: None,
             install: None,
-            observed_idle_limit: RwLock::new(None),
+            idle_limit: Mutex::new(IdleLimit::default()),
             renewal: Mutex::new(RenewalPlan::new(Instant::now())),
         }
     }
@@ -205,8 +306,9 @@ impl GatewayCheckIn {
         Duration::from_secs(updawg_protocol::CHECKIN_LONG_POLL_SECONDS)
     }
 
-    /// The hold to ask the gateway for. `None` until a poll has actually been
-    /// trimmed, since a shorter hold just means more reconnections.
+    /// The hold to ask the gateway for. `None` until polls have been trimmed
+    /// at the same point [`CONFIRM_CUTS`] times in a row, since a shorter hold
+    /// just means more reconnections.
     #[must_use]
     pub fn requested_hold(&self) -> Option<u64> {
         let observed = self.observed_idle_limit()?.as_secs();
@@ -216,29 +318,41 @@ impl GatewayCheckIn {
         (asked < updawg_protocol::CHECKIN_LONG_POLL_SECONDS).then_some(asked)
     }
 
-    /// The shortest a poll has survived before being cut off, if ever.
+    /// The idle limit the agent currently believes in, if any.
     #[must_use]
     pub fn observed_idle_limit(&self) -> Option<Duration> {
-        self.observed_idle_limit.read().ok().and_then(|l| *l)
+        self.idle_limit
+            .lock()
+            .ok()
+            .and_then(|mut l| l.current(Instant::now()))
     }
 
-    /// Only logs when this is a new minimum, so a network that trims every
-    /// poll logs once.
+    /// Logs when a limit is first believed, or changes, so a network that
+    /// trims every poll logs once.
     fn record_idle_limit(&self, survived: Duration) {
-        let Ok(mut limit) = self.observed_idle_limit.write() else {
+        let Ok(mut limit) = self.idle_limit.lock() else {
             return;
         };
-        if limit.is_some_and(|l| l <= survived) {
-            return;
+        match limit.cut(survived, Instant::now()) {
+            Learned::Nothing => {}
+            Learned::Again(after) => tracing::debug!(
+                after_s = after.as_secs(),
+                "the idle limit still applies; asking for a shorter hold again"
+            ),
+            Learned::New(after) => tracing::info!(
+                after_s = after.as_secs(),
+                hold_s = updawg_protocol::CHECKIN_LONG_POLL_SECONDS,
+                "something between this host and the gateway is closing idle connections before \
+                 the check-in hold elapses; check-ins still work, and the agent now asks for a \
+                 shorter hold"
+            ),
         }
-        *limit = Some(survived);
-        tracing::info!(
-            after_s = survived.as_secs(),
-            hold_s = updawg_protocol::CHECKIN_LONG_POLL_SECONDS,
-            "something between this host and the gateway is closing idle connections before \
-             the check-in hold elapses; check-ins still work, but each one reconnects rather \
-             than waiting out the hold"
-        );
+    }
+
+    fn record_answered(&self, lasted: Duration) {
+        if let Ok(mut limit) = self.idle_limit.lock() {
+            limit.answered(lasted);
+        }
     }
 
     /// Builds the check-in body. Must stay cheap. If a collector fails, the
@@ -397,7 +511,8 @@ impl GatewayCheckIn {
         let response = match result {
             Ok(response) => response,
             // Died after sitting idle for a while: trimmed by something in
-            // between, not a dead gateway. Poll again without backing off.
+            // between, not a dead gateway. Poll again without backing off; if
+            // it keeps happening at the same point, ask for less time.
             Err(TransportError::Unreachable { .. }) if elapsed >= SETTLED => {
                 self.record_idle_limit(elapsed);
                 tracing::debug!(
@@ -411,6 +526,7 @@ impl GatewayCheckIn {
             }
             Err(e) => return Err(e.into()),
         };
+        self.record_answered(elapsed);
 
         for job in response.jobs {
             self.jobs.deliver(job).await;
