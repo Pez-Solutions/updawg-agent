@@ -38,6 +38,11 @@ contents:
     type: config|noreplace
     file_info: { mode: 0644 }
 
+# nfpm records the build machine's hostname in an .rpm unless told otherwise,
+# and that alone made rebuilds on another machine come out different.
+rpm:
+  buildhost: updawg-release
+
 scripts:
   postinstall: packaging/nfpm/postinstall.sh
   preremove: packaging/nfpm/preremove.sh

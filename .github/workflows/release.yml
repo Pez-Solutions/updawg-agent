@@ -7,6 +7,10 @@ name: Release
 #
 # Also packages them as .deb and .rpm and tests install, upgrade and removal
 # on each distro. On PRs this only runs when packaging or this file changes.
+#
+# Builds are reproducible: `reproducible` rebuilds every build from a fresh
+# checkout and compares the bytes, and `provenance` attests each build and
+# publishes the attestation beside the packages.
 on:
   push:
     branches: [main]
@@ -15,6 +19,10 @@ on:
     paths:
       - "packaging/**"
       - ".github/workflows/release.yml"
+      - ".github/actions/cross/**"
+      - ".github/actions/nfpm/**"
+      - "Cross.toml"
+      - "rust-toolchain.toml"
   workflow_dispatch:
 
 permissions:
@@ -31,34 +39,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Static musl build. CI only checks that it compiles; it's linked here.
-      - name: Install Rust and musl
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add x86_64-unknown-linux-musl
-          sudo apt-get update && sudo apt-get install -y musl-tools
+      # Static musl in cross's pinned image, like aarch64: the C toolchain is
+      # part of the output bytes.
+      - uses: ./.github/actions/cross
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-musl
 
       - name: build
-        run: |
-          # Same version string as the packages.
-          export UPDAWG_BUILD=$(sh packaging/release-id.sh)
-          cargo build --release --target x86_64-unknown-linux-musl \
-            --bin updawgd --bin updawgctl
-          ./target/x86_64-unknown-linux-musl/release/updawgctl --version | grep -F -- "-$UPDAWG_BUILD"
-
-      - name: collect
-        run: |
-          mkdir -p out
-          for b in updawgd updawgctl; do
-            cp "target/x86_64-unknown-linux-musl/release/$b" "out/$b"
-            strip "out/$b"
-          done
-          file out/updawgd | tee /dev/stderr | grep -Eq 'x86-64.*(statically linked|static-pie linked)'
+        run: sh packaging/build.sh x86_64-unknown-linux-musl out
 
       - uses: actions/upload-artifact@v7
         with:
@@ -71,24 +61,10 @@ jobs:
     name: aarch64-unknown-linux-musl
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      CROSS_VERSION: v0.2.5
-      # Pinned release tarball.
-      CROSS_SHA256: a486cefa6cb486971b97be321ea9dfc2e90c1979550295314a368f53fab6d588
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust and cross
-        run: |
-          set -eu
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add aarch64-unknown-linux-musl
-          curl -fsSL -o "$RUNNER_TEMP/cross.tar.gz" \
-            "https://github.com/cross-rs/cross/releases/download/${CROSS_VERSION}/cross-x86_64-unknown-linux-musl.tar.gz"
-          echo "$CROSS_SHA256  $RUNNER_TEMP/cross.tar.gz" | sha256sum --check --quiet
-          mkdir -p "$RUNNER_TEMP/cross" && tar -xzf "$RUNNER_TEMP/cross.tar.gz" -C "$RUNNER_TEMP/cross"
-          echo "$RUNNER_TEMP/cross" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/cross
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -96,24 +72,7 @@ jobs:
 
       # cross provides the aarch64 musl C toolchain aws-lc-rs needs.
       - name: build
-        run: |
-          # Passed through to the container by Cross.toml.
-          export UPDAWG_BUILD=$(sh packaging/release-id.sh)
-          cross build --release --target aarch64-unknown-linux-musl \
-            --bin updawgd --bin updawgctl
-
-      - name: collect
-        run: |
-          mkdir -p out
-          for b in updawgd updawgctl; do
-            cp "target/aarch64-unknown-linux-musl/release/$b" "out/$b"
-          done
-          # The runner's strip doesn't handle aarch64; use the container's.
-          docker run --rm -v "$PWD/out:/out" \
-            "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5" \
-            aarch64-linux-musl-strip /out/updawgd /out/updawgctl
-          sudo chown -R "$(id -u):$(id -g)" out
-          file out/updawgd | tee /dev/stderr | grep -Eq 'ARM aarch64.*(statically linked|static-pie linked)'
+        run: sh packaging/build.sh aarch64-unknown-linux-musl out
 
       - uses: actions/upload-artifact@v7
         with:
@@ -180,15 +139,7 @@ jobs:
           name: bin-aarch64
           path: bin/arm64/
 
-      - name: Install nfpm
-        env:
-          NFPM: "2.47.0"
-          NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
-        run: |
-          curl -fsSLo nfpm.tgz \
-            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM}/nfpm_${NFPM}_Linux_x86_64.tar.gz"
-          echo "${NFPM_SHA256}  nfpm.tgz" | sha256sum -c -
-          mkdir -p .nfpm && tar -xzf nfpm.tgz -C .nfpm nfpm
+      - uses: ./.github/actions/nfpm
 
       # Version from Cargo.toml (a tag must match it), release from
       # packaging/release-id.sh.
@@ -206,26 +157,11 @@ jobs:
           bin/amd64/updawgctl --version 2>/dev/null | grep -F -- "${VERSION}-${RELEASE}" ||
             { file bin/amd64/updawgctl; echo "the binaries do not report ${VERSION}-${RELEASE}" >&2; exit 1; }
           echo "version ${VERSION}, release ${RELEASE}"
-          export VERSION
-          stage() {
-            rm -rf stage && mkdir stage
-            install -m 0755 "bin/$1/updawgd" "bin/$1/updawgctl" stage/
-            sed 's|^ExecStart=/usr/local/bin/updawgd$|ExecStart=/usr/bin/updawgd|' \
-              packaging/systemd/updawgd.service > stage/updawgd.service
-            grep -q '^ExecStart=/usr/bin/updawgd$' stage/updawgd.service
-          }
-          mkdir -p out next
           for ARCH in amd64 arm64; do
-            stage $ARCH
-            for fmt in deb rpm; do
-              ARCH=$ARCH RELEASE=$RELEASE .nfpm/nfpm package -f packaging/nfpm/nfpm.yaml -p $fmt -t out/
-            done
+            sh packaging/nfpm/package.sh $ARCH bin/$ARCH out
           done
           # A second build one release ahead, for the upgrade test.
-          stage amd64
-          for fmt in deb rpm; do
-            ARCH=amd64 RELEASE="${RELEASE}.1" .nfpm/nfpm package -f packaging/nfpm/nfpm.yaml -p $fmt -t next/
-          done
+          sh packaging/nfpm/package.sh amd64 bin/amd64 next "${RELEASE}.1"
           (cd out && sha256sum * > SHA256SUMS)
           ls -l out next
 
@@ -285,11 +221,176 @@ jobs:
           done
           [ -z "$failed" ] || { echo "FAILED:$failed"; exit 1; }
 
+  # Rebuilds x86_64's binaries and packages from a fresh checkout on another
+  # machine, with a cold cache and another time zone, and compares the bytes.
+  # Nothing publishes unless they match. aarch64 is the same script in another
+  # image, so it isn't rebuilt.
+  reproducible:
+    name: rebuilt elsewhere, byte for byte
+    needs: [x86_64, packages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: rebuild/somewhere-else
+
+      - uses: ./rebuild/somewhere-else/.github/actions/cross
+
+      - name: build
+        working-directory: rebuild/somewhere-else
+        env:
+          TZ: Pacific/Kiritimati
+        run: sh packaging/build.sh x86_64-unknown-linux-musl "$RUNNER_TEMP/rebuilt/bin"
+
+      # Into the workspace's .nfpm/, which is outside the rebuild's checkout.
+      - uses: ./rebuild/somewhere-else/.github/actions/nfpm
+
+      - name: package
+        working-directory: rebuild/somewhere-else
+        env:
+          TZ: Pacific/Kiritimati
+          NFPM: ${{ github.workspace }}/.nfpm/nfpm
+        run: sh packaging/nfpm/package.sh amd64 "$RUNNER_TEMP/rebuilt/bin" "$RUNNER_TEMP/rebuilt/pkg"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: bin-x86_64
+          path: released/bin/
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: updawg-agent-packages
+          path: released/pkg/
+
+      - name: compare
+        run: |
+          set -u
+          r=$RUNNER_TEMP/rebuilt
+          : > pairs
+          for b in updawgd updawgctl; do echo "released/bin/$b $r/bin/$b" >> pairs; done
+          for f in "$r"/pkg/*; do echo "released/pkg/$(basename "$f") $f" >> pairs; done
+          : > differ
+          while read -r a b; do
+            sa=$(sha256sum < "$a" | cut -d' ' -f1)
+            sb=$(sha256sum < "$b" | cut -d' ' -f1)
+            if [ "$sa" = "$sb" ]; then
+              echo "same      $sa  $(basename "$a")"
+            else
+              echo "DIFFERENT $sa  $a"
+              echo "          $sb  $b"
+              echo "$a $b" >> differ
+            fi
+          done < pairs
+          [ -s differ ] || exit 0
+          echo "::error::the rebuild is not byte for byte the release build"
+          command -v diffoscope >/dev/null ||
+            (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends diffoscope) || true
+          mkdir -p diffoscope
+          while read -r a b; do
+            report="diffoscope/$(basename "$a").txt"
+            diffoscope --text "$report" --max-report-size 20000000 "$a" "$b" || true
+            head -c 20000 "$report" || true
+          done < differ
+          exit 1
+
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diffoscope
+          path: diffoscope/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # SLSA build provenance for every file a host is given, as GitHub artifact
+  # attestations for this workflow and commit. The Sigstore bundle is
+  # published beside the packages, so anyone can check it:
+  #
+  #   gh attestation verify FILE --bundle <version>.sigstore.json \
+  #     --repo Pez-Solutions/updawg-agent \
+  #     --signer-workflow Pez-Solutions/updawg-agent/.github/workflows/release.yml \
+  #     --source-ref refs/heads/main
+  #
+  # Runs on PRs too, so changes here are tried before main (those name the
+  # PR's ref and fail --source-ref). This is in addition to the release key's
+  # signatures, which apt, dnf and self-update still check.
+  provenance:
+    name: build provenance
+    needs: [agent, packages, reproducible]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: updawg-agent-linux-x86_64
+          path: dist/
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: updawg-agent-packages
+          path: out/
+
+      - id: attest
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: |
+            dist/updawgd
+            dist/updawgctl
+            dist/aarch64/updawgd
+            dist/aarch64/updawgctl
+            dist/install.sh
+            dist/updawgd.service
+            out/*.deb
+            out/*.rpm
+
+      # The command from the docs, with a pinned gh: the runner's is too old
+      # for `gh attestation`.
+      - name: verify, as a customer would
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          GH_CLI: "2.102.0"
+          GH_CLI_SHA256: bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+        run: |
+          set -eu
+          curl -fsSLo "$RUNNER_TEMP/gh.tgz" \
+            "https://github.com/cli/cli/releases/download/v${GH_CLI}/gh_${GH_CLI}_linux_amd64.tar.gz"
+          echo "${GH_CLI_SHA256}  $RUNNER_TEMP/gh.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gh.tgz" -C "$RUNNER_TEMP"
+          gh="$RUNNER_TEMP/gh_${GH_CLI}_linux_amd64/bin/gh"
+          cp "$BUNDLE" provenance.sigstore.json
+          for f in out/*_amd64.deb dist/updawgd; do
+            "$gh" attestation verify "$f" --bundle provenance.sigstore.json \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "$GITHUB_REF"
+          done
+          # And again with no token and a trusted root fetched beforehand, as
+          # someone outside the org would.
+          "$gh" attestation trusted-root > trusted_root.jsonl
+          env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$RUNNER_TEMP/gh-nobody" \
+            "$gh" attestation verify out/*_amd64.deb --bundle provenance.sigstore.json \
+            --custom-trusted-root trusted_root.jsonl \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "$GITHUB_REF"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: updawg-agent-provenance
+          path: provenance.sigstore.json
+          if-no-files-found: error
+          retention-days: 30
+
   # Publish every main build that passed the package tests to the beta
   # channel. Stable is promote.yml. Gated on the PKG_PUBLISH repo variable.
   publish:
     name: publish to pkg.updawg.net (beta)
-    needs: [packages, packages-test]
+    needs: [packages, packages-test, reproducible, provenance]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PKG_PUBLISH == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -314,6 +415,11 @@ jobs:
           name: updawg-agent-linux-x86_64
           path: dist/
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: updawg-agent-provenance
+          path: provenance/
+
       - id: tools
         uses: ./.github/actions/pkg-tools
 
@@ -327,6 +433,18 @@ jobs:
             echo "$NEW does not sort after $CURRENT, which beta holds: was the version lowered?" >&2
             exit 1
           fi
+
+      # Before the packages, so nothing is published without it. Written once
+      # to provenance/<version>.sigstore.json like a pool file; promote moves
+      # the same files to stable.
+      - name: the provenance
+        run: |
+          set -eu
+          NEW=$(ls out/*_amd64.deb | sed 's/.*updawg-agent_\(.*\)_amd64\.deb/\1/')
+          object="gs://$BUCKET/provenance/$NEW.sigstore.json"
+          gcloud storage cp --no-clobber --cache-control="public, max-age=31536000, immutable" \
+            --content-type=application/json provenance/provenance.sigstore.json "$object"
+          echo "https://pkg.updawg.net/provenance/$NEW.sigstore.json"
 
       - name: publish
         env:

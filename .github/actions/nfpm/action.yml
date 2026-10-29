@@ -1,0 +1,18 @@
+# nfpm, pinned by checksum, at .nfpm/nfpm (packaging/nfpm/package.sh's
+# default). Shared by the packages job and the rebuild that compares with it.
+name: nfpm
+description: A checksum-pinned nfpm in .nfpm/.
+runs:
+  using: composite
+  steps:
+    - name: nfpm
+      shell: sh
+      env:
+        NFPM: "2.47.0"
+        NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+      run: |
+        set -eu
+        curl -fsSLo "$RUNNER_TEMP/nfpm.tgz" \
+          "https://github.com/goreleaser/nfpm/releases/download/v${NFPM}/nfpm_${NFPM}_Linux_x86_64.tar.gz"
+        echo "${NFPM_SHA256}  $RUNNER_TEMP/nfpm.tgz" | sha256sum -c -
+        mkdir -p .nfpm && tar -xzf "$RUNNER_TEMP/nfpm.tgz" -C .nfpm nfpm

@@ -1,0 +1,25 @@
+# The toolchain rust-toolchain.toml names, and cross, pinned: everything the
+# release builds (packaging/build.sh) need besides Docker. Shared by the
+# builds and by the job that rebuilds them to compare.
+name: Rust and cross
+description: rust-toolchain.toml's toolchain and a checksum-pinned cross.
+runs:
+  using: composite
+  steps:
+    - name: Rust and cross
+      shell: sh
+      env:
+        CROSS_VERSION: v0.2.5
+        # Of the release tarball, pinned: it builds what runs as root on other
+        # people's servers.
+        CROSS_SHA256: a486cefa6cb486971b97be321ea9dfc2e90c1979550295314a368f53fab6d588
+      run: |
+        set -eu
+        # No arguments: rust-toolchain.toml's channel, components and targets.
+        rustup toolchain install
+        rustc --version
+        curl -fsSL -o "$RUNNER_TEMP/cross.tar.gz" \
+          "https://github.com/cross-rs/cross/releases/download/${CROSS_VERSION}/cross-x86_64-unknown-linux-musl.tar.gz"
+        echo "$CROSS_SHA256  $RUNNER_TEMP/cross.tar.gz" | sha256sum --check --quiet
+        mkdir -p "$RUNNER_TEMP/cross" && tar -xzf "$RUNNER_TEMP/cross.tar.gz" -C "$RUNNER_TEMP/cross"
+        echo "$RUNNER_TEMP/cross" >> "$GITHUB_PATH"

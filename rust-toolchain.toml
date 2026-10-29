@@ -1,0 +1,9 @@
+# One compiler for every build: the same source and this toolchain
+# give the same bytes, and "the same toolchain" has to mean a version, not
+# whatever `stable` was that morning. Moved by hand, in a pull request of its
+# own, so a compiler change is never folded into an unrelated one.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
