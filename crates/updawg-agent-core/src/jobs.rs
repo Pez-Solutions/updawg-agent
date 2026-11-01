@@ -43,7 +43,7 @@ use updawg_executor::health::{self, Check};
 use updawg_protocol::{
     HealthCheckReport, InstalledPackage, Job, JobAck, JobComplete, JobKind, JobStatus,
     PackageChange,
-    job::{JobSpec, RebootPolicy, SnapshotPolicy},
+    job::{JobSpec, PackagePin, RebootPolicy, SnapshotPolicy},
 };
 use updawg_snapshots::SnapshotProvider;
 
@@ -198,6 +198,13 @@ pub fn check_job(
         return Err(format!("the job may not start until {start}"));
     }
     Ok(())
+}
+
+/// Refuses pins that aren't plain names, architectures and versions. They
+/// become arguments to the package manager, so this runs before anything
+/// else looks at them.
+fn check_pins(pins: &[PackagePin]) -> std::result::Result<(), String> {
+    pins.iter().try_for_each(PackagePin::check)
 }
 
 pub struct Executor {
@@ -555,6 +562,7 @@ impl Executor {
     fn work_for(&self, job: &Job) -> std::result::Result<Work, String> {
         Ok(match &job.spec {
             JobSpec::ApplyUpdates(apply) => {
+                check_pins(&apply.packages)?;
                 let Some(backend) = self.backend.clone() else {
                     return Err("this host has no package manager the agent can drive".into());
                 };
@@ -591,14 +599,17 @@ impl Executor {
             }
             JobSpec::Reboot(reboot) => Work::Reboot(reboot.policy),
             // read-only, so observe mode allows it
-            JobSpec::RunPreflight(preflight) => Work::Preflight(
-                preflight.clone(),
-                self.backend.clone(),
-                self.snapshots
-                    .as_ref()
-                    .map(|p| p.provider().name().to_owned())
-                    .map_err(Clone::clone),
-            ),
+            JobSpec::RunPreflight(preflight) => {
+                check_pins(&preflight.packages)?;
+                Work::Preflight(
+                    preflight.clone(),
+                    self.backend.clone(),
+                    self.snapshots
+                        .as_ref()
+                        .map(|p| p.provider().name().to_owned())
+                        .map_err(Clone::clone),
+                )
+            }
             JobSpec::Snapshot(snapshot) => Work::Snapshot(
                 self.provider_for(job)?,
                 snapshot
@@ -2736,6 +2747,48 @@ argv = ["sh", "-c", "echo app is down >&2; exit 1"]
         let refused = refusals(&w);
         assert!(refused[0].contains("not a snapshot"), "{refused:?}");
         assert_eq!(snapshots.rolled_back.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_signed_job_with_a_package_name_that_is_an_option_is_refused() {
+        let w = world("managed", succeeds);
+        w.executor
+            .deliver(job(&w, |j| {
+                j.spec = JobSpec::ApplyUpdates(ApplyUpdates {
+                    packages: vec![PackagePin {
+                        name: "--eval=%(id)".into(),
+                        arch: "x86_64".into(),
+                        from: "3.5.1-1".into(),
+                        to: "3.5.1-2".into(),
+                    }],
+                    ..ApplyUpdates::default()
+                });
+            }))
+            .await;
+        let refused = refusals(&w);
+        assert!(refused[0].contains("not a package name"), "{refused:?}");
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_preflight_with_a_version_that_is_an_option_is_refused_in_observe_mode_too() {
+        let w = world_allowing("observe", succeeds, "", "\"preflight\"");
+        w.executor
+            .deliver(job(&w, |j| {
+                j.spec = JobSpec::RunPreflight(updawg_protocol::job::Preflight {
+                    target_release: None,
+                    packages: vec![PackagePin {
+                        name: "openssl".into(),
+                        arch: "amd64".into(),
+                        from: "3.5.1-1".into(),
+                        to: "--define=x".into(),
+                    }],
+                });
+            }))
+            .await;
+        let refused = refusals(&w);
+        assert!(refused[0].contains("not a version"), "{refused:?}");
+        assert!(w.gateway.completes.lock().unwrap().is_empty());
     }
 
     /// With `/boot` on `/` the kernel is rolled back with everything else,
