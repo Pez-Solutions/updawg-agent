@@ -2,7 +2,7 @@
 name = "updawg-protocol"
 description = "Wire types for the Updawg agent API: the contract between the Updawg agent and its gateway."
 # Versioned separately from the agent; bumped when the wire format changes.
-version = "0.12.0"
+version = "0.12.1"
 edition.workspace = true
 # Lower than the agent's MSRV on purpose, so consumers on older toolchains can
 # use it. Edition 2024 is the real floor.

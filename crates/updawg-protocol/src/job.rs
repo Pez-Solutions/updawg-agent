@@ -78,6 +78,56 @@ pub struct PackagePin {
     pub to: String,
 }
 
+impl PackagePin {
+    /// Whether every field is spelt the way a Debian or RPM package name,
+    /// architecture and version can be.
+    ///
+    /// These fields become arguments to apt, dpkg, rpm and dnf, and a value
+    /// starting with `-` would be read as an option, so the agent refuses a
+    /// job with any pin that fails this before running anything. `from` may
+    /// be empty: it is only compared, never passed to a command.
+    ///
+    /// # Errors
+    /// Which field is malformed, with the value escaped for printing.
+    pub fn check(&self) -> Result<(), String> {
+        let name_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-');
+        let version_char = |c: char| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '~' | ':' | '^' | '_' | '-')
+        };
+        let plain = |value: &str, max: usize, ok: &dyn Fn(char) -> bool| {
+            value.len() <= max
+                && value.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                && value.chars().all(ok)
+        };
+        if !plain(&self.name, 255, &name_char) {
+            return Err(format!(
+                "package name {:?} is not a package name",
+                self.name
+            ));
+        }
+        let arch_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_';
+        if !(self.arch.is_empty() || plain(&self.arch, 32, &arch_char)) {
+            return Err(format!(
+                "{} has architecture {:?}, which is not an architecture",
+                self.name, self.arch
+            ));
+        }
+        if !plain(&self.to, 255, &version_char) {
+            return Err(format!(
+                "{} has version {:?}, which is not a version",
+                self.name, self.to
+            ));
+        }
+        if !(self.from.is_empty() || plain(&self.from, 255, &version_char)) {
+            return Err(format!(
+                "{} has installed version {:?}, which is not a version",
+                self.name, self.from
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SnapshotPolicy {
@@ -411,6 +461,120 @@ mod tests {
             job.signing_bytes().unwrap(),
             SignaturePurpose::Endorsement.bytes_to_sign(&document)
         );
+    }
+
+    fn pin(name: &str, arch: &str, from: &str, to: &str) -> PackagePin {
+        PackagePin {
+            name: name.into(),
+            arch: arch.into(),
+            from: from.into(),
+            to: to.into(),
+        }
+    }
+
+    #[test]
+    fn real_package_pins_pass_the_check() {
+        for p in [
+            pin("openssl", "amd64", "3.0.13-0ubuntu3.3", "3.0.13-0ubuntu3.4"),
+            pin("libstdc++6", "arm64", "14.2.0-19", "14.2.0-19+deb13u1"),
+            pin("base-files", "all", "13.8+deb13u6", "13.8+deb13u7"),
+            pin("tzdata", "", "2025b-0+deb12u1", "2025b-0+deb12u2"),
+            pin("linux-image-6.12.48+deb13-amd64", "amd64", "", "6.12.48-1"),
+            pin(
+                "openssl-libs",
+                "aarch64",
+                "1:3.5.1-3.el9",
+                "1:3.5.5-5.el9_8",
+            ),
+            pin("perl-Net-SSLeay", "x86_64", "1.92-2.el9", "1.94-1.el9"),
+            pin(
+                "NetworkManager",
+                "x86_64",
+                "1:1.48.10-2.el9",
+                "1:1.48.10-5.el9_5",
+            ),
+            pin(
+                "python3.12",
+                "noarch",
+                "3.12.1-4.el9",
+                "3.12.5-2.el9~beta^1",
+            ),
+            pin("vim", "amd64", "2:9.1.1230-2", "2:9.1.1230-2+b1"),
+        ] {
+            assert_eq!(p.check(), Ok(()), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn a_pin_that_could_be_read_as_an_option_fails_the_check() {
+        let good = pin("openssl", "x86_64", "1:3.5.1-3.el9", "1:3.5.5-5.el9_8");
+        for bad in [
+            PackagePin {
+                name: "--eval=%(id)".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                name: "-q".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                name: String::new(),
+                ..good.clone()
+            },
+            PackagePin {
+                name: "open ssl".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                name: "openssl\u{1b}[2K".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                name: "../openssl".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                name: "a".repeat(256),
+                ..good.clone()
+            },
+            PackagePin {
+                arch: "--define=x".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                arch: "X86_64".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                to: "-1".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                to: String::new(),
+                ..good.clone()
+            },
+            PackagePin {
+                to: "1.0 --force".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                to: "1.0%{x}".into(),
+                ..good.clone()
+            },
+            PackagePin {
+                from: "--x".into(),
+                ..good.clone()
+            },
+        ] {
+            assert!(bad.check().is_err(), "{bad:?} passed");
+        }
+    }
+
+    #[test]
+    fn a_failed_check_escapes_the_value() {
+        let bad = pin("openssl\u{1b}[1A", "amd64", "1", "2");
+        let reason = bad.check().unwrap_err();
+        assert!(!reason.contains('\u{1b}'), "{reason}");
     }
 
     #[test]

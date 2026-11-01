@@ -947,6 +947,7 @@ async fn installed_versions(pins: &[Pin]) -> Result<std::collections::BTreeMap<S
     let mut args = vec![
         "-W".to_owned(),
         "-f=${Package}:${Architecture}\t${Version}\t${db:Status-Status}\n".to_owned(),
+        "--".to_owned(),
     ];
     args.extend(names);
     // exit 1 just means one of them isn't installed

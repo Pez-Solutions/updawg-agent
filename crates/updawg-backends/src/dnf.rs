@@ -984,7 +984,12 @@ pub fn changes(todo: &[&Pin], after: &BTreeMap<String, Vec<String>>) -> Result<V
 /// [`parse_versions`].
 #[must_use]
 pub fn query_args(pins: &[Pin]) -> Vec<String> {
-    let mut args = vec!["-q".to_owned(), "--qf".to_owned(), RPM_Q_QF.to_owned()];
+    let mut args = vec![
+        "-q".to_owned(),
+        "--qf".to_owned(),
+        RPM_Q_QF.to_owned(),
+        "--".to_owned(),
+    ];
     args.extend(pins.iter().map(|p| key(&p.name, &p.arch)));
     args
 }

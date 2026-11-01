@@ -638,7 +638,7 @@ pub fn parse_dkms(out: &str) -> Vec<String> {
 /// Debian: each package's conffiles as dpkg recorded them, and whether the
 /// file's MD5 still matches. For a release upgrade, every package's.
 async fn deb_modified_conffiles(planned: &[String]) -> Result<Vec<String>, String> {
-    let mut args = vec!["-W", "-f=${Conffiles}\n"];
+    let mut args = vec!["-W", "-f=${Conffiles}\n", "--"];
     args.extend(planned.iter().map(String::as_str));
     let Some((_, out)) = read("dpkg-query", &args).await else {
         return Err("dpkg-query could not be run".into());
@@ -647,7 +647,8 @@ async fn deb_modified_conffiles(planned: &[String]) -> Result<Vec<String>, Strin
     if recorded.is_empty() {
         return Ok(vec![]);
     }
-    let files: Vec<&str> = recorded.iter().map(|(f, _)| f.as_str()).collect();
+    let mut files = vec!["--"];
+    files.extend(recorded.iter().map(|(f, _)| f.as_str()));
     // files removed since are just missing from md5sum's output
     let Some((_, sums)) = read("md5sum", &files).await else {
         return Err("md5sum could not be run".into());
@@ -695,8 +696,10 @@ async fn rpm_modified_conffiles(planned: &[String]) -> Result<Vec<String>, Strin
     let mut args = vec!["-V", "--configfiles"];
     if planned.is_empty() {
         args.push("-a");
+    } else {
+        args.push("--");
+        args.extend(planned.iter().map(String::as_str));
     }
-    args.extend(planned.iter().map(String::as_str));
     // exits 1 when anything differs, so the status is ignored
     let Some((_, out)) = read("rpm", &args).await else {
         return Err("rpm could not be run".into());
