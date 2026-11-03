@@ -21,6 +21,8 @@ jobs:
   promote:
     name: promote ${{ inputs.release }} to stable
     if: github.ref == 'refs/heads/main'
+    # Approved like publish in release.yml, for the same reason.
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
