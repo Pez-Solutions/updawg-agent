@@ -392,6 +392,9 @@ jobs:
     name: publish to pkg.updawg.net (beta)
     needs: [packages, packages-test, reproducible, provenance]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PKG_PUBLISH == 'true'
+    # A reviewer approves each run before it can sign; the release signer
+    # only trusts this environment (updawg-infra, terraform/gcp/packages.tf).
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # Each publish rebuilds the channel index, so they can't overlap.
