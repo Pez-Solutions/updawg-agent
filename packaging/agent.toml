@@ -11,7 +11,9 @@ mode = "managed"
 
 # Enterprise, when your organization holds its own signing key: the public key
 # `updawgctl keygen` printed. This host then pins only that key, and any key
-# that does not lead back to it is refused.
+# that does not lead back to it is refused. Set on a host already enrolled,
+# it refuses every job until `updawgctl enroll --force` if what the host
+# pinned before doesn't lead back to it.
 # trusted_org_key = "MCowBQYDK2VwAyEA..."
 
 [permissions]
