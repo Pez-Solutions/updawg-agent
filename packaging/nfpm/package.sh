@@ -18,7 +18,7 @@ bin=${2:?binaries}
 out=${3:?output directory}
 RELEASE=${4:-$(sh packaging/release-id.sh)}
 NFPM=${NFPM:-.nfpm/nfpm}
-VERSION=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+VERSION=$(sh packaging/version.sh)
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 export VERSION RELEASE SOURCE_DATE_EPOCH
 

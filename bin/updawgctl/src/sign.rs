@@ -456,7 +456,7 @@ impl Api {
             ),
             token: options.token.clone(),
             client: reqwest::Client::builder()
-                .user_agent(concat!("updawgctl/", env!("CARGO_PKG_VERSION")))
+                .user_agent(format!("updawgctl/{}", updawg_agent_core::VERSION))
                 .build()?,
         })
     }
