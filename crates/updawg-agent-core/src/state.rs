@@ -12,9 +12,10 @@
 //! Writes go to a temp file that is renamed into place. A truncated identity
 //! file after a power loss would stop the agent from starting at all.
 
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -100,6 +101,9 @@ const SEEN_JOBS_CAPACITY: usize = 2048;
 // protection.
 const _: () = assert!(SEEN_JOBS_CAPACITY >= 1024);
 
+/// How long past its expiry a job's id is kept, in case the clock goes back.
+const SEEN_JOBS_MARGIN: Duration = Duration::days(1);
+
 /// The inventory this host last uploaded, as it was sent.
 ///
 /// Persisted so a restart doesn't look like an inventory change and the next
@@ -119,7 +123,14 @@ pub struct InventorySnapshot {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SeenJobs {
+    /// Newest last, at most [`SEEN_JOBS_CAPACITY`]. Older agents read only
+    /// this, so it is still written for one that a self-update rolls back to.
     ids: VecDeque<String>,
+    /// Each job's id and when it expires, kept until then (plus
+    /// [`SEEN_JOBS_MARGIN`]) however many come after it, so a job can't be
+    /// forgotten while it would still verify.
+    #[serde(default)]
+    jobs: BTreeMap<String, DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -280,20 +291,30 @@ impl LocalState {
 
     pub fn has_seen_job(&self, id: &JobId) -> Result<bool> {
         let seen: SeenJobs = self.read_json("seen-jobs.json")?.unwrap_or_default();
-        Ok(seen.ids.iter().any(|s| s == id.as_str()))
+        Ok(seen.jobs.contains_key(id.as_str()) || seen.ids.iter().any(|s| s == id.as_str()))
     }
 
-    /// Record a job as handled. Oldest entries fall off once the list is full.
-    pub fn record_job(&self, id: &JobId) -> Result<()> {
-        self.record_job_bounded(id, SEEN_JOBS_CAPACITY)
+    /// Record a job as handled, until `expires_at` has passed. Only a job
+    /// whose signature verified belongs here: anything else would let a
+    /// stream of made-up jobs fill the record.
+    pub fn record_job(&self, id: &JobId, expires_at: DateTime<Utc>) -> Result<()> {
+        self.record_job_bounded(id, expires_at, Utc::now(), SEEN_JOBS_CAPACITY)
     }
 
-    fn record_job_bounded(&self, id: &JobId, capacity: usize) -> Result<()> {
+    fn record_job_bounded(
+        &self,
+        id: &JobId,
+        expires_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+        capacity: usize,
+    ) -> Result<()> {
         let mut seen: SeenJobs = self.read_json("seen-jobs.json")?.unwrap_or_default();
-        if seen.ids.iter().any(|s| s == id.as_str()) {
-            return Ok(());
+        seen.jobs
+            .retain(|_, expires| *expires + SEEN_JOBS_MARGIN > now);
+        seen.jobs.insert(id.as_str().to_string(), expires_at);
+        if !seen.ids.iter().any(|s| s == id.as_str()) {
+            seen.ids.push_back(id.as_str().to_string());
         }
-        seen.ids.push_back(id.as_str().to_string());
         while seen.ids.len() > capacity {
             seen.ids.pop_front();
         }
@@ -632,7 +653,7 @@ mod tests {
         let (state, dir) = temp_state();
         let id = JobId::new("job_01J9ZD");
         assert!(!state.has_seen_job(&id).unwrap());
-        state.record_job(&id).unwrap();
+        state.record_job(&id, later()).unwrap();
         assert!(state.has_seen_job(&id).unwrap());
 
         let reopened = LocalState::new(&dir);
@@ -647,24 +668,79 @@ mod tests {
     fn recording_the_same_job_twice_is_harmless() {
         let (state, dir) = temp_state();
         let id = JobId::new("job_dup");
-        state.record_job(&id).unwrap();
-        state.record_job(&id).unwrap();
+        state.record_job(&id, later()).unwrap();
+        state.record_job(&id, later()).unwrap();
         fs::remove_dir_all(dir).ok();
+    }
+
+    fn later() -> DateTime<Utc> {
+        Utc::now() + Duration::hours(1)
     }
 
     // Small capacity: each record is an fsync.
     #[test]
-    fn seen_jobs_stay_bounded() {
+    fn a_job_is_remembered_until_it_expires_however_many_follow_it() {
         let (state, dir) = temp_state();
+        let now = Utc::now();
         for i in 0..12 {
             state
-                .record_job_bounded(&JobId::new(format!("job_{i}")), 8)
+                .record_job_bounded(
+                    &JobId::new(format!("job_{i}")),
+                    now + Duration::hours(1),
+                    now,
+                    8,
+                )
                 .unwrap();
         }
-        assert!(!state.has_seen_job(&JobId::new("job_0")).unwrap());
-        assert!(!state.has_seen_job(&JobId::new("job_3")).unwrap());
+        assert!(state.has_seen_job(&JobId::new("job_0")).unwrap());
         assert!(state.has_seen_job(&JobId::new("job_11")).unwrap());
-        assert!(state.has_seen_job(&JobId::new("job_4")).unwrap());
+        // the list older agents read stays bounded
+        let seen: SeenJobs = state.read_json("seen-jobs.json").unwrap().unwrap();
+        assert_eq!(seen.ids.len(), 8);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_job_is_forgotten_a_day_after_it_expires() {
+        let (state, dir) = temp_state();
+        let now = Utc::now();
+        let old = JobId::new("job_old");
+        state
+            .record_job_bounded(&old, now - Duration::days(2), now - Duration::days(3), 1)
+            .unwrap();
+        state
+            .record_job_bounded(&JobId::new("job_a"), now, now, 1)
+            .unwrap();
+        state
+            .record_job_bounded(&JobId::new("job_b"), now, now, 1)
+            .unwrap();
+        assert!(!state.has_seen_job(&old).unwrap());
+        // expired an hour ago: still inside the margin
+        state
+            .record_job_bounded(&JobId::new("job_c"), now - Duration::hours(1), now, 1)
+            .unwrap();
+        state
+            .record_job_bounded(&JobId::new("job_d"), now, now, 1)
+            .unwrap();
+        assert!(state.has_seen_job(&JobId::new("job_c")).unwrap());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_record_written_by_an_older_agent_still_counts() {
+        let (state, dir) = temp_state();
+        fs::write(
+            dir.join("seen-jobs.json"),
+            br#"{"ids":["job_from_before"]}"#,
+        )
+        .unwrap();
+        assert!(state.has_seen_job(&JobId::new("job_from_before")).unwrap());
+        state.record_job(&JobId::new("job_new"), later()).unwrap();
+        assert!(state.has_seen_job(&JobId::new("job_from_before")).unwrap());
+        // and an older agent can still read what this one wrote
+        let raw: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("seen-jobs.json")).unwrap()).unwrap();
+        assert_eq!(raw["ids"][1], "job_new");
         fs::remove_dir_all(dir).ok();
     }
 
@@ -673,12 +749,16 @@ mod tests {
         let (state, dir) = temp_state();
         state.save_identity(&identity()).unwrap();
         state
-            .record_job(&JobId::new("job_before_snapshot"))
+            .record_job(&JobId::new("job_before_snapshot"), later())
             .unwrap();
         let at_snapshot = fs::read(dir.join("seen-jobs.json")).unwrap();
 
-        state.record_job(&JobId::new("job_install")).unwrap();
-        state.record_job(&JobId::new("job_rollback")).unwrap();
+        state
+            .record_job(&JobId::new("job_install"), later())
+            .unwrap();
+        state
+            .record_job(&JobId::new("job_rollback"), later())
+            .unwrap();
         let carried = state.carry().unwrap();
         assert!(!format!("{carried:?}").contains("BEGIN"), "{carried:?}");
 

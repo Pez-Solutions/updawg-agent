@@ -69,6 +69,12 @@ pub fn snapshot_support(snapshots: &Snapshots) -> updawg_protocol::SnapshotSuppo
 /// then anyway.
 const EARLY: Duration = Duration::minutes(5);
 
+/// The longest a job may stay runnable, from when it may start (or now) to
+/// when it expires. The server's last an hour to a day, or one maintenance
+/// window; a job valid for longer is one that could be held back and
+/// replayed long after anyone approved it.
+pub const MAX_JOB_LIFETIME: Duration = Duration::days(7);
+
 /// Rebooting, behind a trait so tests never do it for real.
 #[async_trait]
 pub trait Rebooter: Send + Sync {
@@ -170,8 +176,9 @@ fn log_answer(job: &Job, what: &str, answer: JobAnswer) {
     }
 }
 
-/// Checks that a delivered job is addressed to this host, verifies, and is
-/// within its time window. Local policy is checked separately.
+/// Checks that a delivered job is addressed to this host, verifies, is within
+/// its time window, and that the window is no longer than
+/// [`MAX_JOB_LIFETIME`]. Local policy is checked separately.
 ///
 /// # Errors
 /// The reason for refusal, as it should appear in the report.
@@ -196,6 +203,14 @@ pub fn check_job(
         && start > now + EARLY
     {
         return Err(format!("the job may not start until {start}"));
+    }
+    let from = job.not_before.map_or(now, |start| start.max(now));
+    if job.expires_at - from > MAX_JOB_LIFETIME {
+        return Err(format!(
+            "the job stays valid until {}, longer than the {} days this host accepts",
+            job.expires_at,
+            MAX_JOB_LIFETIME.num_days()
+        ));
     }
     Ok(())
 }
@@ -638,6 +653,30 @@ impl Executor {
         })
     }
 
+    /// The keys a job must verify against. With `trusted_org_key` set, the
+    /// anchor and the keys that chain from it, worked out again for every
+    /// job: a host enrolled before the operator set it must not go on
+    /// trusting a key that doesn't lead back to it.
+    fn pinned_keys(&self, identity: &crate::state::Identity) -> Result<PinnedKeys, String> {
+        let anchor = self
+            .config
+            .trusted_org_key()
+            .map_err(|e| format!("trusted_org_key in agent.toml is unusable: {e}"))?;
+        match anchor {
+            None => PinnedKeys::from_wire(&identity.org_signing_keys)
+                .map_err(|e| format!("this host's pinned organization keys are unusable: {e}")),
+            Some(anchor) => {
+                PinnedKeys::anchored(&anchor, &identity.org_signing_keys).map_err(|e| {
+                    format!(
+                        "this host's pinned organization keys don't all lead back to \
+                     trusted_org_key in agent.toml ({e}); re-enroll it with \
+                     `updawgctl enroll --force`"
+                    )
+                })
+            }
+        }
+    }
+
     /// Everything up to and including the ack. `None` if the job was ignored
     /// or refused.
     async fn admit(&self, job: &Job) -> Option<Work> {
@@ -657,13 +696,6 @@ impl Executor {
                 return None;
             }
         }
-        // Record it before anything else, refusals included, so a crash
-        // from here on can't bring it back on restart.
-        if let Err(error) = self.state.record_job(&job.id) {
-            tracing::error!(job = %job.id, %error, "cannot record the job; not running it");
-            return None;
-        }
-
         let Ok(Some(identity)) = self.state.identity() else {
             self.refuse(
                 job,
@@ -672,19 +704,23 @@ impl Executor {
             .await;
             return None;
         };
-        let keys = match PinnedKeys::from_wire(&identity.org_signing_keys) {
+        let keys = match self.pinned_keys(&identity) {
             Ok(keys) => keys,
-            Err(error) => {
-                self.refuse(
-                    job,
-                    format!("this host's pinned organization keys are unusable: {error}"),
-                )
-                .await;
+            Err(reason) => {
+                self.refuse(job, reason).await;
                 return None;
             }
         };
+        // Not recorded: only a genuine job is, or a stream of made-up ones
+        // could crowd real ones out of the record.
         if let Err(reason) = check_job(job, identity.host_id.as_str(), &keys, Utc::now()) {
             self.refuse(job, reason).await;
+            return None;
+        }
+        // Recorded before anything else, refusals from here on included, so
+        // a crash can't bring it back on restart.
+        if let Err(error) = self.state.record_job(&job.id, job.expires_at) {
+            tracing::error!(job = %job.id, %error, "cannot record the job; not running it");
             return None;
         }
         if let Some(reason) = self.not_permitted(job) {
@@ -1884,6 +1920,97 @@ mod tests {
         assert!(refused[1].contains("hst_somebody_else"), "{}", refused[1]);
         assert!(refused[2].contains("expired"), "{}", refused[2]);
         assert!(refused[3].contains("may not start"), "{}", refused[3]);
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_job_valid_for_longer_than_a_week_is_refused() {
+        let w = world("managed", succeeds);
+        w.executor
+            .deliver(job(&w, |j| j.expires_at = Utc::now() + Duration::days(8)))
+            .await;
+        let refused = refusals(&w);
+        assert!(refused[0].contains("longer than the 7 days"), "{refused:?}");
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_jobs_lifetime_counts_from_when_it_may_start() {
+        let w = world("managed", succeeds);
+        let keys = PinnedKeys::from_wire(
+            &w.executor
+                .state
+                .identity()
+                .unwrap()
+                .unwrap()
+                .org_signing_keys,
+        )
+        .unwrap();
+        let now = Utc::now();
+        // a window that opened a minute ago and closes in four hours
+        let windowed = job(&w, |j| {
+            j.not_before = Some(now - Duration::minutes(1));
+            j.expires_at = now + Duration::hours(4);
+        });
+        assert_eq!(check_job(&windowed, HOST, &keys, now), Ok(()));
+        // long since open, but still runnable for eight more days
+        let long = job(&w, |j| {
+            j.not_before = Some(now - Duration::days(30));
+            j.expires_at = now + Duration::days(8);
+        });
+        assert!(check_job(&long, HOST, &keys, now).is_err());
+    }
+
+    /// A gateway that can't sign can still send any number of jobs. None of
+    /// them may push a genuine one out of the record, or it would run again.
+    #[tokio::test]
+    async fn unsigned_jobs_cannot_make_the_host_forget_a_genuine_one() {
+        let w = world("managed", succeeds);
+        let genuine = job(&w, |_| {});
+        w.executor.deliver(genuine.clone()).await;
+        completed(&w).await;
+        for _ in 0..2100 {
+            let mut junk = job(&w, |_| {});
+            junk.signature = "bm90IGEgc2lnbmF0dXJl".into();
+            w.executor.deliver(junk).await;
+        }
+        w.executor.deliver(genuine).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 1);
+        assert!(refusals(&w).iter().all(|r| r.contains("does not verify")));
+    }
+
+    fn trusting(w: &mut World, public_spki: &[u8]) {
+        w.executor.config.trusted_org_key =
+            Some(base64::engine::general_purpose::STANDARD.encode(public_spki));
+    }
+
+    #[tokio::test]
+    async fn with_trusted_org_key_set_a_job_from_its_key_runs() {
+        let mut w = world("managed", succeeds);
+        let mut spki = updawg_crypto::ED25519_SPKI_PREFIX.to_vec();
+        spki.extend_from_slice(w.key.public_key().as_ref());
+        trusting(&mut w, &spki);
+        w.executor.deliver(job(&w, |_| {})).await;
+        assert_eq!(completed(&w).await.status, JobStatus::Succeeded);
+    }
+
+    /// The host was enrolled before `trusted_org_key` was set, so what it
+    /// pinned then doesn't lead back to it. Every job is refused until it is
+    /// re-enrolled, however well signed.
+    #[tokio::test]
+    async fn with_trusted_org_key_set_a_key_that_does_not_lead_back_to_it_is_refused() {
+        let mut w = world("managed", succeeds);
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        let other =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
+        let mut spki = updawg_crypto::ED25519_SPKI_PREFIX.to_vec();
+        spki.extend_from_slice(other.public_key().as_ref());
+        trusting(&mut w, &spki);
+        w.executor.deliver(job(&w, |_| {})).await;
+        let refused = refusals(&w);
+        assert!(refused[0].contains("trusted_org_key"), "{refused:?}");
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
     }
 

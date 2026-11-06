@@ -304,6 +304,11 @@ pub(crate) async fn sign(options: SignOptions, source: &KeySource) -> Result<()>
             skipped += 1;
             continue;
         }
+        if let Some(why) = host_would_refuse(&job, chrono::Utc::now()) {
+            println!("  left waiting: a host would refuse it: {why}");
+            skipped += 1;
+            continue;
+        }
         if let Some(why) = options.policy.as_ref().and_then(|p| p.refuses(&job)) {
             println!("  left waiting: {why}");
             skipped += 1;
@@ -321,6 +326,29 @@ pub(crate) async fn sign(options: SignOptions, source: &KeySource) -> Result<()>
     println!();
     println!("{done} signed, {skipped} left waiting.");
     Ok(())
+}
+
+/// What a host's agent would refuse whoever signed it, so signing it would
+/// only put a job on the queue that never runs: a pin that isn't plainly a
+/// package, or a job valid for longer than hosts accept.
+fn host_would_refuse(job: &Job, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let pins = match &job.spec {
+        JobSpec::ApplyUpdates(apply) => apply.packages.as_slice(),
+        JobSpec::RunPreflight(preflight) => preflight.packages.as_slice(),
+        _ => &[],
+    };
+    if let Some(reason) = pins.iter().find_map(|p| p.check().err()) {
+        return Some(reason);
+    }
+    let from = job.not_before.map_or(now, |start| start.max(now));
+    let max = updawg_agent_core::jobs::MAX_JOB_LIFETIME;
+    (job.expires_at - from > max).then(|| {
+        format!(
+            "it stays valid until {}, longer than the {} days hosts accept",
+            job.expires_at,
+            max.num_days()
+        )
+    })
 }
 
 fn describe(job: &Job, hostname: &str, proposal: Option<i64>) -> String {
@@ -539,6 +567,28 @@ mod tests {
             key_id: SigningKeyId::new("sk_customer"),
             signature: String::new(),
         }
+    }
+
+    #[test]
+    fn a_job_no_host_would_run_is_left_unsigned() {
+        let now: chrono::DateTime<chrono::Utc> = "2026-11-05T12:00:00Z".parse().unwrap();
+        let mut fine = job();
+        fine.expires_at = now + chrono::Duration::hours(24);
+        assert_eq!(host_would_refuse(&fine, now), None);
+
+        // the fixture's 2099 expiry
+        let forever = job();
+        assert!(host_would_refuse(&forever, now).unwrap().contains("7 days"));
+
+        let mut option = fine.clone();
+        if let JobSpec::ApplyUpdates(ref mut apply) = option.spec {
+            apply.packages[0].name = "--eval=%(id)".into();
+        }
+        assert!(
+            host_would_refuse(&option, now)
+                .unwrap()
+                .contains("not a package name")
+        );
     }
 
     #[test]

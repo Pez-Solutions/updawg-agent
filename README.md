@@ -103,7 +103,7 @@ State lives in `/var/lib/updawg`, mode `0700`:
 |---|---|
 | `agent.key` | The host's Ed25519 private key, mode `0600`. Generated locally, never sent. A looser mode is fixed on load and logged. |
 | `identity.json` | Host id, client certificate, and the organization signing keys pinned at enrollment. Jobs are verified against these. |
-| `seen-jobs.json` | Replay protection, so a job never runs twice (including across a reboot). Bounded in size. |
+| `seen-jobs.json` | Replay protection: every job whose signature verified, kept until a day after it expires, so a job never runs twice (including across a reboot). |
 | `pending-reboot.json` | A job that reboots the host can't report its own result, so the agent records it and finishes the report after boot. |
 
 Writes are atomic (temp file, fsync, rename).
