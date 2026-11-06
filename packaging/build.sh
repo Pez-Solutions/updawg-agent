@@ -13,6 +13,7 @@
 #   the dependencies    Cargo.lock (--locked)
 #   C toolchain, linker Cross.toml's images, by digest
 #   and strip
+#   the version         packaging/version.sh: Cargo.toml's and a commit count
 #   the build id        packaging/release-id.sh: the commit's time and hash
 #   timestamps          SOURCE_DATE_EPOCH, the commit's time
 #   paths               --remap-path-prefix below: the checkout is /build and
@@ -33,13 +34,14 @@ here=$(pwd -P)
 cargo_home=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd -P)
 
 # The version it reports is the packages'.
+UPDAWG_AGENT_VERSION=$(sh packaging/version.sh)
 UPDAWG_BUILD=$(sh packaging/release-id.sh)
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
 # Both the host's paths and cross's mount points: which of them the compiler
 # sees depends on how cross mounted the checkout, and either way the binary
 # should say /build.
 RUSTFLAGS="--remap-path-prefix=$here=/build --remap-path-prefix=/project=/build --remap-path-prefix=$cargo_home=/cargo"
-export UPDAWG_BUILD SOURCE_DATE_EPOCH RUSTFLAGS
+export UPDAWG_AGENT_VERSION UPDAWG_BUILD SOURCE_DATE_EPOCH RUSTFLAGS
 
 cross build --locked --release --target "$target" --bin updawgd --bin updawgctl
 
@@ -58,7 +60,13 @@ sudo chown -R "$(id -u):$(id -g)" "$out_abs" 2>/dev/null || chown -R "$(id -u):$
 chmod 0755 "$out/updawgd" "$out/updawgctl"
 
 file "$out/updawgd" | tee /dev/stderr | grep -Eq "$want.*(statically linked|static-pie linked)"
+# The version is in the bytes whatever the target, so a variable that didn't
+# reach the build shows up here and not on a host. x86_64's also runs.
+for b in updawgd updawgctl; do
+  grep -aqF -- "$UPDAWG_AGENT_VERSION-$UPDAWG_BUILD" "$out/$b" ||
+    { echo "build.sh: $b does not carry $UPDAWG_AGENT_VERSION-$UPDAWG_BUILD" >&2; exit 1; }
+done
 if [ "$target" = x86_64-unknown-linux-musl ]; then
-  "$out/updawgctl" --version | grep -F -- "-$UPDAWG_BUILD"
+  "$out/updawgctl" --version | grep -F -- "$UPDAWG_AGENT_VERSION-$UPDAWG_BUILD"
 fi
 (cd "$out" && sha256sum updawgd updawgctl)

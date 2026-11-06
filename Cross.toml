@@ -7,10 +7,11 @@ image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:0.2.5@sha256:77db671d8356a64
 [target.aarch64-unknown-linux-musl]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5@sha256:702154f52b2d8091671aa2c84d5582d849f949977228c735ff8462f93cc0e1e4"
 
-# The build id build.rs needs, and packaging/build.sh's reproducibility
+# The version and build id build.rs needs, and packaging/build.sh's reproducibility
 # settings, inside the container.
 [build.env]
 passthrough = [
+  "UPDAWG_AGENT_VERSION",
   "UPDAWG_BUILD",
   "SOURCE_DATE_EPOCH",
   "RUSTFLAGS",
