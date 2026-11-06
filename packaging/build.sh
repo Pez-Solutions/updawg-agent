@@ -60,6 +60,12 @@ sudo chown -R "$(id -u):$(id -g)" "$out_abs" 2>/dev/null || chown -R "$(id -u):$
 chmod 0755 "$out/updawgd" "$out/updawgctl"
 
 file "$out/updawgd" | tee /dev/stderr | grep -Eq "$want.*(statically linked|static-pie linked)"
+# The version is in the bytes whatever the target, so a variable that didn't
+# reach the build shows up here and not on a host. x86_64's also runs.
+for b in updawgd updawgctl; do
+  grep -aqF -- "$UPDAWG_AGENT_VERSION-$UPDAWG_BUILD" "$out/$b" ||
+    { echo "build.sh: $b does not carry $UPDAWG_AGENT_VERSION-$UPDAWG_BUILD" >&2; exit 1; }
+done
 if [ "$target" = x86_64-unknown-linux-musl ]; then
   "$out/updawgctl" --version | grep -F -- "$UPDAWG_AGENT_VERSION-$UPDAWG_BUILD"
 fi
