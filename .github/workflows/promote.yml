@@ -28,6 +28,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      # to look up the build's provenance on GitHub
+      attestations: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: tools
@@ -48,25 +50,60 @@ jobs:
           mkdir promote
           sed "s|^|gs://$BUCKET/|" files | gcloud storage cp --read-paths-from-stdin promote/
 
-      - name: publish
+      # Older builds have no binaries in the pool; the manifest steps below
+      # leave stable.json alone for those.
+      - name: that build's binaries, from the pool
         env:
-          SIGN: ${{ steps.tools.outputs.sign }}
-        run: sh packaging/repo/publish.sh stable promote/*
-
-      # Re-sign the build's binaries as stable's self-update manifest. Older
-      # builds have no binaries in the pool, so stable.json is left alone.
-      - name: the stable self-update manifest
-        env:
-          SIGN: ${{ steps.tools.outputs.sign }}
           RELEASE: ${{ inputs.release }}
         run: |
           if ! gcloud storage ls "gs://$BUCKET/bin/pool/$RELEASE/" >/dev/null 2>&1; then
-            echo "::warning::$RELEASE has no binaries in bin/pool (built before self-update); bin/stable.json is unchanged"
+            echo "::warning::$RELEASE has no binaries in bin/pool (built before self-update)"
             exit 0
           fi
           # Not bin/, which holds the crates.
           mkdir release-bin
           gcloud storage cp -r "gs://$BUCKET/bin/pool/$RELEASE/*" release-bin/
+
+      # Everything about to be signed for stable came from the bucket, which
+      # is not enough to trust it: each file must be one that release.yml
+      # built from main and attested, looked up on GitHub by its digest.
+      - name: every file is one main's release built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_CLI: "2.102.0"
+          GH_CLI_SHA256: bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+        run: |
+          set -eu
+          curl -fsSLo "$RUNNER_TEMP/gh.tgz" \
+            "https://github.com/cli/cli/releases/download/v${GH_CLI}/gh_${GH_CLI}_linux_amd64.tar.gz"
+          echo "${GH_CLI_SHA256}  $RUNNER_TEMP/gh.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gh.tgz" -C "$RUNNER_TEMP"
+          gh="$RUNNER_TEMP/gh_${GH_CLI}_linux_amd64/bin/gh"
+          files=$(find promote release-bin -type f 2>/dev/null | sort)
+          [ "$(echo "$files" | grep -c '^promote/')" -eq 4 ] ||
+            { echo "expected four packages in promote/" >&2; exit 1; }
+          for f in $files; do
+            "$gh" attestation verify "$f" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref refs/heads/main
+          done
+
+      - name: publish
+        env:
+          SIGN: ${{ steps.tools.outputs.sign }}
+        run: sh packaging/repo/publish.sh stable promote/*
+
+      # Re-sign the build's binaries as stable's self-update manifest.
+      - name: the stable self-update manifest
+        env:
+          SIGN: ${{ steps.tools.outputs.sign }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          if [ ! -d release-bin ]; then
+            echo "::warning::$RELEASE has no binaries in bin/pool; bin/stable.json is unchanged"
+            exit 0
+          fi
           sh packaging/repo/publish-bin.sh stable "$RELEASE" release-bin
 
       # get.updawg.net serves stable: the installer and the promoted
