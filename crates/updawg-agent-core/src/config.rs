@@ -320,10 +320,11 @@ const KNOWN_KEYS: [(&str, &[&str]); 6] = [
     ),
 ];
 
-/// The keys in `raw` this agent doesn't know, and `allow` or `deny` entries
-/// that aren't permissions, as `permissions.mode` or `permissions.deny
-/// "reboots"`. Serde ignores both, so a typo or a line appended below
-/// `[permissions]` would otherwise just not count.
+/// The keys in `raw` this agent doesn't know, and `deny` entries that aren't
+/// permissions, as `permissions.mode` or `permissions.deny "reboots"`. Serde
+/// ignores both, so a typo or a line appended below `[permissions]` would
+/// otherwise just not count. An `allow` entry that isn't a permission can't
+/// let the agent do anything, so it is left alone, as it always was.
 fn unknown_keys(raw: &str) -> Vec<String> {
     let Ok(table) = raw.parse::<toml::Table>() else {
         return Vec::new();
@@ -361,14 +362,12 @@ fn unknown_keys(raw: &str) -> Vec<String> {
     }
     if let Some(toml::Value::Table(permissions)) = table.get("permissions") {
         let names: Vec<&str> = JobKind::ALL.iter().map(|k| k.permission()).collect();
-        for list in ["allow", "deny"] {
-            if let Some(toml::Value::Array(entries)) = permissions.get(list) {
-                for entry in entries {
-                    if let Some(name) = entry.as_str()
-                        && !names.contains(&name)
-                    {
-                        unknown.push(format!("permissions.{list} {name:?}"));
-                    }
+        if let Some(toml::Value::Array(entries)) = permissions.get("deny") {
+            for entry in entries {
+                if let Some(name) = entry.as_str()
+                    && !names.contains(&name)
+                {
+                    unknown.push(format!("permissions.deny {name:?}"));
                 }
             }
         }
