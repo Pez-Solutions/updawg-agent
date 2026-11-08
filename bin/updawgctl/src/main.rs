@@ -238,7 +238,7 @@ async fn main() -> Result<()> {
                     force,
                     accept_new_org_key,
                 },
-                cli.extra_root.load()?,
+                cli.extra_root.load()?.as_deref(),
             )
             .await?;
         }
@@ -300,7 +300,7 @@ async fn enroll(
     state: &LocalState,
     token: &str,
     options: EnrollOptions,
-    extra_root: Option<Vec<u8>>,
+    extra_root: Option<&[u8]>,
 ) -> Result<()> {
     let config = AgentConfig::load(config_path)
         .with_context(|| format!("reading {config_path} for the server address"))?;
@@ -310,11 +310,8 @@ async fn enroll(
         .trusted_org_key()
         .with_context(|| format!("reading trusted_org_key from {config_path}"))?;
 
-    let exchange = HttpsEnrollExchange::with_trust(
-        &config.server,
-        config.gateway_trust,
-        extra_root.as_deref(),
-    )?;
+    let exchange =
+        HttpsEnrollExchange::with_trust(&config.server, config.gateway_trust, extra_root)?;
     let enroller = Enroller::new(state, &exchange).with_trusted_org_key(trusted);
 
     match enroller.enroll(token, options).await? {
