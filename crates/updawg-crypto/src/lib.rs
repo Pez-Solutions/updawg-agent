@@ -87,6 +87,8 @@ pub enum CryptoError {
     MalformedKeyFile(String),
     #[error("the client certificate could not be parsed: {0}")]
     MalformedCertificate(String),
+    #[error("the client certificate is not one this host's CA issued for it: {0}")]
+    UntrustedCertificate(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
