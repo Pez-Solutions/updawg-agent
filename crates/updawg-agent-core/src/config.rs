@@ -279,6 +279,101 @@ pub struct AgentConfig {
     /// or `system` on a network that inspects TLS. See [`crate::trust`].
     #[serde(default)]
     pub gateway_trust: crate::trust::GatewayTrust,
+    /// What [`AgentConfig::from_toml`] found in the file and doesn't
+    /// understand. Not empty means `mode` was read as `observe`.
+    #[serde(skip)]
+    pub not_understood: Vec<String>,
+}
+
+/// Every key `agent.toml` may hold, by table (`""` is the top level, and
+/// `health_check` each `[[health_check]]`).
+const KNOWN_KEYS: [(&str, &[&str]); 6] = [
+    (
+        "",
+        &[
+            "server",
+            "mode",
+            "permissions",
+            "schedule",
+            "snapshots",
+            "reboot",
+            "health_check",
+            "trusted_org_key",
+            "gateway_trust",
+        ],
+    ),
+    ("permissions", &["allow", "deny"]),
+    ("schedule", &["inventory_interval", "refresh_metadata"]),
+    ("snapshots", &["provider", "keep", "min_free_mb"]),
+    ("reboot", &["delay", "message"]),
+    (
+        "health_check",
+        &[
+            "type",
+            "name",
+            "unit",
+            "url",
+            "expect_status",
+            "argv",
+            "timeout",
+        ],
+    ),
+];
+
+/// The keys in `raw` this agent doesn't know, and `allow` or `deny` entries
+/// that aren't permissions, as `permissions.mode` or `permissions.deny
+/// "reboots"`. Serde ignores both, so a typo or a line appended below
+/// `[permissions]` would otherwise just not count.
+fn unknown_keys(raw: &str) -> Vec<String> {
+    let Ok(table) = raw.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let known = |section: &str| {
+        KNOWN_KEYS
+            .iter()
+            .find(|(name, _)| *name == section)
+            .map_or(&[][..], |(_, keys)| *keys)
+    };
+    let mut unknown = Vec::new();
+    let mut check = |section: &str, entries: &toml::Table| {
+        for key in entries.keys() {
+            if !known(section).contains(&key.as_str()) {
+                unknown.push(if section.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{section}.{key}")
+                });
+            }
+        }
+    };
+    check("", &table);
+    for section in ["permissions", "schedule", "snapshots", "reboot"] {
+        if let Some(toml::Value::Table(entries)) = table.get(section) {
+            check(section, entries);
+        }
+    }
+    if let Some(toml::Value::Array(checks)) = table.get("health_check") {
+        for entry in checks {
+            if let toml::Value::Table(entries) = entry {
+                check("health_check", entries);
+            }
+        }
+    }
+    if let Some(toml::Value::Table(permissions)) = table.get("permissions") {
+        let names: Vec<&str> = JobKind::ALL.iter().map(|k| k.permission()).collect();
+        for list in ["allow", "deny"] {
+            if let Some(toml::Value::Array(entries)) = permissions.get(list) {
+                for entry in entries {
+                    if let Some(name) = entry.as_str()
+                        && !names.contains(&name)
+                    {
+                        unknown.push(format!("permissions.{list} {name:?}"));
+                    }
+                }
+            }
+        }
+    }
+    unknown
 }
 
 impl AgentConfig {
@@ -286,8 +381,18 @@ impl AgentConfig {
     ///
     /// # Errors
     /// Returns the TOML error if the file is not valid configuration.
+    ///
+    /// A file with keys this agent doesn't know (see [`unknown_keys`]) is
+    /// read as `mode = "observe"`, with them in `not_understood`: a typo
+    /// can't then make the agent do more than meant, and the host goes on
+    /// reporting rather than dropping out.
     pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(s)
+        let mut config: Self = toml::from_str(s)?;
+        config.not_understood = unknown_keys(s);
+        if !config.not_understood.is_empty() {
+            config.mode = Mode::Observe;
+        }
+        Ok(config)
     }
 
     /// Reads and parses the configuration.
@@ -394,6 +499,7 @@ mod tests {
             health_checks: Vec::new(),
             trusted_org_key: None,
             gateway_trust: crate::trust::GatewayTrust::default(),
+            not_understood: Vec::new(),
         }
     }
 
@@ -418,6 +524,85 @@ mod tests {
             ..managed(&[], &[])
         };
         assert!(!cfg.admits(JobKind::RefreshInventory, None));
+    }
+
+    /// Lines appended to the packaged file land in `[permissions]`, its last
+    /// table, where serde would quietly ignore them.
+    #[test]
+    fn keys_the_agent_does_not_know_make_it_observe_only() {
+        let appended = AgentConfig::from_toml(
+            "server = \"https://a\"\nmode = \"managed\"\n[permissions]\n\
+             allow = [\"apply_patch\", \"reboot\"]\nmode = \"observe\"\n",
+        )
+        .unwrap();
+        assert_eq!(appended.not_understood, ["permissions.mode"]);
+        assert_eq!(appended.mode, Mode::Observe);
+        assert!(!appended.admits(JobKind::ApplyUpdates, None));
+
+        for (toml, says) in [
+            (
+                "[permissions]\nallow = [\"reboot\"]\ndenny = [\"reboot\"]\n",
+                "permissions.denny",
+            ),
+            ("[permission]\ndeny = [\"reboot\"]\n", "permission"),
+            (
+                "[permissions]\nallow = [\"reboot\"]\ndeny = [\"reboots\"]\n",
+                "permissions.deny \"reboots\"",
+            ),
+            (
+                "[permissions]\ntrusted_org_key = \"MCow\"\n",
+                "permissions.trusted_org_key",
+            ),
+            ("[schedule]\ninventory = \"1h\"\n", "schedule.inventory"),
+            (
+                "[[health_check]]\ntype = \"systemd\"\nname = \"n\"\nunit = \"u\"\ntimout = \"5s\"\n",
+                "health_check.timout",
+            ),
+        ] {
+            let cfg = AgentConfig::from_toml(&format!("server = \"https://a\"\n{toml}")).unwrap();
+            assert_eq!(cfg.not_understood, [says], "{toml}");
+            assert_eq!(cfg.mode, Mode::Observe, "{toml}");
+        }
+    }
+
+    #[test]
+    fn the_shipped_config_files_have_nothing_the_agent_does_not_know() {
+        for raw in [
+            include_str!("../../../packaging/agent.toml"),
+            include_str!("../../../examples/agent.toml"),
+        ] {
+            let cfg = AgentConfig::from_toml(raw).unwrap();
+            assert!(cfg.not_understood.is_empty(), "{:?}", cfg.not_understood);
+            assert_eq!(cfg.mode, Mode::Managed);
+        }
+    }
+
+    /// Every field the config has, as it would be written, is one
+    /// `unknown_keys` knows: a new field must be added to `KNOWN_KEYS`.
+    #[test]
+    fn every_key_the_config_has_is_a_known_one() {
+        let mut full = managed(&["reboot"], &["dist_upgrade"]);
+        full.trusted_org_key = Some("MCow".into());
+        full.health_checks = vec![
+            HealthCheck::Systemd {
+                name: "n".into(),
+                unit: "u".into(),
+                timeout: default_check_timeout(),
+            },
+            HealthCheck::Http {
+                name: "n".into(),
+                url: "https://h".into(),
+                expect_status: 200,
+                timeout: default_check_timeout(),
+            },
+            HealthCheck::Command {
+                name: "n".into(),
+                argv: vec!["true".into()],
+                timeout: default_check_timeout(),
+            },
+        ];
+        let written = toml::to_string(&full).unwrap();
+        assert_eq!(unknown_keys(&written), Vec::<String>::new(), "{written}");
     }
 
     #[test]
@@ -638,6 +823,7 @@ mod policy_tests {
             health_checks: Vec::new(),
             trusted_org_key: None,
             gateway_trust: crate::trust::GatewayTrust::default(),
+            not_understood: Vec::new(),
         }
     }
 

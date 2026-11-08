@@ -399,6 +399,15 @@ fn status(cli: &Cli, state: &LocalState) -> Result<()> {
     let mut out = String::new();
     say!(out, "updawgctl {VERSION}");
     say!(out, "config:    {}", cli.config);
+    match AgentConfig::load(&cli.config) {
+        Ok(config) if !config.not_understood.is_empty() => say!(
+            out,
+            "           not understood: {}; the agent changes nothing until they're fixed",
+            config.not_understood.join(", ")
+        ),
+        Ok(_) => {}
+        Err(e) => say!(out, "           can't be used: {e:#}"),
+    }
     say!(out, "state dir: {}", state.root().display());
 
     match state.identity().context("reading identity")? {

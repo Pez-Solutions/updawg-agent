@@ -56,7 +56,9 @@ Release binaries are statically linked against musl for `x86_64` and
    `Permissions::intersect` and its tests.
 
 Permissions fail closed: an empty allow list permits nothing, so a truncated
-or broken config leaves the agent reporting but not acting. `mode` defaults to
+or broken config leaves the agent reporting but not acting. So does a key it
+doesn't understand, such as a typo or a line appended below `[permissions]`;
+`updawgd --check-config` names it. `mode` defaults to
 `managed`, and `install.sh` writes a config with every permission allowed,
 including `reboot` and `dist_upgrade`, because jobs only run if the
 organization approved and signed them. To restrict a host, narrow the allow
