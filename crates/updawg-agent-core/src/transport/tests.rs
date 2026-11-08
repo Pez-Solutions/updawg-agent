@@ -279,6 +279,28 @@ async fn a_renewal_keeps_the_ca_chain_the_host_enrolled_with() {
     );
 }
 
+/// A gateway whose certificate doesn't chain to Let's Encrypt, as one
+/// behind a TLS-inspecting proxy looks, is refused, with what to change.
+#[tokio::test]
+async fn a_gateway_certificate_from_another_ca_is_refused_with_what_to_change() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::new(&ca, THIRTY_DAYS);
+    let gateway = TestGateway::start(&ca, vec![]).await;
+    let transport = MtlsTransport::with_trust(
+        &gateway.url(),
+        host.state.clone(),
+        crate::trust::GatewayTrust::LetsEncrypt,
+        None,
+    )
+    .unwrap();
+    let err = transport
+        .check_in(&checkin_request(), LONG_POLL)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("gateway_trust"), "{err}");
+    assert!(gateway.seen().is_empty());
+}
+
 #[tokio::test]
 async fn a_rejected_certificate_says_what_to_do_about_it() {
     let ca = TestCa::new();

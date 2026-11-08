@@ -6,7 +6,8 @@
 //!
 //! # What this gives away
 //!
-//! The extra root is added to the platform trust store, not swapped in for it.
+//! The extra root is added to the roots `gateway_trust` chooses (Let's
+//! Encrypt's, or the platform trust store), not swapped in for them.
 //! Anyone holding the CA's private key can impersonate the Updawg gateway to
 //! this host: answer its check-ins and read what it reports. They can't make
 //! it install anything, because jobs are signed by the organization key pinned

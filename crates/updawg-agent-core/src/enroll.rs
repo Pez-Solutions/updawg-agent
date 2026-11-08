@@ -370,6 +370,7 @@ fn validate(response: &EnrollResponse) -> Result<PinnedKeys> {
 pub struct HttpsEnrollExchange {
     url: String,
     client: reqwest::Client,
+    trust: crate::trust::GatewayTrust,
 }
 
 impl HttpsEnrollExchange {
@@ -377,18 +378,21 @@ impl HttpsEnrollExchange {
     /// [`EnrollError::NotHttps`] if the configured server is not an https URL,
     /// and [`EnrollError::Unreachable`] if the HTTP client cannot be built.
     pub fn new(server: &str) -> Result<Self> {
-        Self::with_extra_root(server, None)
+        Self::with_trust(server, crate::trust::GatewayTrust::default(), None)
     }
 
-    /// As [`Self::new`], additionally trusting a PEM CA for the server side.
-    /// Matches [`crate::transport::MtlsTransport::with_extra_root`], so a
-    /// self-hosted gateway works from the first request. The platform trust
-    /// store is still used.
+    /// As [`Self::new`], trusting the gateway the way
+    /// [`crate::transport::MtlsTransport::with_trust`] does, so enrollment
+    /// and every request after it agree on which CAs may vouch for it.
     ///
     /// # Errors
-    /// As [`Self::new`], plus [`EnrollError::Unreachable`] if the PEM does not
+    /// As [`Self::new`], plus [`EnrollError::Unreachable`] if a root does not
     /// parse.
-    pub fn with_extra_root(server: &str, extra_root: Option<Vec<u8>>) -> Result<Self> {
+    pub fn with_trust(
+        server: &str,
+        trust: crate::trust::GatewayTrust,
+        extra_root: Option<&[u8]>,
+    ) -> Result<Self> {
         let server = server.trim_end_matches('/');
         if !server.starts_with("https://") {
             return Err(EnrollError::NotHttps {
@@ -396,18 +400,15 @@ impl HttpsEnrollExchange {
             });
         }
 
-        let mut builder = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .timeout(ENROLL_TIMEOUT)
             .user_agent(format!("updawg-agent/{}", crate::VERSION));
-
-        if let Some(pem) = extra_root {
-            let root =
-                reqwest::Certificate::from_pem(&pem).map_err(|e| EnrollError::Unreachable {
-                    url: server.to_string(),
-                    detail: format!("the extra root certificate did not parse: {e}"),
-                })?;
-            builder = builder.add_root_certificate(root);
-        }
+        let builder = crate::trust::configure(builder, trust, extra_root).map_err(|detail| {
+            EnrollError::Unreachable {
+                url: server.to_string(),
+                detail,
+            }
+        })?;
 
         let client = builder.build().map_err(|e| EnrollError::Unreachable {
             url: server.to_string(),
@@ -417,6 +418,7 @@ impl HttpsEnrollExchange {
         Ok(Self {
             url: format!("{server}{API_PATH}/enroll"),
             client,
+            trust,
         })
     }
 }
@@ -433,7 +435,7 @@ impl EnrollExchange for HttpsEnrollExchange {
             .await
             .map_err(|e| EnrollError::Unreachable {
                 url: self.url.clone(),
-                detail: causes(&e),
+                detail: crate::trust::explain(self.trust, causes(&e)),
             })?;
 
         let status = response.status();

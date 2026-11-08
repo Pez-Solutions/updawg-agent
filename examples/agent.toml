@@ -5,6 +5,10 @@ server = "https://agents.updawg.net"
 # "managed": execute signed jobs permitted below.
 mode = "managed"
 
+# Which CAs may vouch for the gateway: Let's Encrypt's roots (the default), or
+# "system" for the host's trust store on a network that inspects TLS.
+# gateway_trust = "system"
+
 [permissions]
 allow = ["refresh", "preflight", "apply_patch", "dist_upgrade", "reboot", "snapshot", "self_update"]
 deny  = []

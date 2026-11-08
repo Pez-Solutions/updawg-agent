@@ -283,9 +283,10 @@ async fn a_gateway_that_fails_immediately_is_still_a_failure() {
     let host = EnrolledHost::new(&ca, THIRTY_DAYS);
     // nothing listens on port 1
     let transport = Arc::new(
-        MtlsTransport::with_extra_root(
+        MtlsTransport::with_trust(
             "https://localhost:1",
             host.state.clone(),
+            crate::trust::GatewayTrust::default(),
             Some(ca.pem.clone().into_bytes()),
         )
         .unwrap(),

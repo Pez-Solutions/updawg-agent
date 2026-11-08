@@ -13,6 +13,7 @@
 use crate::{
     enroll::KEY_FILE,
     state::{Identity, LocalState},
+    trust::GatewayTrust,
 };
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
@@ -164,6 +165,7 @@ pub struct MtlsTransport {
     /// Per-host offset into the renewal window, derived from the certificate
     /// serial so it stays the same across restarts.
     spread: f64,
+    trust: GatewayTrust,
     extra_root: Option<Vec<u8>>,
 }
 
@@ -180,17 +182,18 @@ impl MtlsTransport {
     /// [`TransportError::NotEnrolled`] if there is no identity yet, and
     /// [`TransportError::Crypto`] if the stored certificate or key is unusable.
     pub fn new(server: &str, state: LocalState) -> Result<Self> {
-        Self::with_extra_root(server, state, None)
+        Self::with_trust(server, state, GatewayTrust::default(), None)
     }
 
-    /// As [`Self::new`], additionally trusting a PEM CA for the server side.
-    /// Adds to the platform trust store rather than replacing it.
+    /// As [`Self::new`], trusting the gateway through `trust`, and also
+    /// through `extra_root`, a PEM CA (the `insecure-extra-root` build's).
     ///
     /// # Errors
     /// As [`Self::new`].
-    pub fn with_extra_root(
+    pub fn with_trust(
         server: &str,
         state: LocalState,
+        trust: GatewayTrust,
         extra_root: Option<Vec<u8>>,
     ) -> Result<Self> {
         let base = server.trim_end_matches('/').to_string();
@@ -200,7 +203,7 @@ impl MtlsTransport {
 
         let identity = state.identity()?.ok_or(TransportError::NotEnrolled)?;
         let certificate = ClientCertificate::from_pem(&identity.certificate)?;
-        let client = build_client(&state, &identity, extra_root.as_deref())?;
+        let client = build_client(&state, &identity, trust, extra_root.as_deref())?;
 
         Ok(Self {
             base,
@@ -208,6 +211,7 @@ impl MtlsTransport {
             state,
             client: RwLock::new(client),
             certificate: RwLock::new(certificate),
+            trust,
             extra_root,
         })
     }
@@ -363,7 +367,12 @@ impl MtlsTransport {
         };
         // Build the client before saving, so a certificate that can't be
         // loaded never replaces the working one on disk.
-        let client = build_client(&self.state, &renewed, self.extra_root.as_deref())?;
+        let client = build_client(
+            &self.state,
+            &renewed,
+            self.trust,
+            self.extra_root.as_deref(),
+        )?;
         self.state.save_identity(&renewed)?;
 
         if let Ok(mut slot) = self.client.write() {
@@ -668,7 +677,7 @@ impl MtlsTransport {
         }
         TransportError::Unreachable {
             url: url.to_string(),
-            detail: crate::enroll::causes(error),
+            detail: crate::trust::explain(self.trust, crate::enroll::causes(error)),
         }
     }
 
@@ -687,6 +696,7 @@ impl MtlsTransport {
 fn build_client(
     state: &LocalState,
     identity: &Identity,
+    trust: GatewayTrust,
     extra_root: Option<&[u8]>,
 ) -> Result<reqwest::Client> {
     let key = AgentKey::load(state.root().join(KEY_FILE))?;
@@ -704,19 +714,12 @@ fn build_client(
         ))
     })?;
 
-    let mut builder = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .identity(client_identity)
         .timeout(REQUEST_TIMEOUT)
         .user_agent(format!("updawg-agent/{}", crate::VERSION));
-
-    if let Some(pem) = extra_root {
-        let root = reqwest::Certificate::from_pem(pem).map_err(|e| {
-            TransportError::Crypto(updawg_crypto::CryptoError::MalformedCertificate(
-                e.to_string(),
-            ))
-        })?;
-        builder = builder.add_root_certificate(root);
-    }
+    let builder = crate::trust::configure(builder, trust, extra_root)
+        .map_err(|e| TransportError::Crypto(updawg_crypto::CryptoError::MalformedCertificate(e)))?;
 
     builder.build().map_err(|e| TransportError::Unreachable {
         url: "the agent gateway".into(),
