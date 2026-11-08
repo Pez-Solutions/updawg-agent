@@ -51,7 +51,7 @@ async fn a_renewed_certificate_is_what_the_next_request_presents() {
     // 25 days into 30, so renewal is due
     let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
     let renewed_pem = ca.issue_for(
-        "hst_01J9ZC6Q_renewed",
+        "hst_01J9ZC6Q",
         vec![],
         Duration::ZERO,
         THIRTY_DAYS,
@@ -158,6 +158,121 @@ async fn a_certificate_for_the_wrong_key_is_refused_and_the_old_one_kept() {
         transport.certificate().serial(),
         before,
         "a refused renewal must leave the working certificate in place"
+    );
+}
+
+/// Answers every renewal attempt with `certificate` and `chain`, and returns
+/// the error with the certificate the host kept.
+async fn renewal_refused(
+    ca: &TestCa,
+    host: &EnrolledHost,
+    certificate: &str,
+    chain: &str,
+) -> (String, bool) {
+    let gateway = TestGateway::start(
+        ca,
+        std::iter::repeat_n(
+            (
+                200,
+                serde_json::json!({ "certificate": certificate, "ca_chain": [chain] }).to_string(),
+            ),
+            RENEW_ATTEMPTS as usize,
+        )
+        .collect(),
+    )
+    .await;
+    let transport = transport(host, &gateway, ca);
+    let before = transport.certificate().serial().to_string();
+    let err = transport.renew_if_due(SystemTime::now()).await.unwrap_err();
+    (err.to_string(), transport.certificate().serial() == before)
+}
+
+/// Whoever answers as the gateway hands back a certificate of their own for
+/// the host's key. Kept, it would lock the host out of the real gateway.
+#[tokio::test]
+async fn a_renewal_from_another_ca_is_refused_and_the_old_one_kept() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
+    let theirs = TestCa::new();
+    let forged = theirs.issue_for(
+        "hst_01J9ZC6Q",
+        vec![],
+        Duration::ZERO,
+        THIRTY_DAYS,
+        &host.key(),
+    );
+    let (err, kept) = renewal_refused(&ca, &host, &forged, &theirs.pem).await;
+    assert!(err.contains("isn't signed by the CA"), "{err}");
+    assert!(
+        kept,
+        "a refused renewal must leave the working certificate in place"
+    );
+}
+
+#[tokio::test]
+async fn a_renewal_for_another_host_is_refused() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
+    let other = ca.issue_for(
+        "hst_somebody_else",
+        vec![],
+        Duration::ZERO,
+        THIRTY_DAYS,
+        &host.key(),
+    );
+    let (err, kept) = renewal_refused(&ca, &host, &other, &ca.pem).await;
+    assert!(err.contains("hst_somebody_else"), "{err}");
+    assert!(kept);
+}
+
+/// One that would never come due for renewal again.
+#[tokio::test]
+async fn a_renewal_valid_for_more_than_ninety_days_is_refused() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
+    let forever = ca.issue_for(
+        "hst_01J9ZC6Q",
+        vec![],
+        Duration::ZERO,
+        Duration::from_secs(400 * 86_400),
+        &host.key(),
+    );
+    let (err, kept) = renewal_refused(&ca, &host, &forever, &ca.pem).await;
+    assert!(err.contains("longer than 90 days"), "{err}");
+    assert!(kept);
+}
+
+/// The chain a renewal comes with can't replace the pinned one, or the next
+/// renewal would be checked against whatever this one claimed.
+#[tokio::test]
+async fn a_renewal_keeps_the_ca_chain_the_host_enrolled_with() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
+    let theirs = TestCa::new();
+    let renewed = ca.issue_for(
+        "hst_01J9ZC6Q",
+        vec![],
+        Duration::ZERO,
+        THIRTY_DAYS,
+        &host.key(),
+    );
+    let gateway = TestGateway::start(
+        &ca,
+        vec![(
+            200,
+            serde_json::json!({ "certificate": renewed, "ca_chain": [theirs.pem] }).to_string(),
+        )],
+    )
+    .await;
+    let transport = transport(&host, &gateway, &ca);
+    let outcome = transport.renew_if_due(SystemTime::now()).await.unwrap();
+    assert!(
+        matches!(outcome, Renewal::Renewed { .. }),
+        "got {outcome:?}"
+    );
+    assert_eq!(
+        host.state.identity().unwrap().unwrap().ca_chain,
+        vec![ca.pem.clone()]
     );
 }
 

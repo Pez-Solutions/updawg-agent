@@ -339,12 +339,25 @@ impl MtlsTransport {
         let Some(expires_in) = certificate.remaining(now) else {
             return Err(bad("the renewed certificate has already expired".into()));
         };
+        // Against the chain pinned at enrollment: whoever answered as the
+        // gateway could otherwise hand back a certificate of their own, and
+        // the real gateway would refuse the host from then on.
+        updawg_crypto::cert::check_issued(
+            &response.certificate,
+            &identity.ca_chain,
+            identity.host_id.as_str(),
+        )
+        .map_err(|e| bad(e.to_string()))?;
+        if response.ca_chain != identity.ca_chain {
+            tracing::warn!(
+                "the renewal came with a different CA chain; keeping the one this host enrolled with"
+            );
+        }
 
         let org_signing_keys = merge_org_keys(identity, response)?;
 
         let renewed = Identity {
             certificate: response.certificate.clone(),
-            ca_chain: response.ca_chain.clone(),
             org_signing_keys,
             ..identity.clone()
         };

@@ -344,10 +344,12 @@ fn validate(response: &EnrollResponse) -> Result<PinnedKeys> {
             "the certificate is not PEM".into(),
         ));
     }
-    // with no chain there'd be nothing to check the gateway's cert against
+    // The agent CA, which every renewal is checked against. (Not the
+    // gateway's own certificate: that is a public one, checked against the
+    // platform's roots.)
     if response.ca_chain.is_empty() {
         return Err(EnrollError::BadResponse(
-            "no CA chain was returned; there would be nothing to verify the gateway against".into(),
+            "no CA chain was returned; there would be nothing to check a renewal against".into(),
         ));
     }
     if response.org_signing_keys.is_empty() {

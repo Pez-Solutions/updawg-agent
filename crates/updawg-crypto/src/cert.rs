@@ -15,6 +15,11 @@ use std::{
 /// and retries.
 const RENEW_AT_REMAINING_FRACTION: f64 = 1.0 / 3.0;
 
+/// The longest a client certificate may be valid for. The gateway issues
+/// thirty days; one that claims far more isn't one it made, and would never
+/// come due for renewal.
+const MAX_LIFETIME: Duration = Duration::from_secs(90 * 86_400);
+
 /// The parts of a client certificate needed to manage its renewal.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ClientCertificate {
@@ -130,6 +135,67 @@ impl ClientCertificate {
             .unwrap_or(self.not_before);
         now >= due
     }
+}
+
+/// Checks that `pem` is a client certificate the agent CA in `chain` issued
+/// to `host_id`: signed by one of `chain`'s CA certificates, with `host_id`
+/// as its common name, and valid for at most ninety days.
+///
+/// `chain` is the one pinned at enrollment. A renewal is checked against it
+/// rather than the chain the renewal came with, which would vouch for itself.
+///
+/// # Errors
+/// [`CryptoError::MalformedCertificate`] if `pem` doesn't parse, and
+/// [`CryptoError::UntrustedCertificate`] for each of the rest.
+pub fn check_issued(pem: &str, chain: &[String], host_id: &str) -> Result<()> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let der = first_pem_block(pem, "CERTIFICATE")
+        .ok_or_else(|| CryptoError::MalformedCertificate("no CERTIFICATE block".into()))?;
+    let (_, leaf) = X509Certificate::from_der(&der)
+        .map_err(|e| CryptoError::MalformedCertificate(e.to_string()))?;
+    let untrusted = |why: String| CryptoError::UntrustedCertificate(why);
+
+    let name = leaf
+        .subject()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok());
+    if name != Some(host_id) {
+        return Err(untrusted(format!(
+            "it names {}, and this host is {host_id}",
+            leaf.subject()
+        )));
+    }
+    let validity = leaf.validity();
+    let lifetime = validity.not_after.timestamp() - validity.not_before.timestamp();
+    if u64::try_from(lifetime).map_or(true, |secs| secs > MAX_LIFETIME.as_secs()) {
+        return Err(untrusted(format!(
+            "it is valid from {} to {}, longer than {} days",
+            validity.not_before,
+            validity.not_after,
+            MAX_LIFETIME.as_secs() / 86_400
+        )));
+    }
+
+    let signed = chain.iter().any(|ca| {
+        let Some(ca_der) = first_pem_block(ca, "CERTIFICATE") else {
+            return false;
+        };
+        let Ok((_, ca)) = X509Certificate::from_der(&ca_der) else {
+            return false;
+        };
+        ca.is_ca()
+            && ca.subject() == leaf.issuer()
+            && leaf.verify_signature(Some(ca.public_key())).is_ok()
+    });
+    if !signed {
+        return Err(untrusted(format!(
+            "it isn't signed by the CA this host enrolled with (it says {} issued it)",
+            leaf.issuer()
+        )));
+    }
+    Ok(())
 }
 
 /// Hand-rolled to avoid another dependency in a binary that runs as root.
