@@ -310,8 +310,11 @@ async fn enroll(
         .trusted_org_key()
         .with_context(|| format!("reading trusted_org_key from {config_path}"))?;
 
-    let exchange =
-        HttpsEnrollExchange::with_trust(&config.server, config.gateway_trust, extra_root)?;
+    let exchange = HttpsEnrollExchange::with_trust(
+        &config.server,
+        config.gateway_trust,
+        extra_root.as_deref(),
+    )?;
     let enroller = Enroller::new(state, &exchange).with_trusted_org_key(trusted);
 
     match enroller.enroll(token, options).await? {

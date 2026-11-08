@@ -391,7 +391,7 @@ impl HttpsEnrollExchange {
     pub fn with_trust(
         server: &str,
         trust: crate::trust::GatewayTrust,
-        extra_root: Option<Vec<u8>>,
+        extra_root: Option<&[u8]>,
     ) -> Result<Self> {
         let server = server.trim_end_matches('/');
         if !server.starts_with("https://") {
@@ -403,13 +403,12 @@ impl HttpsEnrollExchange {
         let builder = reqwest::Client::builder()
             .timeout(ENROLL_TIMEOUT)
             .user_agent(format!("updawg-agent/{}", crate::VERSION));
-        let builder =
-            crate::trust::configure(builder, trust, extra_root.as_deref()).map_err(|detail| {
-                EnrollError::Unreachable {
-                    url: server.to_string(),
-                    detail,
-                }
-            })?;
+        let builder = crate::trust::configure(builder, trust, extra_root).map_err(|detail| {
+            EnrollError::Unreachable {
+                url: server.to_string(),
+                detail,
+            }
+        })?;
 
         let client = builder.build().map_err(|e| EnrollError::Unreachable {
             url: server.to_string(),
