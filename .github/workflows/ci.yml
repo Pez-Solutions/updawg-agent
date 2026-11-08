@@ -27,7 +27,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: compare with ${{ github.base_ref }}
@@ -52,8 +52,7 @@ jobs:
     name: feature builds and musl
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal --component clippy
@@ -63,7 +62,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && !inputs.cache
         run: echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: github.event_name != 'workflow_dispatch' || inputs.cache
 
       - name: OpenPGP verifiers for the release signer's tests
@@ -107,7 +106,7 @@ jobs:
     name: install.sh
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shellcheck
         run: shellcheck -s sh packaging/install.sh
       - name: short enough to read before running
@@ -161,8 +160,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust and musl
         run: |
           rustup toolchain install stable --profile minimal
@@ -174,7 +172,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && !inputs.cache
         run: echo "CARGO_HOME=$RUNNER_TEMP/cargo-home" >> "$GITHUB_ENV"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: github.event_name != 'workflow_dispatch' || inputs.cache
         with:
           key: distro-matrix
