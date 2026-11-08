@@ -50,12 +50,15 @@ async fn a_renewed_certificate_is_what_the_next_request_presents() {
     let ca = TestCa::new();
     // 25 days into 30, so renewal is due
     let host = EnrolledHost::aged(&ca, Duration::from_secs(25 * 86_400), THIRTY_DAYS);
-    let renewed_pem = ca.issue_for(
+    // same host, so the same name; the unit tells the two apart
+    let renewed_pem = ca.issue_marked(
         "hst_01J9ZC6Q",
+        Some("renewed"),
         vec![],
         Duration::ZERO,
         THIRTY_DAYS,
         &host.key(),
+        rcgen::ExtendedKeyUsagePurpose::ClientAuth,
     );
 
     let renewal = serde_json::json!({

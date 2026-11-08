@@ -119,6 +119,22 @@ impl TestCa {
         key: &KeyPair,
         eku: ExtendedKeyUsagePurpose,
     ) -> String {
+        self.issue_marked(common_name, None, sans, aged, valid_for, key, eku)
+    }
+
+    /// With `unit` as the subject's organizational unit, so a test can tell
+    /// two certificates for the same host apart by what a request presents.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn issue_marked(
+        &self,
+        common_name: &str,
+        unit: Option<&str>,
+        sans: Vec<String>,
+        aged: Duration,
+        valid_for: Duration,
+        key: &KeyPair,
+        eku: ExtendedKeyUsagePurpose,
+    ) -> String {
         let mut params = CertificateParams::new(sans).unwrap();
         // the verifier rejects certificates without an EKU
         params.extended_key_usages = vec![eku];
@@ -128,6 +144,9 @@ impl TestCa {
         params.serial_number = Some(rcgen::SerialNumber::from_slice(&n.to_be_bytes()));
         let mut dn = DistinguishedName::new();
         dn.push(DnType::CommonName, common_name);
+        if let Some(unit) = unit {
+            dn.push(DnType::OrganizationalUnitName, unit);
+        }
         params.distinguished_name = dn;
         let issued = SystemTime::now() - aged;
         params.not_before = issued.into();
