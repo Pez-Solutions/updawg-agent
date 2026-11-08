@@ -42,8 +42,9 @@ base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
-# rustls with the platform verifier, so hosts behind TLS-inspecting proxies
-# work with the system trust store.
+# rustls. The gateway is trusted through Let's Encrypt's roots only, or the
+# platform verifier with `gateway_trust = "system"` (crates/updawg-agent-core/
+# src/trust.rs).
 reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 x509-parser = { version = "0.18", features = ["verify-aws"] }

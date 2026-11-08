@@ -275,6 +275,10 @@ pub struct AgentConfig {
     /// because the server can't change this file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_org_key: Option<String>,
+    /// Which CAs may vouch for the gateway: Let's Encrypt's roots by default,
+    /// or `system` on a network that inspects TLS. See [`crate::trust`].
+    #[serde(default)]
+    pub gateway_trust: crate::trust::GatewayTrust,
 }
 
 impl AgentConfig {
@@ -389,6 +393,7 @@ mod tests {
             reboot: RebootSettings::default(),
             health_checks: Vec::new(),
             trusted_org_key: None,
+            gateway_trust: crate::trust::GatewayTrust::default(),
         }
     }
 
@@ -413,6 +418,20 @@ mod tests {
             ..managed(&[], &[])
         };
         assert!(!cfg.admits(JobKind::RefreshInventory, None));
+    }
+
+    #[test]
+    fn the_gateway_is_trusted_through_lets_encrypt_unless_told_otherwise() {
+        use crate::trust::GatewayTrust;
+        let default = AgentConfig::from_toml("server = \"https://a\"\n").unwrap();
+        assert_eq!(default.gateway_trust, GatewayTrust::LetsEncrypt);
+        let system =
+            AgentConfig::from_toml("server = \"https://a\"\ngateway_trust = \"system\"\n").unwrap();
+        assert_eq!(system.gateway_trust, GatewayTrust::System);
+        // a typo doesn't quietly mean either
+        assert!(
+            AgentConfig::from_toml("server = \"https://a\"\ngateway_trust = \"sytem\"\n").is_err()
+        );
     }
 
     #[test]
@@ -618,6 +637,7 @@ mod policy_tests {
             reboot: RebootSettings::default(),
             health_checks: Vec::new(),
             trusted_org_key: None,
+            gateway_trust: crate::trust::GatewayTrust::default(),
         }
     }
 

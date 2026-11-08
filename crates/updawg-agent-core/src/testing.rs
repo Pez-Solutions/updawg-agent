@@ -354,9 +354,10 @@ impl TestGateway {
 }
 
 pub(crate) fn transport(host: &EnrolledHost, gateway: &TestGateway, ca: &TestCa) -> MtlsTransport {
-    MtlsTransport::with_extra_root(
+    MtlsTransport::with_trust(
         &gateway.url(),
         host.state.clone(),
+        crate::trust::GatewayTrust::default(),
         Some(ca.pem.clone().into_bytes()),
     )
     .unwrap()

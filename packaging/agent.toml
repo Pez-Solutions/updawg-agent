@@ -16,6 +16,11 @@ mode = "managed"
 # pinned before doesn't lead back to it.
 # trusted_org_key = "MCowBQYDK2VwAyEA..."
 
+# The gateway's certificate is from Let's Encrypt, and by default this agent
+# trusts only Let's Encrypt's roots for it, not every CA the host trusts. On a
+# network that inspects TLS with its own CA, use the host's trust store:
+# gateway_trust = "system"
+
 [permissions]
 # Every kind of job. Each one still has to be approved and signed by your
 # organization first. Take a kind out, or add it to deny, to keep this host

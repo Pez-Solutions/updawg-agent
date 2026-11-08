@@ -215,9 +215,10 @@ fn transport(
     state: &LocalState,
     extra_root: Option<&[u8]>,
 ) -> Result<MtlsTransport, updawg_agent_core::transport::TransportError> {
-    MtlsTransport::with_extra_root(
+    MtlsTransport::with_trust(
         &config.server,
         state.clone(),
+        config.gateway_trust,
         extra_root.map(<[u8]>::to_vec),
     )
 }

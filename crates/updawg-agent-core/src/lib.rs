@@ -20,6 +20,7 @@ pub mod state;
 #[cfg(test)]
 mod testing;
 pub mod transport;
+pub mod trust;
 
 /// The agent version, identical to the package version.
 ///
