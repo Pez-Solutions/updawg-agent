@@ -41,7 +41,7 @@ updawg-collectors = { workspace = true, features = ["testing"] }
 # versions reqwest already pulls in.
 # x509-parser: the fake gateway signs the agent's CSR.
 rcgen = { workspace = true, features = ["x509-parser"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "test-util"] }
 tokio-rustls = "0.26"
 x509-parser.workspace = true
 
