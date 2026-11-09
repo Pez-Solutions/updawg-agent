@@ -129,13 +129,14 @@ async fn main() -> Result<()> {
         "configuration loaded"
     );
 
-    for kind in [
-        JobKind::RefreshInventory,
-        JobKind::ApplyUpdates,
-        JobKind::Reboot,
-        JobKind::Snapshot,
-        JobKind::DistUpgrade,
-    ] {
+    if !config.not_understood.is_empty() {
+        tracing::error!(
+            keys = ?config.not_understood,
+            "agent.toml has keys this agent doesn't understand; running as observe-only until they're fixed"
+        );
+    }
+
+    for kind in JobKind::ALL {
         tracing::info!(
             ?kind,
             permitted = config.admits(kind, None),
@@ -144,6 +145,13 @@ async fn main() -> Result<()> {
     }
 
     if cli.check_config {
+        if !config.not_understood.is_empty() {
+            anyhow::bail!(
+                "{} has keys this agent doesn't understand: {}",
+                cli.config,
+                config.not_understood.join(", ")
+            );
+        }
         tracing::info!("configuration is valid");
         return Ok(());
     }

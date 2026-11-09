@@ -511,7 +511,13 @@ impl Executor {
     /// reboots, rather than installing and silently skipping the reboot.
     fn not_permitted(&self, job: &Job) -> Option<String> {
         if !self.config.admits(job.kind(), None) {
-            return Some(if self.config.mode == crate::config::Mode::Observe {
+            return Some(if !self.config.not_understood.is_empty() {
+                format!(
+                    "agent.toml has keys this agent doesn't understand ({}), so it changes \
+                     nothing until they're fixed",
+                    self.config.not_understood.join(", ")
+                )
+            } else if self.config.mode == crate::config::Mode::Observe {
                 "this agent is in observe mode, which refuses every job that changes the host"
                     .to_owned()
             } else {
@@ -1920,6 +1926,17 @@ mod tests {
         assert!(refused[1].contains("hst_somebody_else"), "{}", refused[1]);
         assert!(refused[2].contains("expired"), "{}", refused[2]);
         assert!(refused[3].contains("may not start"), "{}", refused[3]);
+        assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    /// `mode = "observe"` appended below `[permissions]`: the operator meant
+    /// to stop changes, and nothing says it didn't take.
+    #[tokio::test]
+    async fn a_config_with_keys_the_agent_does_not_know_runs_nothing_and_says_why() {
+        let w = world_allowing("managed", succeeds, "mode = \"observe\"", "\"apply_patch\"");
+        w.executor.deliver(job(&w, |_| {})).await;
+        let refused = refusals(&w);
+        assert!(refused[0].contains("permissions.mode"), "{refused:?}");
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
     }
 
