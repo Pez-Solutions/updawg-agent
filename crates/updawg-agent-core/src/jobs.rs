@@ -930,6 +930,32 @@ async fn self_update(
     }
 }
 
+/// How long a job waits for the package manager: its `timeout_s`, kept
+/// between five minutes and a day.
+fn time_limit(job: &Job) -> std::time::Duration {
+    let asked = match &job.spec {
+        JobSpec::ApplyUpdates(apply) => apply.timeout_s,
+        JobSpec::DistUpgrade(upgrade) => upgrade.timeout_s,
+        _ => 3600,
+    };
+    std::time::Duration::from_secs(asked.clamp(300, 86_400))
+}
+
+/// The report for a package manager that outlived `limit`. It is left
+/// running: stopping dpkg or rpm part-way can leave packages half-configured,
+/// which is worse than waiting. A later job finds the package lock held and
+/// says so.
+fn timed_out(started_at: DateTime<Utc>, limit: std::time::Duration, log: &JobLog) -> JobComplete {
+    let why = format!(
+        "the package manager hadn't finished after {} minutes, so the agent stopped waiting \
+         and left it running; stopping it part-way could leave packages broken. Look at the \
+         host before trying again",
+        limit.as_secs() / 60
+    );
+    log.agent(&why);
+    failed(JobStatus::Failed, started_at, Utc::now(), why)
+}
+
 /// Applies the plan, then runs the health checks.
 ///
 /// A failed health check doesn't change the job's status; the report keeps
@@ -946,7 +972,11 @@ async fn run(
     log: &JobLog,
 ) -> JobComplete {
     let started_at = Utc::now();
-    let outcome = backend.apply(plan, log).await;
+    let limit = time_limit(job);
+    // No health checks either: the install may still be going.
+    let Ok(outcome) = tokio::time::timeout(limit, backend.apply(plan, log)).await else {
+        return timed_out(started_at, limit, log);
+    };
     let mut done = report(job, started_at, outcome);
     if done.status != JobStatus::RejectedByHost {
         done.health_checks = checks_reported(job, checks, log).await;
@@ -1178,7 +1208,12 @@ async fn upgrade_release(
         }
     };
     log.agent(format!("upgrading this host to release {target}"));
-    let outcome = backend.dist_upgrade(target, log).await;
+    let limit = time_limit(job);
+    let Ok(outcome) = tokio::time::timeout(limit, backend.dist_upgrade(target, log)).await else {
+        let mut done = timed_out(started_at, limit, log);
+        done.snapshot_id = taken;
+        return (done, RebootPolicy::Never);
+    };
     let after = outcome.as_ref().ok().and_then(|o| o.after_reboot.clone());
     let mut done = report(job, started_at, outcome);
     done.snapshot_id = taken;
@@ -1649,6 +1684,8 @@ mod tests {
         packages: std::sync::Mutex<Vec<InstalledPackage>>,
         /// Target of a leapp-style upgrade that completes at reboot.
         upgrades_at_reboot: std::sync::Mutex<Option<String>>,
+        /// `apply` never returns, like apt stuck on a maintainer script.
+        hangs: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
@@ -1683,6 +1720,10 @@ mod tests {
             log: &dyn LogSink,
         ) -> updawg_backends::Result<ApplyOutcome> {
             self.applied.fetch_add(1, Ordering::SeqCst);
+            if self.hangs.load(Ordering::SeqCst) {
+                log.line("Setting up openssl (3.5.1-2) ...");
+                std::future::pending::<()>().await;
+            }
             log.line("Unpacking openssl (3.5.1-2) over (3.5.1-1) ...");
             log.line("Setting up openssl (3.5.1-2) ...");
             (self.outcome)(plan)
@@ -1803,6 +1844,7 @@ mod tests {
             applied: AtomicUsize::new(0),
             packages: std::sync::Mutex::default(),
             upgrades_at_reboot: std::sync::Mutex::default(),
+            hangs: std::sync::atomic::AtomicBool::new(false),
         });
         let executor = Executor::new(
             Arc::clone(&gateway) as Arc<dyn Reporter>,
@@ -1938,6 +1980,45 @@ mod tests {
         let refused = refusals(&w);
         assert!(refused[0].contains("permissions.mode"), "{refused:?}");
         assert_eq!(w.backend.applied.load(Ordering::SeqCst), 0);
+    }
+
+    /// Paused time: the ten minutes pass at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_package_manager_that_hangs_fails_the_job_when_its_time_is_up() {
+        let w = world("managed", succeeds);
+        w.backend.hangs.store(true, Ordering::SeqCst);
+        w.executor
+            .deliver(job(&w, |j| {
+                if let JobSpec::ApplyUpdates(apply) = &mut j.spec {
+                    apply.timeout_s = 600;
+                }
+            }))
+            .await;
+        tokio::time::sleep(std::time::Duration::from_secs(601)).await;
+        let done = completed(&w).await;
+        assert_eq!(done.status, JobStatus::Failed, "{done:?}");
+        assert!(
+            done.error.as_deref().unwrap().contains("after 10 minutes"),
+            "{done:?}"
+        );
+        // the install may still be going, so no checks
+        assert!(done.health_checks.is_empty());
+    }
+
+    #[test]
+    fn a_jobs_time_limit_is_kept_between_five_minutes_and_a_day() {
+        let w = world("managed", succeeds);
+        let with = |timeout_s| {
+            job(&w, |j| {
+                if let JobSpec::ApplyUpdates(apply) = &mut j.spec {
+                    apply.timeout_s = timeout_s;
+                }
+            })
+        };
+        let secs = |timeout_s| time_limit(&with(timeout_s)).as_secs();
+        assert_eq!(secs(0), 300);
+        assert_eq!(secs(3600), 3600);
+        assert_eq!(secs(u64::MAX), 86_400);
     }
 
     #[tokio::test]
