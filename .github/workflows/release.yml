@@ -46,10 +46,8 @@ jobs:
       # part of the output bytes.
       - uses: ./.github/actions/cross
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: release-musl
-
+      # No build cache: any workflow on main can write one, so a release
+      # starts from nothing but the lockfile.
       - name: build
         run: sh packaging/build.sh x86_64-unknown-linux-musl out
 
@@ -71,11 +69,7 @@ jobs:
 
       - uses: ./.github/actions/cross
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: release-aarch64-musl
-
-      # cross provides the aarch64 musl C toolchain aws-lc-rs needs.
+      # No build cache, like x86_64. cross provides the aarch64 musl C toolchain aws-lc-rs needs.
       - name: build
         run: sh packaging/build.sh aarch64-unknown-linux-musl out
 
@@ -224,15 +218,14 @@ jobs:
           done
           [ -z "$failed" ] || { echo "FAILED:$failed"; exit 1; }
 
-  # Rebuilds x86_64's binaries and packages from a fresh checkout on another
-  # machine, with a cold cache and another time zone, and compares the bytes.
-  # Nothing publishes unless they match. aarch64 is the same script in another
-  # image, so it isn't rebuilt.
+  # Rebuilds both architectures' binaries and packages from a fresh checkout
+  # on another machine, in another time zone, and compares the bytes. Nothing
+  # publishes unless they match.
   reproducible:
     name: rebuilt elsewhere, byte for byte
-    needs: [x86_64, packages]
+    needs: [x86_64, aarch64, packages]
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -245,7 +238,12 @@ jobs:
         working-directory: rebuild/somewhere-else
         env:
           TZ: Pacific/Kiritimati
-        run: sh packaging/build.sh x86_64-unknown-linux-musl "$RUNNER_TEMP/rebuilt/bin"
+        # Each from a clean target/, as the release jobs build them: build
+        # scripts compiled in one cross image don't run in the other.
+        run: |
+          sh packaging/build.sh x86_64-unknown-linux-musl "$RUNNER_TEMP/rebuilt/bin"
+          sudo rm -rf target
+          sh packaging/build.sh aarch64-unknown-linux-musl "$RUNNER_TEMP/rebuilt/bin-arm64"
 
       # Into the workspace's .nfpm/, which is outside the rebuild's checkout.
       - uses: ./rebuild/somewhere-else/.github/actions/nfpm
@@ -255,12 +253,19 @@ jobs:
         env:
           TZ: Pacific/Kiritimati
           NFPM: ${{ github.workspace }}/.nfpm/nfpm
-        run: sh packaging/nfpm/package.sh amd64 "$RUNNER_TEMP/rebuilt/bin" "$RUNNER_TEMP/rebuilt/pkg"
+        run: |
+          sh packaging/nfpm/package.sh amd64 "$RUNNER_TEMP/rebuilt/bin" "$RUNNER_TEMP/rebuilt/pkg"
+          sh packaging/nfpm/package.sh arm64 "$RUNNER_TEMP/rebuilt/bin-arm64" "$RUNNER_TEMP/rebuilt/pkg"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bin-x86_64
           path: released/bin/
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-aarch64
+          path: released/bin-arm64/
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -272,7 +277,10 @@ jobs:
           set -u
           r=$RUNNER_TEMP/rebuilt
           : > pairs
-          for b in updawgd updawgctl; do echo "released/bin/$b $r/bin/$b" >> pairs; done
+          for b in updawgd updawgctl; do
+            echo "released/bin/$b $r/bin/$b" >> pairs
+            echo "released/bin-arm64/$b $r/bin-arm64/$b" >> pairs
+          done
           for f in "$r"/pkg/*; do echo "released/pkg/$(basename "$f") $f" >> pairs; done
           : > differ
           while read -r a b; do
