@@ -238,8 +238,11 @@ jobs:
         working-directory: rebuild/somewhere-else
         env:
           TZ: Pacific/Kiritimati
+        # Each from a clean target/, as the release jobs build them: build
+        # scripts compiled in one cross image don't run in the other.
         run: |
           sh packaging/build.sh x86_64-unknown-linux-musl "$RUNNER_TEMP/rebuilt/bin"
+          sudo rm -rf target
           sh packaging/build.sh aarch64-unknown-linux-musl "$RUNNER_TEMP/rebuilt/bin-arm64"
 
       # Into the workspace's .nfpm/, which is outside the rebuild's checkout.
