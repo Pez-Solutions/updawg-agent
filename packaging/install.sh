@@ -24,6 +24,8 @@ set -eu
 
 PKG="${UPDAWG_PKG:-https://pkg.updawg.net}"
 CHANNEL="${UPDAWG_CHANNEL:-stable}"
+# packaging/updawg.asc, the release key (E03ADBB00F8A30E988ACC7FF04BA82A619248C18)
+KEY_SHA256=2444b90d365225e55299bea9670afe7b68da8586a2d937a8e44cb19bd140992d
 
 say() { printf 'updawg: %s\n' "$*"; }
 fail() { printf 'updawg: %s\n' "$*" >&2; exit 1; }
@@ -69,6 +71,8 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fetch "$PKG/updawg.asc" "$tmp/updawg.asc" || fail "could not download $PKG/updawg.asc. Nothing was changed."
+echo "$KEY_SHA256  $tmp/updawg.asc" | sha256sum -c - >/dev/null 2>&1 ||
+  fail "$PKG/updawg.asc is not the Updawg release key this script expects. Nothing was changed."
 
 # -------------------------------------------------------------- repository
 # The key is only trusted for this repository.
@@ -83,7 +87,9 @@ if [ "$family" = apt ]; then
   # confold keeps an agent.toml from an older install.sh.
   apt-get install -y -qq -o Dpkg::Options::=--force-confold updawg-agent
 else
-  rpm --import "$tmp/updawg.asc"
+  # A local file, not the URL: dnf would import whatever key it found there.
+  install -d -m 0755 /etc/pki/rpm-gpg
+  install -m 0644 "$tmp/updawg.asc" /etc/pki/rpm-gpg/RPM-GPG-KEY-updawg
   cat > /etc/yum.repos.d/updawg.repo <<REPO
 [updawg]
 name=Updawg ($CHANNEL)
@@ -91,7 +97,7 @@ baseurl=$PKG/rpm/$CHANNEL
 enabled=1
 repo_gpgcheck=1
 gpgcheck=0
-gpgkey=$PKG/updawg.asc
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-updawg
 REPO
   dnf install -y -q updawg-agent
 fi

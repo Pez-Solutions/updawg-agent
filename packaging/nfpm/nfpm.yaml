@@ -32,6 +32,12 @@ contents:
   - src: stage/updawgd.service
     dst: /usr/lib/systemd/system/updawgd.service
     file_info: { mode: 0644 }
+  # The repository's key for dnf, so the repo file can name a local copy
+  # (postinstall.sh moves an older install.sh's URL over to it).
+  - src: packaging/updawg.asc
+    dst: /etc/pki/rpm-gpg/RPM-GPG-KEY-updawg
+    file_info: { mode: 0644 }
+    packager: rpm
   # conffile / %config(noreplace): upgrades never overwrite an edited config.
   - src: packaging/agent.toml
     dst: /etc/updawg/agent.toml
