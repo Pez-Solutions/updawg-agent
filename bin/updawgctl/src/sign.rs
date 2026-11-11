@@ -286,12 +286,12 @@ pub(crate) async fn sign(options: SignOptions, source: &KeySource) -> Result<()>
     let (mut done, mut skipped) = (0, 0);
     for listed in &unsigned.jobs {
         let job: Job = serde_json::from_str(&listed.document)
-            .with_context(|| format!("{} is not a job this build can read", listed.id))?;
+            .with_context(|| format!("{} is not a job this build can read", shown(&listed.id)))?;
         if job.id.as_str() != listed.id {
             bail!(
                 "the server listed {} with a document for {}; stopping",
-                listed.id,
-                job.id
+                shown(&listed.id),
+                shown(job.id.as_str())
             );
         }
         println!();
@@ -300,17 +300,20 @@ pub(crate) async fn sign(options: SignOptions, source: &KeySource) -> Result<()>
             describe(&job, &listed.host.hostname, listed.proposal_number)
         );
         if job.key_id.as_str() != mine {
-            println!("  skipped: it names {}, not this key ({mine})", job.key_id);
+            println!(
+                "  skipped: it names {}, not this key ({mine})",
+                shown(job.key_id.as_str())
+            );
             skipped += 1;
             continue;
         }
         if let Some(why) = host_would_refuse(&job, chrono::Utc::now()) {
-            println!("  left waiting: a host would refuse it: {why}");
+            println!("  left waiting: a host would refuse it: {}", shown(&why));
             skipped += 1;
             continue;
         }
         if let Some(why) = options.policy.as_ref().and_then(|p| p.refuses(&job)) {
-            println!("  left waiting: {why}");
+            println!("  left waiting: {}", shown(&why));
             skipped += 1;
             continue;
         }
@@ -351,11 +354,43 @@ fn host_would_refuse(job: &Job, now: chrono::DateTime<chrono::Utc>) -> Option<St
     })
 }
 
+/// `text` from the server, safe to print: control characters (terminal
+/// escapes among them), bidirectional overrides and zero-width characters
+/// are written as `\u{..}`. Without this a server could make what's printed
+/// differ from what's signed, by moving the cursor or reordering a line.
+fn shown(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let hidden = c.is_control()
+                || matches!(
+                    c,
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2060}'..='\u{2069}'
+                        | '\u{feff}'
+                );
+            if hidden {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// Every field the signature covers, so what's approved here is all of what
+/// the host will be told.
 fn describe(job: &Job, hostname: &str, proposal: Option<i64>) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
-    let _ = writeln!(out, "{} for {}", job.id, job.host_id);
-    let _ = writeln!(out, "  host (as the server names it): {hostname}");
+    let _ = writeln!(
+        out,
+        "{} for {}",
+        shown(job.id.as_str()),
+        shown(job.host_id.as_str())
+    );
+    let _ = writeln!(out, "  host (as the server names it): {}", shown(hostname));
     if let Some(number) = proposal {
         let _ = writeln!(out, "  proposal: #{number}");
     }
@@ -366,42 +401,58 @@ fn describe(job: &Job, hostname: &str, proposal: Option<i64>) -> String {
         JobSpec::RunPreflight(p) => {
             let _ = writeln!(out, "  run preflight checks, changing nothing");
             if let Some(release) = &p.target_release {
-                let _ = writeln!(out, "    for an upgrade to {release}");
+                let _ = writeln!(out, "    for an upgrade to {}", shown(release));
             }
             pins(&mut out, &p.packages);
         }
         JobSpec::ApplyUpdates(a) => {
             let _ = writeln!(
                 out,
-                "  install exactly these versions (snapshot: {}, reboot: {}):",
+                "  install exactly these versions (snapshot: {}, reboot: {}, give up after {}s):",
                 word(&a.snapshot),
-                word(&a.reboot)
+                word(&a.reboot),
+                a.timeout_s
             );
             pins(&mut out, &a.packages);
         }
         JobSpec::DistUpgrade(d) => {
             let _ = writeln!(
                 out,
-                "  upgrade the distribution to {} (snapshot: {}, reboot: {})",
-                d.target_release,
+                "  upgrade the distribution to {} (snapshot: {}, reboot: {}, give up after {}s)",
+                shown(&d.target_release),
                 word(&d.snapshot),
-                word(&d.reboot)
+                word(&d.reboot),
+                d.timeout_s
             );
         }
         JobSpec::Reboot(r) => {
-            let _ = writeln!(out, "  reboot ({})", word(&r.policy));
+            let _ = writeln!(
+                out,
+                "  reboot ({}, delay {}s, message: {})",
+                word(&r.policy),
+                r.delay_s,
+                r.message
+                    .as_deref()
+                    .map_or_else(|| "none".to_owned(), shown)
+            );
         }
-        JobSpec::Snapshot(_) => {
-            let _ = writeln!(out, "  take a snapshot");
+        JobSpec::Snapshot(s) => {
+            let _ = writeln!(
+                out,
+                "  take a snapshot (description: {})",
+                s.description
+                    .as_deref()
+                    .map_or_else(|| "none".to_owned(), shown)
+            );
         }
         JobSpec::Rollback(r) => {
-            let _ = writeln!(out, "  roll back to snapshot {}", r.snapshot_id);
+            let _ = writeln!(out, "  roll back to snapshot {}", shown(&r.snapshot_id));
         }
         JobSpec::SelfUpdate(s) => {
             let _ = writeln!(
                 out,
                 "  update the agent to {} ({} channel)",
-                s.version,
+                shown(&s.version),
                 word(&s.channel)
             );
         }
@@ -410,13 +461,21 @@ fn describe(job: &Job, hostname: &str, proposal: Option<i64>) -> String {
         let _ = writeln!(out, "  not before {not_before}");
     }
     let _ = writeln!(out, "  expires {}", job.expires_at);
+    let _ = writeln!(out, "  signed as {}", shown(job.key_id.as_str()));
     out
 }
 
 fn pins(out: &mut String, packages: &[PackagePin]) {
     use std::fmt::Write as _;
     for p in packages {
-        let _ = writeln!(out, "    {} ({}) {} -> {}", p.name, p.arch, p.from, p.to);
+        let _ = writeln!(
+            out,
+            "    {} ({}) {} -> {}",
+            shown(&p.name),
+            shown(&p.arch),
+            shown(&p.from),
+            shown(&p.to)
+        );
     }
 }
 
@@ -473,7 +532,7 @@ impl Api {
         if !status.is_success() {
             bail!(
                 "{path}: {status}: {}",
-                response.text().await.unwrap_or_default()
+                shown(&response.text().await.unwrap_or_default())
             );
         }
         response
@@ -494,8 +553,9 @@ impl Api {
         let status = response.status();
         if !status.is_success() {
             bail!(
-                "{job}: the server refused the signature ({status}): {}",
-                response.text().await.unwrap_or_default()
+                "{}: the server refused the signature ({status}): {}",
+                shown(job),
+                shown(&response.text().await.unwrap_or_default())
             );
         }
         Ok(())
@@ -600,6 +660,46 @@ mod tests {
         );
         assert!(shown.contains("reboot: never"), "{shown}");
         assert!(shown.contains("#142"), "{shown}");
+    }
+
+    /// A server that could print its own cursor movements could make a
+    /// rollback read as a snapshot, or hide a package behind another.
+    #[test]
+    fn what_the_server_sends_is_printed_with_nothing_hidden() {
+        let mut sneaky = job();
+        if let JobSpec::ApplyUpdates(ref mut apply) = sneaky.spec {
+            apply.packages[0].name = "openssl\u{1b}[1A\u{1b}[2Kcurl".into();
+            apply.packages[0].to = "3.5.1-2\u{202e}1-1.5.3".into();
+        }
+        let printed = describe(&sneaky, "web-03\r", None);
+        assert!(!printed.contains('\u{1b}'), "{printed}");
+        assert!(!printed.contains('\u{202e}'), "{printed}");
+        assert!(!printed.contains('\r'), "{printed}");
+        assert!(printed.contains("openssl\\u{1b}[1A"), "{printed}");
+        assert!(printed.contains("\\u{202e}"), "{printed}");
+        assert_eq!(shown("plain café 1.0+b1"), "plain café 1.0+b1");
+    }
+
+    #[test]
+    fn every_signed_field_is_shown() {
+        let mut reboot = job();
+        reboot.spec = JobSpec::Reboot(updawg_protocol::job::Reboot {
+            policy: updawg_protocol::job::RebootPolicy::Always,
+            delay_s: 600,
+            message: Some("back soon".into()),
+        });
+        let printed = describe(&reboot, "web-03", None);
+        assert!(printed.contains("delay 600s"), "{printed}");
+        assert!(printed.contains("message: back soon"), "{printed}");
+        assert!(printed.contains("signed as sk_customer"), "{printed}");
+
+        let mut snapshot = job();
+        snapshot.spec = JobSpec::Snapshot(updawg_protocol::job::Snapshot {
+            description: Some("before the upgrade".into()),
+        });
+        assert!(describe(&snapshot, "web-03", None).contains("description: before the upgrade"));
+
+        assert!(describe(&job(), "web-03", None).contains("give up after"));
     }
 
     #[test]
