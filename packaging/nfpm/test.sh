@@ -43,7 +43,9 @@ grep -q '^ExecStart=/usr/bin/updawgd$' /usr/lib/systemd/system/updawgd.service \
 ok "installed $(version)"
 
 if [ $fmt = rpm ]; then
-  cmp -s /etc/pki/rpm-gpg/RPM-GPG-KEY-updawg packaging/updawg.asc || fail "the repository key is not installed"
+  # no cmp in minimal images (diffutils)
+  [ "$(cat /etc/pki/rpm-gpg/RPM-GPG-KEY-updawg 2>/dev/null)" = "$(cat packaging/updawg.asc)" ] \
+    || fail "the repository key is not installed"
   grep -qx 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-updawg' /etc/yum.repos.d/updawg.repo \
     || fail "the repo file still names the key by URL"
   ok "dnf takes the repository key from the package, not a URL"
