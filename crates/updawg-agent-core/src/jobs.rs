@@ -194,6 +194,9 @@ pub fn check_job(
             job.host_id
         ));
     }
+    if !plausible_job_id(job.id.as_str()) {
+        return Err(format!("{:?} is not a job id", job.id.as_str()));
+    }
     keys.verify_job(job)
         .map_err(|e| format!("the job does not verify: {e}"))?;
     if job.expires_at <= now {
@@ -213,6 +216,26 @@ pub fn check_job(
         ));
     }
     Ok(())
+}
+
+/// A snapshot description from the server, as it may be stored: control
+/// characters dropped (ZFS keeps it as a property the agent later reads back
+/// a line at a time) and at most 200 characters.
+fn snapshot_description(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).take(200).collect()
+}
+
+/// Whether `id` is spelt the way the server spells job ids, `job_` and up to
+/// 64 letters, digits, `-` or `_`. It names snapshots and LVM volumes and
+/// goes into paths, so nothing else is accepted.
+fn plausible_job_id(id: &str) -> bool {
+    id.strip_prefix("job_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 64
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    })
 }
 
 /// Refuses pins that aren't plain names, architectures and versions. They
@@ -635,8 +658,8 @@ impl Executor {
                 self.provider_for(job)?,
                 snapshot
                     .description
-                    .clone()
-                    .unwrap_or_else(|| format!("updawg: {}", job.id)),
+                    .as_deref()
+                    .map_or_else(|| format!("updawg: {}", job.id), snapshot_description),
             ),
             JobSpec::Rollback(rollback) => {
                 let provider = self.provider_for(job)?;
@@ -2019,6 +2042,38 @@ mod tests {
         assert_eq!(secs(0), 300);
         assert_eq!(secs(3600), 3600);
         assert_eq!(secs(u64::MAX), 86_400);
+    }
+
+    #[test]
+    fn job_ids_are_the_servers_spelling_and_nothing_else() {
+        for good in [
+            "job_0190a0de000070008000000000000001",
+            "job_01J9ZD",
+            "job_a-b_c",
+        ] {
+            assert!(plausible_job_id(good), "{good}");
+        }
+        let long = format!("job_{}", "a".repeat(65));
+        for bad in [
+            "job_",
+            "1234",
+            "job_a/../b",
+            "job_a b",
+            "job_a,x=1",
+            "job_é",
+            long.as_str(),
+        ] {
+            assert!(!plausible_job_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_description_is_stored_without_control_characters() {
+        assert_eq!(
+            snapshot_description("before\nthe\tupgrade\u{1b}[2K"),
+            "beforetheupgrade[2K"
+        );
+        assert_eq!(snapshot_description(&"x".repeat(500)).len(), 200);
     }
 
     #[tokio::test]
