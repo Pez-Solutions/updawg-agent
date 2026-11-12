@@ -27,6 +27,13 @@ version() {
 }
 conf=/etc/updawg/agent.toml
 
+# A repo file as an older install.sh wrote it, naming the key by URL.
+if [ $fmt = rpm ]; then
+  mkdir -p /etc/yum.repos.d
+  printf '[updawg]\nbaseurl=https://pkg.updawg.net/rpm/stable\ngpgkey=https://pkg.updawg.net/updawg.asc\n' \
+    > /etc/yum.repos.d/updawg.repo
+fi
+
 install_pkg "$old"
 [ -x /usr/bin/updawgd ] && [ -x /usr/bin/updawgctl ] || fail "binaries not installed"
 /usr/bin/updawgctl --version >/dev/null || fail "updawgctl does not run"
@@ -34,6 +41,15 @@ grep -q '^ExecStart=/usr/bin/updawgd$' /usr/lib/systemd/system/updawgd.service \
   || fail "the unit does not run /usr/bin/updawgd"
 [ "$(cat "$conf")" = "$(cat packaging/agent.toml)" ] || fail "$conf is not the default"
 ok "installed $(version)"
+
+if [ $fmt = rpm ]; then
+  # no cmp in minimal images (diffutils)
+  [ "$(cat /etc/pki/rpm-gpg/RPM-GPG-KEY-updawg 2>/dev/null)" = "$(cat packaging/updawg.asc)" ] \
+    || fail "the repository key is not installed"
+  grep -qx 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-updawg' /etc/yum.repos.d/updawg.repo \
+    || fail "the repo file still names the key by URL"
+  ok "dnf takes the repository key from the package, not a URL"
+fi
 
 echo '# edited on this host' >> "$conf"
 mkdir -p /var/lib/updawg && echo identity > /var/lib/updawg/marker

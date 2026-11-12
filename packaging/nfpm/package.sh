@@ -31,7 +31,7 @@ sed 's|^ExecStart=/usr/local/bin/updawgd$|ExecStart=/usr/bin/updawgd|' \
   packaging/systemd/updawgd.service > stage/updawgd.service
 grep -q '^ExecStart=/usr/bin/updawgd$' stage/updawgd.service
 chmod 0644 stage/updawgd.service
-touch -d "@$SOURCE_DATE_EPOCH" stage/* packaging/agent.toml packaging/nfpm/*.sh
+touch -d "@$SOURCE_DATE_EPOCH" stage/* packaging/agent.toml packaging/updawg.asc packaging/nfpm/*.sh
 
 mkdir -p "$out"
 for fmt in deb rpm; do

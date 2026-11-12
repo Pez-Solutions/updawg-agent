@@ -19,6 +19,15 @@ if [ -f /etc/systemd/system/updawgd.service ] \
   echo "updawg-agent: to run the packaged agent, remove it and /usr/local/bin/updawgd and /usr/local/bin/updawgctl, then: systemctl daemon-reload && systemctl restart updawgd" >&2
 fi
 
+# An older install.sh pointed dnf at the key by URL, which lets dnf import a
+# replacement from there without asking. Point it at the copy this package
+# installs instead.
+repo=/etc/yum.repos.d/updawg.repo
+if [ -f "$repo" ] && [ -f /etc/pki/rpm-gpg/RPM-GPG-KEY-updawg ] \
+  && grep -q '^gpgkey=https://.*/updawg\.asc$' "$repo"; then
+  sed -i 's|^gpgkey=https://.*/updawg\.asc$|gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-updawg|' "$repo"
+fi
+
 # No systemd (container, chroot).
 [ -d /run/systemd/system ] || exit 0
 

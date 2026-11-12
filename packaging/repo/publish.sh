@@ -36,6 +36,14 @@ KEEP=${KEEP:-40}
 gs="gs://$BUCKET"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+
+# install.sh and the rpm check the key by these exact bytes, so it may only
+# change together with packaging/updawg.asc. Before anything is uploaded.
+"$SIGN" public-key > "$work/updawg.asc"
+cmp -s "$work/updawg.asc" packaging/updawg.asc || {
+  echo "publish.sh: the signer's public key is not packaging/updawg.asc" >&2
+  exit 1
+}
 IMMUTABLE="public, max-age=31536000, immutable"
 FRESH="no-cache"
 
@@ -119,8 +127,8 @@ gcloud storage cp --cache-control="$FRESH" \
 gcloud storage rsync --delete-unmatched-destination-objects --cache-control="$FRESH" \
   "$work/rpm/$channel/repodata" "$gs/rpm/$channel/repodata"
 
-# 7. The key, and last the list, which is what the next run starts from.
-"$SIGN" public-key > "$work/updawg.asc"
+# 7. The key (checked at the top), and last the list, which is what the next
+# run starts from.
 gcloud storage cp --cache-control="$FRESH" "$work/updawg.asc" "$gs/updawg.asc"
 gcloud storage cp --cache-control="$FRESH" "$work/list" "$gs/channels/$channel.txt"
 echo "published $(wc -l < "$work/new") file(s) to $channel"
