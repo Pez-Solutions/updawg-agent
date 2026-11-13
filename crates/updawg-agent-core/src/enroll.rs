@@ -400,8 +400,12 @@ impl HttpsEnrollExchange {
             });
         }
 
+        // No redirects: the token is in the body, which a redirect would
+        // carry wherever it pointed.
         let builder = reqwest::Client::builder()
             .timeout(ENROLL_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .https_only(true)
             .user_agent(format!("updawg-agent/{}", crate::VERSION));
         let builder = crate::trust::configure(builder, trust, extra_root).map_err(|detail| {
             EnrollError::Unreachable {
@@ -444,20 +448,16 @@ impl EnrollExchange for HttpsEnrollExchange {
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(EnrollError::TokenRejected);
             }
-            let detail = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "no response body".into());
             return Err(EnrollError::ServerRefused {
                 status: status.as_u16(),
-                detail: problem_detail(&detail),
+                detail: crate::limits::error_text(response).await,
             });
         }
 
-        response
-            .json::<EnrollResponse>()
+        let body = crate::limits::body(response, crate::limits::MAX_RESPONSE)
             .await
-            .map_err(|e| EnrollError::BadResponse(e.to_string()))
+            .map_err(EnrollError::BadResponse)?;
+        serde_json::from_slice(&body).map_err(|e| EnrollError::BadResponse(e.to_string()))
     }
 }
 

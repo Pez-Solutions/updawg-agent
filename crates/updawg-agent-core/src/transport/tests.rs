@@ -301,6 +301,25 @@ async fn a_gateway_certificate_from_another_ca_is_refused_with_what_to_change() 
     assert!(gateway.seen().is_empty());
 }
 
+/// A gateway, or whoever answers as one, streaming far more than any real
+/// answer: refused, rather than read into a daemon running as root.
+#[tokio::test]
+async fn an_answer_larger_than_any_real_one_is_refused() {
+    let ca = TestCa::new();
+    let host = EnrolledHost::new(&ca, THIRTY_DAYS);
+    let huge = format!(
+        r#"{{"next_checkin_s":0,"inventory_requested":false,"config_version":1,"pad":"{}"}}"#,
+        "x".repeat(5 << 20)
+    );
+    let gateway = TestGateway::start(&ca, vec![(200, huge)]).await;
+    let transport = transport(&host, &gateway, &ca);
+    let err = transport
+        .check_in(&checkin_request(), LONG_POLL)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("larger than"), "{err}");
+}
+
 #[tokio::test]
 async fn a_rejected_certificate_says_what_to_do_about_it() {
     let ca = TestCa::new();

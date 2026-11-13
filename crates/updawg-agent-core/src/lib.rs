@@ -9,6 +9,7 @@ pub mod insecure;
 pub mod inventory;
 pub mod joblog;
 pub mod jobs;
+mod limits;
 pub mod logging;
 pub mod preflight;
 pub mod readiness;

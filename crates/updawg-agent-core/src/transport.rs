@@ -511,17 +511,11 @@ impl MtlsTransport {
             200..=299 => Ok(true),
             // permanent refusals
             400 | 404 | 409 | 413 => Ok(false),
-            _ => {
-                let detail = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "no response body".into());
-                Err(TransportError::Server {
-                    url,
-                    status,
-                    detail: crate::enroll::problem_detail(&detail),
-                })
-            }
+            _ => Err(TransportError::Server {
+                url,
+                status,
+                detail: crate::limits::error_text(response).await,
+            }),
         }
     }
 
@@ -548,14 +542,10 @@ impl MtlsTransport {
             return Ok(JobAnswer::AlreadyMoved);
         }
         if !status.is_success() {
-            let detail = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "no response body".into());
             return Err(TransportError::Server {
                 url,
                 status: status.as_u16(),
-                detail: crate::enroll::problem_detail(&detail),
+                detail: crate::limits::error_text(response).await,
             });
         }
         Ok(JobAnswer::Recorded)
@@ -586,24 +576,23 @@ impl MtlsTransport {
             return Err(limited);
         }
         if !status.is_success() {
-            let detail = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "no response body".into());
             return Err(TransportError::Server {
                 url,
                 status: status.as_u16(),
-                detail: crate::enroll::problem_detail(&detail),
+                detail: crate::limits::error_text(response).await,
             });
         }
 
-        response
-            .json::<R>()
+        let body = crate::limits::body(response, crate::limits::MAX_RESPONSE)
             .await
-            .map_err(|e| TransportError::BadResponse {
-                url,
-                detail: e.to_string(),
-            })
+            .map_err(|detail| TransportError::BadResponse {
+                url: url.clone(),
+                detail,
+            })?;
+        serde_json::from_slice(&body).map_err(|e| TransportError::BadResponse {
+            url,
+            detail: e.to_string(),
+        })
     }
 
     /// `PUT /agent/v1/inventory`, zstd-compressed.
@@ -647,14 +636,10 @@ impl MtlsTransport {
             return Err(limited);
         }
         if !status.is_success() {
-            let detail = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "no response body".into());
             return Err(TransportError::Server {
                 url,
                 status: status.as_u16(),
-                detail,
+                detail: crate::limits::error_text(response).await,
             });
         }
         Ok(())
@@ -714,9 +699,13 @@ fn build_client(
         ))
     })?;
 
+    // No redirects: the gateway never sends one, and a request followed
+    // somewhere else would take the host's identity with it.
     let builder = reqwest::Client::builder()
         .identity(client_identity)
         .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
         .user_agent(format!("updawg-agent/{}", crate::VERSION));
     let builder = crate::trust::configure(builder, trust, extra_root)
         .map_err(|e| TransportError::Crypto(updawg_crypto::CryptoError::MalformedCertificate(e)))?;

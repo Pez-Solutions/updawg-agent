@@ -513,10 +513,13 @@ async fn stage(
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(true)
         .build()
         .map_err(|e| format!("preparing an HTTP client: {e}"))?;
     let url = format!("{RELEASE_BASE}/bin/{}.json", channel.as_str());
-    let body = fetch(&client, &url).await?;
+    // a signed manifest is a few hundred bytes; it is read before it is checked
+    let body = fetch(&client, &url, 64 << 10).await?;
     let manifest = verify_manifest(&body, RELEASE_KEY, channel)?;
     if manifest.version != to {
         return Err(format!(
@@ -533,7 +536,9 @@ async fn stage(
         let artifact = manifest
             .artifact(target(), name)
             .ok_or_else(|| format!("{to} has no {name} for {}", target()))?;
-        let bytes = fetch(&client, &artifact.url).await?;
+        // no more than the signed manifest says it is
+        let max = usize::try_from(artifact.size_bytes).unwrap_or(usize::MAX);
+        let bytes = fetch(&client, &artifact.url, max).await?;
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if size != artifact.size_bytes || sha256(&bytes) != artifact.sha256 {
             return Err(format!(
@@ -561,7 +566,8 @@ async fn stage(
     Ok(())
 }
 
-async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+/// The body at `url`, if it is no more than `max` bytes.
+async fn fetch(client: &reqwest::Client, url: &str, max: usize) -> Result<Vec<u8>, String> {
     let response = client
         .get(url)
         .send()
@@ -570,11 +576,9 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     if !response.status().is_success() {
         return Err(format!("fetching {url}: {}", response.status()));
     }
-    Ok(response
-        .bytes()
+    crate::limits::body(response, max)
         .await
-        .map_err(|e| format!("reading {url}: {e}"))?
-        .to_vec())
+        .map_err(|e| format!("reading {url}: {e}"))
 }
 
 fn write_executable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
