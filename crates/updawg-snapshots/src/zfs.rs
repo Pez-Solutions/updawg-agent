@@ -220,7 +220,15 @@ impl SnapshotProvider for Zfs {
 pub fn parse_id(id: &str) -> Result<(&str, &str)> {
     id.strip_prefix("zfs:")
         .and_then(|rest| rest.split_once('@'))
-        .filter(|(dataset, name)| !dataset.is_empty() && name.starts_with("updawg-"))
+        .filter(|(dataset, name)| {
+            !dataset.is_empty()
+                && name.strip_prefix("updawg-").is_some_and(|rest| {
+                    !rest.is_empty()
+                        && rest
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c))
+                })
+        })
         .ok_or_else(|| SnapshotError::ForeignId {
             id: id.to_owned(),
             provider: "zfs",

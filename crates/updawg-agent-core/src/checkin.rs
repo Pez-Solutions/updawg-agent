@@ -44,6 +44,10 @@ use updawg_protocol::{CheckinRequest, HostStateReport, Job, LocalPolicy};
 /// gateway that is down fails fast (connection refused, DNS, TLS handshake).
 const SETTLED: Duration = Duration::from_secs(5);
 
+/// The longest the server may tell the agent to wait before checking in
+/// again. Longer, and a host could go quiet until its certificate lapsed.
+const MAX_NEXT_CHECKIN: Duration = Duration::from_secs(3600);
+
 /// Ask for (n-1)/n of the observed idle limit: two thirds, so a proxy that
 /// trims at 30s gets asked for 20s. The observed limit is only an upper bound
 /// and may vary, hence the margin.
@@ -543,7 +547,7 @@ impl GatewayCheckIn {
         self.renew(response.renew_certificate).await;
 
         Ok(CheckinOutcome {
-            next_checkin: Duration::from_secs(response.next_checkin_s),
+            next_checkin: Duration::from_secs(response.next_checkin_s).min(MAX_NEXT_CHECKIN),
             inventory_requested: response.inventory_requested,
         })
     }

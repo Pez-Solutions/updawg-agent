@@ -70,6 +70,10 @@ fn an_id_is_a_dataset_and_one_of_our_snapshot_names() {
     for foreign in [
         "zfs:rpool/ROOT/debian@admins-own",
         "zfs:@updawg-job_x",
+        // a name that a listing broken by a stray tab or newline could yield
+        "zfs:rpool/ROOT/debian@updawg-",
+        "zfs:rpool/ROOT/debian@updawg-job x",
+        "zfs:rpool/ROOT/debian@updawg-job\tdesc",
         "zfs:rpool/ROOT/debian",
         "snapper:4:job_x",
     ] {

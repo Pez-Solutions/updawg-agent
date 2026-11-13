@@ -40,6 +40,14 @@ pub trait Inventory: Send + Sync {
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 const MIN_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Check-ins start at least this far apart, so a gateway that answers at
+/// once with `next_checkin_s = 0` can't keep the agent in a tight loop.
+const MIN_CHECKIN_SPACING: Duration = Duration::from_secs(1);
+
+/// A fresh inventory the server asks for runs at most this often; the
+/// scheduled one runs regardless. Each is a full run of the package manager.
+const MIN_REQUESTED_INVENTORY: Duration = Duration::from_secs(600);
+
 /// Window the first check-in of a process is spread across. Short, since it
 /// only matters when many hosts start at once.
 const STARTUP_SPREAD: Duration = Duration::from_secs(10);
@@ -77,6 +85,7 @@ pub struct Scheduler {
     checkin: Arc<dyn CheckIn>,
     inventory: Arc<dyn Inventory>,
     startup_spread: Duration,
+    checkin_spacing: Duration,
 }
 
 impl std::fmt::Debug for Scheduler {
@@ -99,7 +108,15 @@ impl Scheduler {
             checkin,
             inventory,
             startup_spread: STARTUP_SPREAD,
+            checkin_spacing: MIN_CHECKIN_SPACING,
         }
+    }
+
+    /// Overrides [`MIN_CHECKIN_SPACING`]. For tests.
+    #[must_use]
+    pub fn with_checkin_spacing(mut self, spacing: Duration) -> Self {
+        self.checkin_spacing = spacing;
+        self
     }
 
     /// Overrides [`STARTUP_SPREAD`]. Mostly for tests.
@@ -118,6 +135,7 @@ impl Scheduler {
             self.checkin.clone(),
             self.inventory.clone(),
             self.startup_spread,
+            self.checkin_spacing,
             cancel.clone(),
         ));
         let inventory_task = tokio::spawn(periodic(
@@ -222,6 +240,7 @@ async fn checkin_loop(
     checkin: Arc<dyn CheckIn>,
     inventory: Arc<dyn Inventory>,
     startup_spread: Duration,
+    spacing: Duration,
     cancel: Cancel,
 ) {
     let mut backoff = MIN_BACKOFF;
@@ -236,7 +255,9 @@ async fn checkin_loop(
         }
     }
 
+    let mut last_requested_inventory: Option<tokio::time::Instant> = None;
     while !cancel.is_cancelled() {
+        let started = tokio::time::Instant::now();
         // The long poll can be held for 55s, so race it against shutdown.
         // Dropping it just looks like a trimmed connection to the gateway.
         // The inventory upload below is quick and is left to finish.
@@ -248,12 +269,22 @@ async fn checkin_loop(
             Ok(outcome) => {
                 backoff = MIN_BACKOFF;
                 if outcome.inventory_requested {
-                    tracing::info!("server requested a fresh inventory");
-                    if let Err(error) = inventory.collect_and_upload().await {
-                        tracing::warn!(%error, "inventory upload failed");
+                    if last_requested_inventory
+                        .is_some_and(|at| at.elapsed() < MIN_REQUESTED_INVENTORY)
+                    {
+                        tracing::debug!("server requested a fresh inventory again; too soon");
+                    } else {
+                        tracing::info!("server requested a fresh inventory");
+                        last_requested_inventory = Some(tokio::time::Instant::now());
+                        if let Err(error) = inventory.collect_and_upload().await {
+                            tracing::warn!(%error, "inventory upload failed");
+                        }
                     }
                 }
-                if !outcome.next_checkin.is_zero() && !cancel.sleep(outcome.next_checkin).await {
+                let wait = outcome
+                    .next_checkin
+                    .max(spacing.saturating_sub(started.elapsed()));
+                if !wait.is_zero() && !cancel.sleep(wait).await {
                     break;
                 }
             }
@@ -319,6 +350,7 @@ mod tests {
         collects: AtomicU32,
         refreshes: AtomicU32,
         fail_checkin: std::sync::atomic::AtomicBool,
+        request_inventory: std::sync::atomic::AtomicBool,
     }
 
     struct Fake(Arc<Counters>);
@@ -332,7 +364,7 @@ mod tests {
             }
             Ok(CheckinOutcome {
                 next_checkin: Duration::from_millis(5),
-                inventory_requested: false,
+                inventory_requested: self.0.request_inventory.load(Ordering::SeqCst),
             })
         }
     }
@@ -392,7 +424,8 @@ refresh_metadata = "{refresh}"
         let counters = Arc::new(Counters::default());
         let fake = Arc::new(Fake(counters.clone()));
         let sched = Scheduler::new(config("1h", "1h"), fake.clone(), fake.clone())
-            .with_startup_spread(Duration::ZERO);
+            .with_startup_spread(Duration::ZERO)
+            .with_checkin_spacing(Duration::ZERO);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(sched.run(async move {
@@ -407,6 +440,31 @@ refresh_metadata = "{refresh}"
             counters.checkins.load(Ordering::SeqCst) > 1,
             "check-in should loop, not run once"
         );
+    }
+
+    /// A gateway answering at once with no wait, and asking for an
+    /// inventory every time, over half an hour of paused time.
+    #[tokio::test(start_paused = true)]
+    async fn an_eager_gateway_gets_a_check_in_a_second_and_an_inventory_every_ten_minutes() {
+        let counters = Arc::new(Counters::default());
+        counters.request_inventory.store(true, Ordering::SeqCst);
+        let fake = Arc::new(Fake(counters.clone()));
+        let sched = Scheduler::new(config("6h", "6h"), fake.clone(), fake.clone())
+            .with_startup_spread(Duration::ZERO);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(sched.run(async move {
+            let _ = rx.await;
+        }));
+        tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+        let _ = tx.send(());
+        handle.await.unwrap();
+
+        let checkins = counters.checkins.load(Ordering::SeqCst);
+        assert!((1700..=1801).contains(&checkins), "{checkins} check-ins");
+        // at 0, 10 and 20 minutes, plus the scheduled one at start-up
+        let collects = counters.collects.load(Ordering::SeqCst);
+        assert!((3..=4).contains(&collects), "{collects} inventories");
     }
 
     #[tokio::test]
