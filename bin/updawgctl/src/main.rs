@@ -641,7 +641,10 @@ async fn print_inventory(config_path: &str, json: bool) -> Result<()> {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Nothing else is collected. `--json` prints the exact request body."
+        "That is the whole inventory; `--json` prints the exact request body. Each check-in \
+         also sends counts, load, memory and disk use, the services needing a restart, \
+         this host's local policy and the keys it pinned: see \
+         https://docs.updawg.net/agent/collected-data/"
     );
     emit(&out)
 }
