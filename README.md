@@ -48,12 +48,14 @@ Release binaries are statically linked against musl for `x86_64` and
    nothing else. No listening socket, no SSH. It works behind NAT and strict
    egress firewalls.
 2. **A fixed set of actions.** `JobKind` is a closed enum and has no "run this
-   command" variant. Someone with full control of the Updawg control plane
-   still can't run arbitrary commands on a host. Adding a variant is a
-   security decision.
-3. **Local config wins.** The server can narrow what the agent is allowed to
-   do but never widen it beyond `/etc/updawg/agent.toml`. See
-   `Permissions::intersect` and its tests.
+   command" variant, and every field a job carries is checked before it
+   reaches a command line (`PackagePin::check`, `--` before positional
+   arguments). Someone with full control of the Updawg control plane still
+   can't run arbitrary commands on a host. Adding a variant, or a field that
+   ends up in a command, is a security decision.
+3. **Local config wins.** The server decides what to approve and send, but
+   nothing it sends gets the agent to do more than `/etc/updawg/agent.toml`
+   allows: each job is checked against `[permissions]` and `mode` on the host.
 
 Permissions fail closed: an empty allow list permits nothing, so a truncated
 or broken config leaves the agent reporting but not acting. So does a key it

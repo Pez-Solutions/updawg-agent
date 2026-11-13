@@ -1,8 +1,8 @@
 # Updawg agent configuration. Your edits are kept: neither install.sh nor a
 # package upgrade ever rewrites this file.
 #
-# Local configuration always wins: the server can narrow what this agent does,
-# never widen it past this file.
+# Local configuration always wins: whatever the server approves and sends,
+# this agent does no more than this file allows.
 #
 # `managed` runs jobs your organization approved and signed, but only the
 # kinds allowed below. For a host that must only report, set mode = "observe".

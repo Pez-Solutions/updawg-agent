@@ -456,13 +456,15 @@ refresh_metadata = "{refresh}"
         let handle = tokio::spawn(sched.run(async move {
             let _ = rx.await;
         }));
-        tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+        // short of 30 minutes, where a fourth requested one would be due
+        tokio::time::sleep(Duration::from_secs(29 * 60 + 30)).await;
         let _ = tx.send(());
         handle.await.unwrap();
 
         let checkins = counters.checkins.load(Ordering::SeqCst);
-        assert!((1700..=1801).contains(&checkins), "{checkins} check-ins");
-        // at 0, 10 and 20 minutes, plus the scheduled one at start-up
+        assert!((1700..=1771).contains(&checkins), "{checkins} check-ins");
+        // at 0, 10 and 20 minutes, and the scheduled one if its random first
+        // run fell inside the half hour
         let collects = counters.collects.load(Ordering::SeqCst);
         assert!((3..=4).contains(&collects), "{collects} inventories");
     }
