@@ -202,9 +202,13 @@ pub fn public_url(uri: &str) -> Option<String> {
     if !(scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")) {
         return None;
     }
+    // Credentials first, up to the last `@`: a password with an unencoded `?`
+    // or `/` in it would otherwise be cut there and its start sent as the
+    // host. A path with an `@` in it loses its start instead, which is a wrong
+    // URL but not a leaked secret.
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, after)| after);
     let rest = rest.split(['?', '#']).next().unwrap_or_default();
-    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let (host, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
     if host.is_empty() {
         return None;
     }
@@ -427,6 +431,15 @@ mod wire_tests {
                 Some("http://repo.example.com/deb"),
             ),
             ("HTTPS://Repo.example.com", Some("https://Repo.example.com")),
+            // unencoded `?` and `/` in a password
+            (
+                "https://user:pa?ss@repo.example.com/deb",
+                Some("https://repo.example.com/deb"),
+            ),
+            (
+                "https://user:pa/ss@repo.example.com/deb",
+                Some("https://repo.example.com/deb"),
+            ),
             ("mirror+file:/etc/apt/mirrors/debian.list", None),
             ("file:/srv/repo", None),
             ("tor+https://example.onion/deb", None),

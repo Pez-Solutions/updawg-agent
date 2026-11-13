@@ -284,10 +284,28 @@ pub(crate) async fn half_installed() -> Result<Option<String>> {
 }
 
 /// Returns the original contents of the files it changed.
+/// Writes `text` to `path`, readable by root only.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(text.as_bytes())
+}
+
 fn rewrite_all(host: &Host, target: &str, codename: &str, log: &dyn LogSink) -> Result<Vec<Kept>> {
     let backup =
         Path::new(BACKUPS).join(format!("updawg-dist-upgrade-{}-to-{target}", host.version));
+    // Root only: a source file can hold credentials (`https://user:token@`)
+    // its owner kept 0600, and the copies must not be easier to read.
     std::fs::create_dir_all(&backup)?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o700))?;
+    }
     let firmware = target.parse::<u32>().is_ok_and(|t| t >= FIRMWARE_FROM);
     let mut kept = Vec::new();
     for path in source_files() {
@@ -303,7 +321,7 @@ fn rewrite_all(host: &Host, target: &str, codename: &str, log: &dyn LogSink) -> 
         let name = path
             .file_name()
             .map_or_else(|| "sources".into(), |n| n.to_string_lossy().into_owned());
-        std::fs::write(backup.join(&name), &text)?;
+        write_private(&backup.join(&name), &text)?;
         std::fs::write(&path, &rewrite.text)?;
         log.line(&format!(
             "rewrote {}: {}",

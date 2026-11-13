@@ -44,13 +44,23 @@ impl Default for HostState {
     }
 }
 
+/// How long a needrestart or needs-restarting answer is reused. They run as
+/// root and scan every process, and check-ins come about once a minute; the
+/// reboot flag file is still read every time.
+const NEEDRESTART_REUSE: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Reads volatile host state.
 #[derive(Debug, Clone, Default)]
 pub struct SystemState {
     root: Root,
     /// Read once at construction; it picks the reboot-required check.
     family: Family,
+    restart_cache: RestartCache,
 }
+
+/// The last needrestart answer and when it was had, shared by clones.
+type RestartCache =
+    std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, Option<NeedRestart>)>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Family {
@@ -69,7 +79,11 @@ impl SystemState {
             Ok(os) if os.is_rhel_like() => Family::Rhel,
             _ => Family::Unknown,
         };
-        Ok(Self { root, family })
+        Ok(Self {
+            root,
+            family,
+            restart_cache: std::sync::Arc::default(),
+        })
     }
 
     /// # Errors
@@ -89,7 +103,22 @@ impl SystemState {
         })
     }
 
+    /// [`Self::ask_needrestart`], reused for [`NEEDRESTART_REUSE`].
     fn needrestart(&self) -> Option<NeedRestart> {
+        let Ok(mut cache) = self.restart_cache.lock() else {
+            return self.ask_needrestart();
+        };
+        if let Some((at, report)) = cache.as_ref()
+            && at.elapsed() < NEEDRESTART_REUSE
+        {
+            return report.clone();
+        }
+        let report = self.ask_needrestart();
+        *cache = Some((std::time::Instant::now(), report.clone()));
+        report
+    }
+
+    fn ask_needrestart(&self) -> Option<NeedRestart> {
         if !self.root.is_live() {
             return None;
         }

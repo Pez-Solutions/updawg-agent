@@ -20,6 +20,11 @@ pub const FLUSH_EVERY: Duration = Duration::from_secs(2);
 pub const BATCH: usize = 500;
 /// The most lines kept waiting for an unreachable gateway.
 pub const MAX_PENDING: usize = 20_000;
+
+/// The longest line kept, in bytes. Package manager output is lines of a
+/// few hundred; anything far longer is cut, so the buffer's line limit is
+/// also a limit on its size.
+const MAX_LINE: usize = 8 << 10;
 /// Where the sequence resumes after a reboot. The counter isn't persisted, so
 /// this keeps post-reboot lines clear of the earlier ones. The gateway accepts
 /// sequence numbers up to ten million.
@@ -29,6 +34,19 @@ struct Pending {
     lines: VecDeque<LogLine>,
     next_seq: u64,
     dropped: u64,
+}
+
+/// `line`, cut to [`MAX_LINE`] bytes on a character boundary.
+fn cut_line(mut line: String) -> String {
+    if line.len() > MAX_LINE {
+        let mut cut = MAX_LINE;
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        line.truncate(cut);
+        line.push('…');
+    }
+    line
 }
 
 pub struct JobLog {
@@ -77,6 +95,7 @@ impl JobLog {
     }
 
     fn push(&self, stream: LogStream, line: String) {
+        let line = cut_line(line);
         let Ok(mut pending) = self.pending.lock() else {
             return;
         };
@@ -199,5 +218,18 @@ impl updawg_backends::LogSink for JobLog {
     fn line(&self, line: &str) {
         tracing::info!(job = %self.job.id, "{line}");
         self.push(LogStream::Stdout, line.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_line_is_cut_on_a_character_boundary() {
+        assert_eq!(cut_line("short".into()), "short");
+        let cut = cut_line("é".repeat(10_000));
+        assert!(cut.len() <= MAX_LINE + '…'.len_utf8(), "{}", cut.len());
+        assert!(cut.ends_with('…'));
     }
 }

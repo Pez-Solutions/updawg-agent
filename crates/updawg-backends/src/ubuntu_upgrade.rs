@@ -176,7 +176,7 @@ pub async fn blockers(
             owed.join(", ")
         ));
     }
-    let (status, pending) = read("python3", &["-c", PENDING]).await?;
+    let (status, pending) = read("python3", &["-I", "-c", PENDING]).await?;
     if status != 0 {
         return Err(BackendError::CommandFailed {
             tool: "python3",
