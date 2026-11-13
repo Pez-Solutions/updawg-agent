@@ -66,6 +66,8 @@ pub enum CryptoError {
         "organization key {key_id} has been retired and must not be trusted; the host needs to re-enroll"
     )]
     KeyRetired { key_id: String },
+    #[error("organization key {key_id} is in the set twice, by its id or its key")]
+    DuplicateOrgKey { key_id: String },
     #[error("the server offered no usable organization signing key")]
     NoUsableOrgKey,
     #[error(
@@ -235,11 +237,22 @@ impl PinnedKeys {
     /// # Errors
     /// Fails if any key is malformed, or if none of them is active.
     pub fn from_wire(offered: &[OrgSigningKey]) -> Result<Self> {
-        let mut keys = Vec::with_capacity(offered.len());
+        let mut keys: Vec<PinnedKey> = Vec::with_capacity(offered.len());
         for k in offered {
+            let key = OrgPublicKey::parse(k.key_id.as_str(), &k.public_key)?;
+            // One key as active and again as retired would make every job it
+            // signed look like a retired key's.
+            if keys
+                .iter()
+                .any(|p| p.key_id == k.key_id.as_str() || p.key == key)
+            {
+                return Err(CryptoError::DuplicateOrgKey {
+                    key_id: k.key_id.as_str().to_string(),
+                });
+            }
             keys.push(PinnedKey {
                 key_id: k.key_id.as_str().to_string(),
-                key: OrgPublicKey::parse(k.key_id.as_str(), &k.public_key)?,
+                key,
                 status: k.status,
             });
         }
@@ -727,6 +740,30 @@ mod tests {
             public_key: wire.to_string(),
             status,
             endorsement: None,
+        }
+    }
+
+    /// One key as active and again as retired, under another id, would
+    /// leave every job it signs looking like a retired key's.
+    #[test]
+    fn a_key_set_naming_a_key_twice_is_refused() {
+        let (a, b) = (TestOrgKey::new(), TestOrgKey::new());
+        let twice_by_key = [
+            offered("sk_dup", &a.wire, SigningKeyStatus::Retired),
+            offered("sk_a", &a.wire, SigningKeyStatus::Active),
+        ];
+        let twice_by_id = [
+            offered("sk_a", &a.wire, SigningKeyStatus::Active),
+            offered("sk_a", &b.wire, SigningKeyStatus::Retiring),
+        ];
+        for set in [&twice_by_key[..], &twice_by_id[..]] {
+            assert!(
+                matches!(
+                    PinnedKeys::from_wire(set),
+                    Err(CryptoError::DuplicateOrgKey { .. })
+                ),
+                "{set:?}"
+            );
         }
     }
 
