@@ -277,6 +277,15 @@ fn everything() -> BTreeSet<String> {
     out
 }
 
+/// The token is a credential; an enrollment request printed for debugging
+/// must not carry it.
+#[test]
+fn an_enrollment_request_never_prints_its_token() {
+    let printed = format!("{:?}", enroll());
+    assert!(!printed.contains("enr_x"), "{printed}");
+    assert!(printed.contains("web-03"), "{printed}");
+}
+
 #[test]
 fn the_published_list_is_every_field_the_agent_sends() {
     let actual: String = everything().into_iter().map(|f| f + "\n").collect();

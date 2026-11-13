@@ -60,10 +60,22 @@ pub(crate) fn with_server(text: &str, server: &str) -> String {
 /// Points this host at `server` in the config at `path`. A host already set
 /// to a non-default server is only moved with `force`, since an accidental
 /// region move would go unnoticed. Returns whether the file changed.
-pub(crate) fn point_at(path: &str, current: &str, server: &str, force: bool) -> Result<bool> {
+/// Where `server` would move a host that reports to `current`, or `None` if
+/// it's already there. Writes nothing: [`point_at`] does, once enrollment
+/// with the new server has worked.
+///
+/// # Errors
+/// Not an https origin, or a host already moved off the default without
+/// `--force`.
+pub(crate) fn moving_to(
+    path: &str,
+    current: &str,
+    server: &str,
+    force: bool,
+) -> Result<Option<String>> {
     let server = origin(server)?;
     if current.trim_end_matches('/') == server {
-        return Ok(false);
+        return Ok(None);
     }
     if current.trim_end_matches('/') != DEFAULT_SERVER && !force {
         bail!(
@@ -71,8 +83,13 @@ pub(crate) fn point_at(path: &str, current: &str, server: &str, force: bool) -> 
              Pass --force if this host is moving."
         );
     }
+    Ok(Some(server))
+}
+
+/// Writes `server` (an origin from [`moving_to`]) into the config at `path`.
+pub(crate) fn point_at(path: &str, server: &str) -> Result<()> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    let updated = with_server(&text, &server);
+    let updated = with_server(&text, server);
     // write and rename so a crash can't leave a half-written config
     let tmp = format!("{path}.updawgctl-new");
     std::fs::write(&tmp, updated).with_context(|| format!("writing {tmp}"))?;
@@ -80,7 +97,7 @@ pub(crate) fn point_at(path: &str, current: &str, server: &str, force: bool) -> 
         std::fs::set_permissions(&tmp, meta.permissions()).ok();
     }
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {path}"))?;
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -124,35 +141,22 @@ mod tests {
         let path = path.to_str().unwrap();
         std::fs::write(path, "server = \"https://agents.dev.updawg.net\"\n").unwrap();
 
-        let refused = point_at(
-            path,
-            "https://agents.dev.updawg.net",
-            "https://agents.us.updawg.net",
-            false,
+        let current = "https://agents.dev.updawg.net";
+        let us = "https://agents.us.updawg.net";
+        assert!(moving_to(path, current, us, false).is_err());
+        let moving = moving_to(path, current, us, true).unwrap();
+        assert_eq!(moving.as_deref(), Some(us));
+        // nothing is written until point_at, after enrollment worked
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "server = \"https://agents.dev.updawg.net\"\n"
         );
-        assert!(refused.is_err());
-        assert!(
-            point_at(
-                path,
-                "https://agents.dev.updawg.net",
-                "https://agents.us.updawg.net",
-                true
-            )
-            .unwrap()
-        );
+        point_at(path, us).unwrap();
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             "server = \"https://agents.us.updawg.net\"\n"
         );
-        assert!(
-            !point_at(
-                path,
-                "https://agents.us.updawg.net",
-                "https://agents.us.updawg.net",
-                false
-            )
-            .unwrap()
-        );
+        assert_eq!(moving_to(path, us, us, false).unwrap(), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

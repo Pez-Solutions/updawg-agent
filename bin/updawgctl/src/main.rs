@@ -88,13 +88,15 @@ mod extra_root {
 enum Command {
     /// Enroll this host with an organization.
     Enroll {
-        /// Enrollment token, shown once in the portal.
-        #[arg(long, env = "UPDAWG_TOKEN")]
+        /// Enrollment token, shown once in the portal. Better passed as
+        /// `UPDAWG_TOKEN` than on the command line, where other users can see
+        /// it while it runs.
+        #[arg(long, env = "UPDAWG_TOKEN", hide_env_values = true)]
         token: String,
 
         /// The gateway to report to, for an organization outside the EU.
-        /// Written to the config as `server` before enrolling. The portal's
-        /// install command sets it when needed.
+        /// Written to the config as `server` once enrollment there has
+        /// worked. The portal's install command sets it when needed.
         #[arg(long, env = "UPDAWG_SERVER")]
         server: Option<String>,
 
@@ -218,17 +220,16 @@ async fn main() -> Result<()> {
             force,
             accept_new_org_key,
         } => {
-            if let Some(server) = server {
-                let current = AgentConfig::load(&cli.config)
-                    .with_context(|| format!("reading {}", cli.config))?
-                    .server;
-                if server::point_at(&cli.config, &current, &server, force)? {
-                    println!(
-                        "This host reports to {} from now on.",
-                        server::origin(&server)?
-                    );
+            // Checked now, written only once enrollment there has worked.
+            let moving = match server {
+                Some(server) => {
+                    let current = AgentConfig::load(&cli.config)
+                        .with_context(|| format!("reading {}", cli.config))?
+                        .server;
+                    server::moving_to(&cli.config, &current, &server, force)?
                 }
-            }
+                None => None,
+            };
             // never echo the token, not even truncated
             enroll(
                 &cli.config,
@@ -238,6 +239,7 @@ async fn main() -> Result<()> {
                     force,
                     accept_new_org_key,
                 },
+                moving.as_deref(),
                 cli.extra_root.load()?.as_deref(),
             )
             .await?;
@@ -300,21 +302,31 @@ async fn enroll(
     state: &LocalState,
     token: &str,
     options: EnrollOptions,
+    moving: Option<&str>,
     extra_root: Option<&[u8]>,
 ) -> Result<()> {
     let config = AgentConfig::load(config_path)
         .with_context(|| format!("reading {config_path} for the server address"))?;
+    let server = moving.unwrap_or(&config.server);
     state.ensure().context("preparing the state directory")?;
 
     let trusted = config
         .trusted_org_key()
         .with_context(|| format!("reading trusted_org_key from {config_path}"))?;
 
-    let exchange =
-        HttpsEnrollExchange::with_trust(&config.server, config.gateway_trust, extra_root)?;
+    let exchange = HttpsEnrollExchange::with_trust(server, config.gateway_trust, extra_root)?;
     let enroller = Enroller::new(state, &exchange).with_trusted_org_key(trusted);
 
-    match enroller.enroll(token, options).await? {
+    let outcome = enroller.enroll(token, options).await?;
+    if let Some(server) = moving {
+        if matches!(outcome, Enrolled::Already { .. }) {
+            println!("Not moved to {server}: this host is already enrolled.");
+        } else {
+            server::point_at(config_path, server)?;
+            println!("This host reports to {server} from now on.");
+        }
+    }
+    match outcome {
         Enrolled::Already { host_id } => {
             println!("Already enrolled as {host_id}. Nothing to do.");
             println!("Pass --force to replace this host's identity.");
