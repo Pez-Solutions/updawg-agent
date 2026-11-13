@@ -37,7 +37,17 @@ pub(crate) async fn body(mut response: reqwest::Response, max: usize) -> Result<
 
 /// An error response's message: its problem detail, or the start of its
 /// text. Never fails; at most [`MAX_ERROR_MESSAGE`] characters.
-pub(crate) async fn error_text(mut response: reqwest::Response) -> String {
+pub(crate) async fn error_text(response: reqwest::Response) -> String {
+    let body = error_body(response).await;
+    if body.is_empty() {
+        return "no response body".into();
+    }
+    message(&body)
+}
+
+/// An error response's body as text, at most [`MAX_ERROR_BODY`] bytes, for a
+/// caller that looks for an error code in it. Never fails.
+pub(crate) async fn error_body(mut response: reqwest::Response) -> String {
     let mut out = Vec::new();
     while let Ok(Some(chunk)) = response.chunk().await {
         out.extend_from_slice(&chunk);
@@ -46,10 +56,7 @@ pub(crate) async fn error_text(mut response: reqwest::Response) -> String {
             break;
         }
     }
-    if out.is_empty() {
-        return "no response body".into();
-    }
-    message(&String::from_utf8_lossy(&out))
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// [`crate::enroll::problem_detail`], cut to [`MAX_ERROR_MESSAGE`]

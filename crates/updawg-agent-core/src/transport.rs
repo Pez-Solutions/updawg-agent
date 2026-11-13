@@ -639,7 +639,7 @@ impl MtlsTransport {
             return Err(TransportError::Server {
                 url,
                 status: status.as_u16(),
-                detail: crate::limits::error_text(response).await,
+                detail: crate::limits::error_body(response).await,
             });
         }
         Ok(())
