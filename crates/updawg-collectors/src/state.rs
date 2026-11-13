@@ -55,10 +55,12 @@ pub struct SystemState {
     root: Root,
     /// Read once at construction; it picks the reboot-required check.
     family: Family,
-    /// The last needrestart answer and when it was had.
-    restart_cache:
-        std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, Option<NeedRestart>)>>>,
+    restart_cache: RestartCache,
 }
+
+/// The last needrestart answer and when it was had, shared by clones.
+type RestartCache =
+    std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, Option<NeedRestart>)>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Family {
