@@ -89,7 +89,7 @@ enum Command {
     /// Enroll this host with an organization.
     Enroll {
         /// Enrollment token, shown once in the portal. Better passed as
-        /// UPDAWG_TOKEN than on the command line, where other users can see
+        /// `UPDAWG_TOKEN` than on the command line, where other users can see
         /// it while it runs.
         #[arg(long, env = "UPDAWG_TOKEN", hide_env_values = true)]
         token: String,
@@ -317,16 +317,16 @@ async fn enroll(
     let exchange = HttpsEnrollExchange::with_trust(server, config.gateway_trust, extra_root)?;
     let enroller = Enroller::new(state, &exchange).with_trusted_org_key(trusted);
 
-    let enrolled = enroller.enroll(token, options).await?;
+    let outcome = enroller.enroll(token, options).await?;
     if let Some(server) = moving {
-        if matches!(enrolled, Enrolled::Already { .. }) {
+        if matches!(outcome, Enrolled::Already { .. }) {
             println!("Not moved to {server}: this host is already enrolled.");
         } else {
             server::point_at(config_path, server)?;
             println!("This host reports to {server} from now on.");
         }
     }
-    match enrolled {
+    match outcome {
         Enrolled::Already { host_id } => {
             println!("Already enrolled as {host_id}. Nothing to do.");
             println!("Pass --force to replace this host's identity.");
