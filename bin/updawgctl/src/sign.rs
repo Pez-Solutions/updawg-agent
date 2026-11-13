@@ -495,6 +495,26 @@ fn confirm(question: &str) -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
+/// `https://`, or `http://` to this machine itself: the host, not just how
+/// the URL starts (`http://127.0.0.1.example.com` is somewhere else).
+fn api_allowed(api: &str) -> bool {
+    if api.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = api.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let host = authority.strip_prefix("[::1]").map_or_else(
+        || authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+        |_| "::1",
+    );
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
 #[derive(Debug)]
 struct Api {
     base: String,
@@ -504,8 +524,8 @@ struct Api {
 
 impl Api {
     fn new(options: &SignOptions) -> Result<Self> {
-        if !options.api.starts_with("https://") && !options.api.starts_with("http://127.0.0.1") {
-            bail!("--api must be https");
+        if !api_allowed(&options.api) {
+            bail!("--api must be https (plain http only to this machine, for testing)");
         }
         Ok(Self {
             base: format!(
@@ -516,6 +536,8 @@ impl Api {
             token: options.token.clone(),
             client: reqwest::Client::builder()
                 .user_agent(format!("updawgctl/{}", updawg_agent_core::VERSION))
+                .timeout(std::time::Duration::from_secs(60))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()?,
         })
     }
@@ -700,6 +722,28 @@ mod tests {
         assert!(describe(&snapshot, "web-03", None).contains("description: before the upgrade"));
 
         assert!(describe(&job(), "web-03", None).contains("give up after"));
+    }
+
+    #[test]
+    fn the_api_is_https_or_this_machine() {
+        for ok in [
+            "https://api.updawg.net",
+            "http://127.0.0.1:8080",
+            "http://localhost:3000/v1",
+            "http://[::1]:8080",
+            "http://127.0.0.1",
+        ] {
+            assert!(api_allowed(ok), "{ok}");
+        }
+        for bad in [
+            "http://127.0.0.1.attacker.example",
+            "http://127.0.0.1@attacker.example",
+            "http://attacker.example/127.0.0.1",
+            "http://api.updawg.net",
+            "ftp://127.0.0.1",
+        ] {
+            assert!(!api_allowed(bad), "{bad}");
+        }
     }
 
     #[test]

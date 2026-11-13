@@ -36,7 +36,7 @@ pub struct CloudFacts {
     pub region: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EnrollRequest {
     /// Enrollment token, shown once in the portal.
     pub token: String,
@@ -46,6 +46,19 @@ pub struct EnrollRequest {
     pub hostname: String,
     pub facts: HostFacts,
     pub agent_version: String,
+}
+
+// the token is a credential: never in a log
+impl std::fmt::Debug for EnrollRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnrollRequest")
+            .field("token", &"<redacted>")
+            .field("machine_id", &self.machine_id)
+            .field("hostname", &self.hostname)
+            .field("facts", &self.facts)
+            .field("agent_version", &self.agent_version)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One of the organization's job-signing keys.
